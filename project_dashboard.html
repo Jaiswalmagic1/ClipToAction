@@ -1,0 +1,132 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Dashboard - ClipToAction</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #5f6b7a;
+      --line: #dfe4ea;
+      --accent: #0f766e;
+      --warn: #b45309;
+      --done: #166534;
+      --blocked: #991b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      padding: 24px;
+      background: #102a43;
+      color: white;
+    }
+    header h1 { margin: 0 0 6px; font-size: 28px; }
+    header p { margin: 0; color: #d8e2ec; }
+    main { max-width: 1180px; margin: 0 auto; padding: 20px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 10px; vertical-align: top; }
+    th { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fbfcfd; }
+    .metric strong { display: block; font-size: 24px; }
+    .tag { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .todo { background: #fef3c7; color: var(--warn); }
+    .done { background: #dcfce7; color: var(--done); }
+    .blocked { background: #fee2e2; color: var(--blocked); }
+    .active { background: #ccfbf1; color: var(--accent); }
+    @media (max-width: 800px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      table { font-size: 14px; }
+    }
+    @media (max-width: 520px) {
+      .grid { grid-template-columns: 1fr; }
+      th, td { padding: 8px 6px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ClipToAction</h1>
+    <p>Project dashboard for turning online video inspiration into organized actions.</p>
+  </header>
+
+  <main>
+    <section class="grid" aria-label="Project status">
+      <div class="metric"><span>Stage</span><strong>V1 Build</strong></div>
+      <div class="metric"><span>Progress</span><strong>55%</strong></div>
+      <div class="metric"><span>Open Problems</span><strong>2</strong></div>
+      <div class="metric"><span>Next Action</span><strong>Test Flow</strong></div>
+    </section>
+
+    <section>
+      <h2>Context</h2>
+      <table>
+        <tr><th>Item</th><th>Current Understanding</th></tr>
+        <tr><td>Problem</td><td>Useful video ideas are scattered and do not become clear actions.</td></tr>
+        <tr><td>User preference</td><td>Short, structured, logic-first information with minimal technical burden.</td></tr>
+        <tr><td>Solution direction</td><td>A mobile-friendly capture system plus dashboard to classify ideas and turn the best ones into experiments.</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Progress</h2>
+      <table>
+        <tr><th>Status</th><th>Work</th><th>Logic</th></tr>
+        <tr><td><span class="tag done">Resolved</span></td><td>Global Codex preferences</td><td>Set default style and dashboard requirement for future projects.</td></tr>
+        <tr><td><span class="tag done">Resolved</span></td><td>Local HTML app</td><td>Created a simple first version that works without setup.</td></tr>
+        <tr><td><span class="tag todo">Pending</span></td><td>AI summarization</td><td>Needs transcript/API integration after the manual capture flow is proven.</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Problems Identified</h2>
+      <table>
+        <tr><th>Status</th><th>Problem</th><th>Impact</th><th>Next Step</th></tr>
+        <tr><td><span class="tag active">Open</span></td><td>Social videos have inconsistent access to transcripts.</td><td>Automation may fail if the platform blocks transcript extraction.</td><td>Start with link + manual notes, then add platform-specific automation later.</td></tr>
+        <tr><td><span class="tag active">Open</span></td><td>Too many saved ideas can become another dumping ground.</td><td>The system may store more clutter instead of creating action.</td><td>Force every card to have a decision: Try, Save, Ignore.</td></tr>
+        <tr><td><span class="tag active">Open</span></td><td>User watches videos mainly on mobile.</td><td>A PC-only local HTML file cannot receive mobile shared links directly.</td><td>Add a mobile capture inbox: PWA share target, Telegram bot, WhatsApp flow, or Google Form.</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Pending / Resolved</h2>
+      <table>
+        <tr><th>Type</th><th>Item</th><th>Status</th></tr>
+        <tr><td>Resolved</td><td>Create first offline HTML app</td><td><span class="tag done">Done</span></td></tr>
+        <tr><td>Resolved</td><td>Add sample idea card workflow</td><td><span class="tag done">Done</span></td></tr>
+        <tr><td>Resolved</td><td>Global preference setup</td><td><span class="tag done">Done</span></td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Decisions</h2>
+      <table>
+        <tr><th>Decision</th><th>Reason</th></tr>
+        <tr><td>Name the project ClipToAction.</td><td>The name matches the workflow: clip in, action out.</td></tr>
+        <tr><td>Use a standalone HTML file first.</td><td>Fast to use, no login, no install, low token/time cost.</td></tr>
+        <tr><td>Keep AI automation as phase 2.</td><td>The workflow should be useful even before transcript automation exists.</td></tr>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
+
+
+

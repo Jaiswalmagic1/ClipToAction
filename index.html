@@ -1,0 +1,377 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClipToAction</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #65758b;
+      --line: #dde5ef;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --warn: #a16207;
+      --danger: #b91c1c;
+      --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      background: #102a43;
+      color: white;
+      padding: 20px;
+    }
+    header h1 { margin: 0 0 6px; font-size: 26px; }
+    header p { margin: 0; color: #d9e2ec; }
+    main {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 18px;
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    aside, section.panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    aside { padding: 16px; align-self: start; position: sticky; top: 12px; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    label { display: block; margin: 12px 0 6px; font-size: 13px; color: var(--muted); font-weight: 700; }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      font: inherit;
+      color: var(--text);
+      background: white;
+    }
+    textarea { min-height: 88px; resize: vertical; }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+    }
+    button:hover { background: var(--accent-dark); }
+    button.secondary { background: #e5edf5; color: #243b53; }
+    button.danger { background: var(--danger); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+    .stat {
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .stat span { display: block; color: var(--muted); font-size: 12px; }
+    .stat strong { font-size: 24px; }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .filters button { background: #e5edf5; color: #243b53; }
+    .filters button.active { background: var(--accent); color: white; }
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .column {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 260px;
+      padding: 12px;
+    }
+    .column h3 { margin: 0 0 10px; font-size: 16px; }
+    .card {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #fff;
+    }
+    .card h4 { margin: 0 0 6px; font-size: 15px; }
+    .card p { margin: 6px 0; color: #334e68; font-size: 14px; }
+    .meta { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: #edf2f7;
+      color: #334e68;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .card a { color: var(--accent-dark); word-break: break-word; }
+    .card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .card-actions button { padding: 7px 9px; font-size: 12px; }
+    .empty {
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .panel { padding: 14px; margin-bottom: 14px; }
+    @media (max-width: 1050px) {
+      main { grid-template-columns: 1fr; }
+      aside { position: static; }
+      .board { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 650px) {
+      .stats { grid-template-columns: 1fr 1fr; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ClipToAction</h1>
+    <p>Capture videos, extract the idea, and convert the best ones into action.</p>
+  </header>
+
+  <main>
+    <aside>
+      <h2>Add Video Idea</h2>
+      <form id="ideaForm">
+        <label for="title">Title / Hook</label>
+        <input id="title" required placeholder="Example: AI agent for customer support">
+
+        <label for="url">Video Link</label>
+        <input id="url" type="url" placeholder="Paste Facebook, Instagram, YouTube link">
+
+        <label for="category">Category</label>
+        <select id="category">
+          <option>AI</option>
+          <option>Business</option>
+          <option>Marketing</option>
+          <option>Operations</option>
+          <option>Finance</option>
+          <option>Product Idea</option>
+          <option>Personal Productivity</option>
+        </select>
+
+        <label for="notes">What I understood</label>
+        <textarea id="notes" placeholder="Short note from the video. No need for perfect wording."></textarea>
+
+        <label for="action">Possible action</label>
+        <textarea id="action" placeholder="What can I test or do with this?"></textarea>
+
+        <label for="effort">Effort</label>
+        <select id="effort">
+          <option>Low</option>
+          <option>Medium</option>
+          <option>High</option>
+        </select>
+
+        <label for="impact">Potential Impact</label>
+        <select id="impact">
+          <option>High</option>
+          <option>Medium</option>
+          <option>Low</option>
+        </select>
+
+        <div class="actions">
+          <button type="submit">Save Idea</button>
+          <button type="button" class="secondary" id="sampleBtn">Add Sample</button>
+        </div>
+      </form>
+    </aside>
+
+    <section>
+      <div class="stats" id="stats"></div>
+
+      <section class="panel">
+        <div class="toolbar">
+          <h2>Review Queue</h2>
+          <div class="filters">
+            <button data-filter="All" class="active" type="button">All</button>
+            <button data-filter="Try" type="button">Try</button>
+            <button data-filter="Save" type="button">Save</button>
+            <button data-filter="Ignore" type="button">Ignore</button>
+          </div>
+        </div>
+        <div class="board" id="board"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const storeKey = "idea-action-board-v1";
+    const form = document.getElementById("ideaForm");
+    const board = document.getElementById("board");
+    const stats = document.getElementById("stats");
+    const sampleBtn = document.getElementById("sampleBtn");
+    const filterButtons = document.querySelectorAll("[data-filter]");
+    let filter = "All";
+
+    function loadIdeas() {
+      return JSON.parse(localStorage.getItem(storeKey) || "[]");
+    }
+
+    function saveIdeas(ideas) {
+      localStorage.setItem(storeKey, JSON.stringify(ideas));
+    }
+
+    function scoreIdea(idea) {
+      const impact = { High: 3, Medium: 2, Low: 1 }[idea.impact] || 1;
+      const effort = { Low: 3, Medium: 2, High: 1 }[idea.effort] || 1;
+      return impact + effort;
+    }
+
+    function suggestedDecision(idea) {
+      const score = scoreIdea(idea);
+      if (score >= 5) return "Try";
+      if (score >= 3) return "Save";
+      return "Ignore";
+    }
+
+    function addIdea(raw) {
+      const idea = {
+        id: Date.now().toString(),
+        title: raw.title.trim(),
+        url: raw.url.trim(),
+        category: raw.category,
+        notes: raw.notes.trim(),
+        action: raw.action.trim(),
+        effort: raw.effort,
+        impact: raw.impact,
+        status: "Save",
+        createdAt: new Date().toISOString()
+      };
+      idea.status = suggestedDecision(idea);
+      const ideas = loadIdeas();
+      ideas.unshift(idea);
+      saveIdeas(ideas);
+      render();
+    }
+
+    function updateStatus(id, status) {
+      const ideas = loadIdeas().map((idea) => idea.id === id ? { ...idea, status } : idea);
+      saveIdeas(ideas);
+      render();
+    }
+
+    function deleteIdea(id) {
+      saveIdeas(loadIdeas().filter((idea) => idea.id !== id));
+      render();
+    }
+
+    function renderStats(ideas) {
+      const counts = {
+        Total: ideas.length,
+        Try: ideas.filter((i) => i.status === "Try").length,
+        Save: ideas.filter((i) => i.status === "Save").length,
+        Ignore: ideas.filter((i) => i.status === "Ignore").length
+      };
+      stats.innerHTML = Object.entries(counts).map(([label, value]) => `
+        <div class="stat"><span>${label}</span><strong>${value}</strong></div>
+      `).join("");
+    }
+
+    function renderCard(idea) {
+      const date = new Date(idea.createdAt).toLocaleDateString();
+      const link = idea.url ? `<p><a href="${idea.url}" target="_blank" rel="noreferrer">Open video</a></p>` : "";
+      return `
+        <article class="card">
+          <h4>${escapeHtml(idea.title)}</h4>
+          <div class="meta">
+            <span class="pill">${escapeHtml(idea.category)}</span>
+            <span class="pill">Impact: ${escapeHtml(idea.impact)}</span>
+            <span class="pill">Effort: ${escapeHtml(idea.effort)}</span>
+            <span class="pill">${date}</span>
+          </div>
+          ${link}
+          <p><strong>Idea:</strong> ${escapeHtml(idea.notes || "No note added.")}</p>
+          <p><strong>Action:</strong> ${escapeHtml(idea.action || "Define next action.")}</p>
+          <div class="card-actions">
+            <button type="button" onclick="updateStatus('${idea.id}', 'Try')">Try</button>
+            <button type="button" class="secondary" onclick="updateStatus('${idea.id}', 'Save')">Save</button>
+            <button type="button" class="secondary" onclick="updateStatus('${idea.id}', 'Ignore')">Ignore</button>
+            <button type="button" class="danger" onclick="deleteIdea('${idea.id}')">Delete</button>
+          </div>
+        </article>
+      `;
+    }
+
+    function render() {
+      const ideas = loadIdeas();
+      renderStats(ideas);
+      const groups = ["Try", "Save", "Ignore"];
+      board.innerHTML = groups.map((group) => {
+        const items = ideas.filter((idea) => idea.status === group && (filter === "All" || filter === group));
+        return `
+          <div class="column">
+            <h3>${group}</h3>
+            ${items.length ? items.map(renderCard).join("") : `<div class="empty">No ${group.toLowerCase()} ideas.</div>`}
+          </div>
+        `;
+      }).join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      addIdea({
+        title: document.getElementById("title").value,
+        url: document.getElementById("url").value,
+        category: document.getElementById("category").value,
+        notes: document.getElementById("notes").value,
+        action: document.getElementById("action").value,
+        effort: document.getElementById("effort").value,
+        impact: document.getElementById("impact").value
+      });
+      form.reset();
+    });
+
+    sampleBtn.addEventListener("click", () => {
+      addIdea({
+        title: "Use AI to answer repeat customer questions",
+        url: "https://www.youtube.com/",
+        category: "AI",
+        notes: "Many repeated customer questions can be answered from existing FAQs and order policies.",
+        action: "List top 20 repeated questions, write answers, then test a simple chatbot flow.",
+        effort: "Medium",
+        impact: "High"
+      });
+    });
+
+    filterButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        filter = button.dataset.filter;
+        filterButtons.forEach((btn) => btn.classList.toggle("active", btn === button));
+        render();
+      });
+    });
+
+    render();
+  </script>
+</body>
+</html>
+
