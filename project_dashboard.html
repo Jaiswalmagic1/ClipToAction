@@ -71,7 +71,7 @@
   <main>
     <section class="grid" aria-label="Project status">
       <div class="metric"><span>Stage</span><strong>V1 Build</strong></div>
-      <div class="metric"><span>Progress</span><strong>75%</strong></div>
+      <div class="metric"><span>Progress</span><strong>80%</strong></div>
       <div class="metric"><span>Open Problems</span><strong>2</strong></div>
       <div class="metric"><span>Next Action</span><strong>Test Flow</strong></div>
     </section>
@@ -92,6 +92,7 @@
         <tr><th>Status</th><th>Work</th><th>Logic</th></tr>
         <tr><td><span class="tag done">Resolved</span></td><td>Global Codex preferences</td><td>Set default style and dashboard requirement for future projects.</td></tr>
         <tr><td><span class="tag done">Resolved</span></td><td>Local HTML app</td><td>Created a simple first version that works without setup.</td></tr>
+        <tr><td><span class="tag done">Resolved</span></td><td>Link-only capture</td><td>User only provides the video link; app auto-creates title, note, action, category, effort, and impact.</td></tr>
         <tr><td><span class="tag todo">Pending</span></td><td>AI summarization</td><td>Needs transcript/API integration after the manual capture flow is proven.</td></tr>
       </table>
     </section>
@@ -121,6 +122,7 @@
       <table>
         <tr><th>Decision</th><th>Reason</th></tr>
         <tr><td>Name the project ClipToAction.</td><td>The name matches the workflow: clip in, action out.</td></tr>
+        <tr><td>Only the video link should be required.</td><td>The user will not add title, notes, category, or action while sharing from mobile.</td></tr>
         <tr><td>Use a standalone HTML file first.</td><td>Fast to use, no login, no install, low token/time cost.</td></tr>
         <tr><td>Keep AI automation as phase 2.</td><td>The workflow should be useful even before transcript automation exists.</td></tr>
       </table>
