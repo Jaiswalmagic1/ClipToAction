@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Saving to ClipToAction</title>
+</head>
+<body>
+  <p>Opening ClipToAction...</p>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const share = {
+      title: params.get("title") || "",
+      text: params.get("text") || "",
+      url: params.get("url") || ""
+    };
+    localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
+    window.location.replace("index.html");
+  </script>
+</body>
+</html>

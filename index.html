@@ -1,8 +1,11 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102a43">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
   <title>ClipToAction</title>
   <style>
     :root {
@@ -131,6 +134,7 @@
       font-size: 14px;
     }
     .panel { padding: 14px; margin-bottom: 14px; }
+    .help-text { margin: 0; color: var(--muted); font-size: 14px; }
     @media (max-width: 1050px) {
       main { grid-template-columns: 1fr; }
       aside { position: static; }
@@ -199,6 +203,10 @@
 
     <section>
       <div class="stats" id="stats"></div>
+      <section class="panel" id="installHelp">
+        <h2>Mobile Share Setup</h2>
+        <p class="help-text">On mobile: open this site in Chrome, add it to your home screen, then use Share -> ClipToAction from YouTube, Instagram, Facebook, or any page with a link.</p>
+      </section>
 
       <section class="panel">
         <div class="toolbar">
@@ -224,6 +232,36 @@
     const filterButtons = document.querySelectorAll("[data-filter]");
     let filter = "All";
 
+
+    function extractUrl(...values) {
+      const combined = values.filter(Boolean).join(" ");
+      const match = combined.match(/https?:\/\/[^\s]+/i);
+      return match ? match[0] : "";
+    }
+
+    function loadPendingShare() {
+      const params = new URLSearchParams(window.location.search);
+      const direct = {
+        title: params.get("title") || "",
+        text: params.get("text") || "",
+        url: params.get("url") || ""
+      };
+      const stored = JSON.parse(localStorage.getItem("cliptoaction-pending-share") || "null");
+      if (stored) localStorage.removeItem("cliptoaction-pending-share");
+      const share = stored || direct;
+      const sharedUrl = extractUrl(share.url, share.text);
+      if (!share.title && !share.text && !sharedUrl) return;
+      document.getElementById("title").value = share.title || "Shared video idea";
+      document.getElementById("url").value = sharedUrl;
+      document.getElementById("notes").value = share.text ? share.text.replace(sharedUrl, "").trim() : "";
+      document.getElementById("action").value = "Review this video and decide: Try, Save, or Ignore.";
+      history.replaceState({}, document.title, location.pathname);
+      document.getElementById("title").focus();
+    }
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js");
+    }
     function loadIdeas() {
       return JSON.parse(localStorage.getItem(storeKey) || "[]");
     }
@@ -370,11 +408,13 @@
         render();
       });
     });
-
+    loadPendingShare();
     render();
   </script>
 </body>
 </html>
+
+
 
 
 
