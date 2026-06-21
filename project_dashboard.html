@@ -93,7 +93,7 @@
         <tr><td><span class="tag done">Resolved</span></td><td>Global Codex preferences</td><td>Set default style and dashboard requirement for future projects.</td></tr>
         <tr><td><span class="tag done">Resolved</span></td><td>Local HTML app</td><td>Created a simple first version that works without setup.</td></tr>
         <tr><td><span class="tag done">Resolved</span></td><td>Link-only capture</td><td>User only provides the video link; app auto-creates title, note, action, category, effort, and impact.</td></tr>
-        <tr><td><span class="tag todo">Pending</span></td><td>AI summarization</td><td>Needs transcript/API integration after the manual capture flow is proven.</td></tr>
+        <tr><td><span class="tag todo">Pending</span></td><td>Automated video enrichment</td><td>From link only, derive platform, title, topic, summary, category, action, priority, effort, and impact.</td></tr>
       </table>
     </section>
 
@@ -122,7 +122,7 @@
       <table>
         <tr><th>Decision</th><th>Reason</th></tr>
         <tr><td>Name the project ClipToAction.</td><td>The name matches the workflow: clip in, action out.</td></tr>
-        <tr><td>Only the video link should be required.</td><td>The user will not add title, notes, category, or action while sharing from mobile.</td></tr>
+        <tr><td>Plain link is the only input.</td><td>The user will not add title, notes, category, platform, topic, priority, or action. Everything must be derived from the video/link.</td></tr>
         <tr><td>Use a standalone HTML file first.</td><td>Fast to use, no login, no install, low token/time cost.</td></tr>
         <tr><td>Keep AI automation as phase 2.</td><td>The workflow should be useful even before transcript automation exists.</td></tr>
       </table>
