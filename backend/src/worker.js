@@ -10,6 +10,7 @@
 
 import { verifyFirebaseToken, encryptSecret, tokensMatch } from "./auth.js";
 import { canonicalUrl, platformFromUrl, extractUrl } from "./canonical.js";
+import { ANALYSIS_PROMPT, analyzeSource, parseAnalysis } from "./analyze.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -260,7 +261,29 @@ async function storeTranscript(request, env, sourceId) {
     ).bind(body.title || null, body.duration_sec || null, timestamp, sourceId)
   ]);
 
-  return json({ ok: true });
+  // If anyone who saved this reel has a key connected, analyse it now and share the
+  // result with everyone else who saved it. If nobody has one, the source stays at
+  // 'transcribed' and the app offers the copy-paste tier instead — that is not a failure.
+  try {
+    const analysis = await analyzeSource(env, sourceId, body.text);
+    if (analysis) {
+      const problems = await storeAnalysis(
+        env,
+        sourceId,
+        analysis.payload,
+        analysis.provider,
+        analysis.model
+      );
+      if (problems.length) throw new Error(`AI reply was malformed: ${problems.join(", ")}`);
+    }
+    return json({ ok: true, analyzed: Boolean(analysis) });
+  } catch (error) {
+    // The transcript is safe either way — record why analysis failed so the app can show it.
+    await env.DB.prepare(`UPDATE sources SET error = ?1, updated_at = ?2 WHERE id = ?3`)
+      .bind(`Analysis failed: ${error.message}`.slice(0, 500), now(), sourceId)
+      .run();
+    return json({ ok: true, analyzed: false, analysis_error: error.message });
+  }
 }
 
 function validateAnalysis(payload) {
@@ -272,13 +295,10 @@ function validateAnalysis(payload) {
   return problems;
 }
 
+/** Returns an array of problems — empty means it was stored. */
 async function storeAnalysis(env, sourceId, payload, provider, model) {
   const problems = validateAnalysis(payload);
-  if (problems.length) {
-    return fail(
-      `The analysis is missing or malformed: ${problems.join(", ")}. Nothing was saved.`
-    );
-  }
+  if (problems.length) return problems;
 
   const timestamp = now();
   await env.DB.batch([
@@ -303,7 +323,7 @@ async function storeAnalysis(env, sourceId, payload, provider, model) {
     ).bind(timestamp, sourceId)
   ]);
 
-  return json({ ok: true });
+  return [];
 }
 
 async function storeFailure(request, env, sourceId) {
@@ -323,23 +343,6 @@ async function storeFailure(request, env, sourceId) {
 
 // ---------------------------------------------------------------- tier 3: copy-paste
 
-const MANUAL_PROMPT = `You are analysing the transcript of a short social-media video.
-
-Reply with ONE fenced json code block and nothing else — no preamble, no explanation.
-
-\`\`\`json
-{
-  "summary": "3-4 sentences on what this video actually said",
-  "key_points": ["the specific facts, numbers, tactics or steps mentioned"],
-  "learn_more": ["tools, terms, people or concepts named that are worth studying further"],
-  "claims": [{"claim": "a claim made", "confidence": "high|medium|low", "why": "why you rated it that way"}],
-  "suggested_task": "one concrete action worth taking, or null"
-}
-\`\`\`
-
-TRANSCRIPT:
-`;
-
 async function buildPrompt(env, userId, clipId) {
   const row = await env.DB.prepare(
     `SELECT t.text FROM clips c
@@ -350,7 +353,7 @@ async function buildPrompt(env, userId, clipId) {
     .first();
 
   if (!row) return fail("No transcript yet for this clip.", 404);
-  return json({ prompt: MANUAL_PROMPT + row.text });
+  return json({ prompt: ANALYSIS_PROMPT + row.text });
 }
 
 async function acceptPastedAnalysis(request, env, userId, clipId) {
@@ -360,19 +363,21 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   if (!clip) return fail("Clip not found.", 404);
 
   const body = await request.json();
-  const raw = String(body.pasted || "");
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
 
   let payload;
   try {
-    payload = JSON.parse(fenced ? fenced[1] : raw);
+    payload = parseAnalysis(body.pasted || "");
   } catch {
     return fail(
       "That does not look like the AI's answer. Copy the whole reply, including the json block."
     );
   }
 
-  return storeAnalysis(env, clip.source_id, payload, "manual", body.model || null);
+  const problems = await storeAnalysis(env, clip.source_id, payload, "manual", body.model || null);
+  if (problems.length) {
+    return fail(`The analysis is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);
+  }
+  return json({ ok: true });
 }
 
 // ---------------------------------------------------------------- router
@@ -399,7 +404,17 @@ export default {
         }
         if (segments[3] === "analysis" && request.method === "POST") {
           const body = await request.json();
-          return storeAnalysis(env, segments[2], body.analysis, body.provider || "worker", body.model);
+          const problems = await storeAnalysis(
+            env,
+            segments[2],
+            body.analysis,
+            body.provider || "worker",
+            body.model
+          );
+          if (problems.length) {
+            return fail(`The analysis is missing or malformed: ${problems.join(", ")}.`);
+          }
+          return json({ ok: true });
         }
         if (segments[3] === "error" && request.method === "POST") {
           return storeFailure(request, env, segments[2]);
