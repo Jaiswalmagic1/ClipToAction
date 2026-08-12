@@ -69,6 +69,23 @@ Deploy:
 wrangler deploy
 ```
 
+## AI providers
+
+Analysis runs inside the Worker (`src/analyze.js`) so a user's API key never leaves it.
+Endpoints and model IDs were checked against each provider's own documentation on
+2026-08-12:
+
+| Provider | Endpoint | Model | Docs confirmed |
+|---|---|---|---|
+| Gemini (default) | `generativelanguage.googleapis.com/v1beta/…:generateContent` | `gemini-3.5-flash-lite` | endpoint, request/response shape |
+| Groq | `api.groq.com/openai/v1/chat/completions` | `llama-3.3-70b-versatile` | endpoint, auth header, body, model |
+| xAI | `api.x.ai/v1/chat/completions` | `grok-4.6` | endpoint, auth header, body, model |
+| Anthropic | `api.anthropic.com/v1/messages` | `claude-haiku-4-5` | endpoint, headers, body, model |
+| OpenAI | `api.openai.com/v1/chat/completions` | `gpt-5.6-luna` | model only — the API reference returns 403 to automated fetches, so the endpoint is the widely-used one rather than a doc-confirmed one |
+
+Raw HTTP is used for every provider, including Anthropic: one adapter shape across five
+providers is simpler here than mixing an SDK into a Cloudflare Worker for one of them.
+
 ## Not built yet
 
 Topic merging, "you already know this", weekly digest and shared notebooks have tables in

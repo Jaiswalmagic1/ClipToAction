@@ -22,15 +22,18 @@ Reply with ONE fenced json code block and nothing else — no preamble, no expla
 TRANSCRIPT:
 `;
 
-// Providers that speak the OpenAI /chat/completions shape.
+// Providers that speak the OpenAI /chat/completions shape. Endpoints and model IDs
+// checked against each provider's own docs on 2026-08-12 (see backend/README.md for
+// which ones the docs confirmed and which are still unverified).
 const OPENAI_COMPATIBLE = {
-  openai: { url: "https://api.openai.com/v1/chat/completions", model: "gpt-4o-mini" },
+  openai: { url: "https://api.openai.com/v1/chat/completions", model: "gpt-5.6-luna" },
   groq: { url: "https://api.groq.com/openai/v1/chat/completions", model: "llama-3.3-70b-versatile" },
-  xai: { url: "https://api.x.ai/v1/chat/completions", model: "grok-2-latest" }
+  xai: { url: "https://api.x.ai/v1/chat/completions", model: "grok-4.6" }
 };
 
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
-const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+const ANTHROPIC_MODEL = "claude-haiku-4-5";
+const MAX_OUTPUT_TOKENS = 4096;
 
 /** Pulls the JSON object out of a model reply, fenced or not. */
 export function parseAnalysis(raw) {
@@ -46,7 +49,7 @@ async function callGemini(prompt, apiKey) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
+        generationConfig: { temperature: 0.2, maxOutputTokens: MAX_OUTPUT_TOKENS }
       })
     }
   );
@@ -66,6 +69,7 @@ async function callOpenAICompatible(prompt, apiKey, provider) {
     body: JSON.stringify({
       model,
       temperature: 0.2,
+      max_completion_tokens: MAX_OUTPUT_TOKENS,
       messages: [{ role: "user", content: prompt }]
     })
   });
@@ -87,7 +91,7 @@ async function callAnthropic(prompt, apiKey) {
     },
     body: JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 2048,
+      max_tokens: MAX_OUTPUT_TOKENS,
       temperature: 0.2,
       messages: [{ role: "user", content: prompt }]
     })
