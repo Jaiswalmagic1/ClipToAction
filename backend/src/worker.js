@@ -286,7 +286,7 @@ async function storeTranscript(request, env, sourceId) {
   }
 }
 
-function validateAnalysis(payload) {
+export function validateAnalysis(payload) {
   const problems = [];
   if (!String(payload?.summary || "").trim()) problems.push("summary");
   for (const field of ["key_points", "learn_more", "claims"]) {

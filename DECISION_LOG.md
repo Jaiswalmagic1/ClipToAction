@@ -207,9 +207,50 @@ why the pre-commit hook only validates.
 
 ### D15 — GitHub auto-push stays in force for this project
 **Date:** 2026-08-12
-**Decided:** Golden Rule 6 applies unchanged — code, docs and config are pushed without
-asking. Kartaan's D20 (never auto-push) does **not** carry over.
-**Why:** nothing here is live for anyone but Jaiswal yet, and the repo is the deployment
-target for GitHub Pages. This must be revisited before the first external user — at that
-point pushing becomes publishing.
-**Still excluded:** force pushes, branch deletion, and any destructive git operation.
+**Superseded by:** D16, the following day. **No longer the rule.**
+**Was:** Golden Rule 6 applies unchanged — code, docs and config pushed without asking.
+**Why it was wrong:** it treated the repo as storage. It is the deployment.
+
+### D16 — `main` is a release. Branches are where work is built and proven. Supersedes D15.
+**Date:** 2026-08-13
+**Supersedes:** D15 (auto-push to `main`). Golden Rule 6 does **not** apply to `main` in
+this project — the same carve-out Kartaan made in its D20, for the same reason.
+**Decided, in Jaiswal's framing:**
+
+| | What it is |
+|---|---|
+| A branch | Where things are built and tested. Push freely — nothing on a branch is served to anyone. |
+| `main` | Released and live. Moving `main` **is** the release. |
+| The crossing | Nothing reaches `main` without passing every gate. |
+
+**Why:** GitHub Pages serves `index.html` straight from `main`, so a push to `main` is not
+saving work — it publishes. Jaiswal's own words: *"if at all that is something needs to be
+pushed, the system has to be built in a way that it has to be verified and validated,
+tested against everything possible. Only then it should go ahead and be pushed."*
+
+**Why branches still push freely:** a rule of "never push" would leave the only copy of
+the work on one PC. Separating backup from release keeps both properties — the work is
+safe, and nothing ships unproven.
+
+**The gate — all of it must pass, and it is machine-checked, not claimed:**
+
+1. `.github/workflows/ci.yml` — unit tests, syntax checks on all three runtimes, a
+   secret scan, and a check that no `.env` is tracked.
+2. `.github/workflows/pm_check.yml` — the D14 `[PM-REVIEWED]` tag.
+3. Branch protection on `main` requiring both, so the gate cannot be walked around.
+
+**Why the tests exist at all:** without them "verified and validated" is a checkbox a
+session ticks — exactly the failure D14 was built to stop. The first suite covers what can
+break silently: URL canonicalisation (the D10 dedupe key — if it drifts, every reel is
+re-downloaded and nothing errors), parsing a pasted AI reply (D9 tier 3), and the analysis
+validator.
+
+**Build rule that follows:** a change to canonicalisation, to the analysis contract, or to
+auth ships **with** the test that proves it. A pull request that changes behaviour and adds
+no test has not passed this gate, whatever CI says.
+
+**Recorded because it was found while building this:** the secret scan's first version
+matched credential *prefixes* and failed on the clean repo — `index.html`'s token field
+literally reads `ghp_... or github_pat_...`. A gate that cries wolf gets switched off, so
+it now matches credential shapes, and was verified both ways: silent on the clean repo,
+still catches a planted key.
