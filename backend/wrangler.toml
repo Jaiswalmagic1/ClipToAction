@@ -1,0 +1,15 @@
+name = "cliptoaction-api"
+main = "src/worker.js"
+compatibility_date = "2026-08-12"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cliptoaction"
+database_id = "set-after-running-wrangler-d1-create"
+
+[vars]
+FIREBASE_PROJECT_ID = "set-to-your-firebase-project-id"
+
+# Secrets (set with `wrangler secret put <NAME>`, never in this file):
+#   KEY_ENCRYPTION_SECRET  — base64 32-byte key, encrypts users' provider API keys at rest
+#   WORKER_SERVICE_TOKEN   — shared secret the PC worker uses to claim the queue
