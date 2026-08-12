@@ -1,0 +1,26 @@
+#!/bin/sh
+# PM Discipline — prepare-commit-msg hook (ClipToAction, added 2026-08-12)
+#
+# This is the hook type that runs with the commit message file writable and
+# before the commit object is created, so it is the only correct place to
+# append the tag. pre-commit has already validated review_pass.json for this
+# same commit; if the file is present the review passed — append the tag and
+# delete it. If it is absent, no code files were staged and there is nothing
+# to do.
+
+MSG_FILE="$1"
+COMMIT_SOURCE="$2"
+REVIEW_FILE="review_pass.json"
+
+# A merge or squash commits already-reviewed history — the review applies to
+# an authored commit, not to the merge of one.
+if [ "$COMMIT_SOURCE" = "merge" ] || [ "$COMMIT_SOURCE" = "squash" ]; then
+  exit 0
+fi
+
+if [ -f "$REVIEW_FILE" ]; then
+  printf '\n[PM-REVIEWED]\n' >> "$MSG_FILE"
+  rm -f "$REVIEW_FILE"
+fi
+
+exit 0

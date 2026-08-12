@@ -2,6 +2,10 @@
 .env.*
 !.env.example
 
+# Transient PM Discipline checklist — created per commit, consumed and deleted
+# by .githooks/prepare-commit-msg. Never committed.
+review_pass.json
+
 node_modules/
 __pycache__/
 *.pyc

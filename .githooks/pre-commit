@@ -1,0 +1,79 @@
+#!/bin/sh
+# PM Discipline — pre-commit hook (ClipToAction, added 2026-08-12)
+# See DECISION_LOG.md → D14 for why this exists and why it is split in two.
+#
+# VALIDATION ONLY. This hook deliberately does not claim to add the
+# [PM-REVIEWED] tag: a pre-commit hook runs before the commit object exists
+# and cannot rewrite a message already passed via `git commit -m`. The tag is
+# appended by .githooks/prepare-commit-msg, which runs immediately after this
+# and consumes review_pass.json itself.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+
+CODE_EXTENSIONS="\.py$|\.html$|\.js$|\.mjs$|\.sql$"
+REVIEW_FILE="review_pass.json"
+
+CODE_CHANGED=$(git diff --cached --name-only | grep -E "$CODE_EXTENSIONS" | grep -v "$REVIEW_FILE" | head -1)
+
+if [ -z "$CODE_CHANGED" ]; then
+  exit 0  # No code files staged — docs/config commit, nothing to gate.
+fi
+
+if [ ! -f "$REVIEW_FILE" ]; then
+  echo ""
+  echo "BLOCKED: code files are staged but $REVIEW_FILE is missing."
+  echo "Copy review_pass.template.json to $REVIEW_FILE and fill every field."
+  echo "The five gstack steps are Understand, Plan, Build, Review, Ship — this"
+  echo "file is your record that Review actually happened before Ship."
+  echo ""
+  exit 1
+fi
+
+node - << 'NODEEOF'
+const fs = require("fs");
+
+let review;
+try {
+  review = JSON.parse(fs.readFileSync("review_pass.json", "utf8"));
+} catch (error) {
+  console.error(`\nBLOCKED: review_pass.json is not valid JSON: ${error.message}\n`);
+  process.exit(1);
+}
+
+// null means "any non-empty value"; a string means it must match exactly.
+const required = {
+  understand: "done",
+  plan_approved: "yes",
+  review_matches_plan: "yes",
+  review_breaks_anything: "no",
+  review_security: "clean",
+  decision_log_current: "yes",
+  verify_instruction: null
+};
+
+const problems = [];
+for (const [field, expected] of Object.entries(required)) {
+  const value = String(review[field] ?? "").trim();
+  if (!value) problems.push(`  - '${field}' is empty`);
+  else if (expected && value !== expected) {
+    problems.push(`  - '${field}' must be '${expected}', got '${value}'`);
+  }
+}
+
+if (problems.length) {
+  console.error("\nBLOCKED: review_pass.json has errors:");
+  problems.forEach((line) => console.error(line));
+  console.error("\nFix the checklist and retry.\n");
+  process.exit(1);
+}
+
+console.log(`\nPM review passed. verify: ${review.verify_instruction}\n`);
+NODEEOF
+
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
+# Passed. review_pass.json is left in place on purpose — prepare-commit-msg
+# reads it next to inject the tag, then deletes it.
+exit 0
