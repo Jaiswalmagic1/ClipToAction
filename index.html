@@ -135,6 +135,10 @@
     }
     .panel { padding: 14px; margin-bottom: 14px; }
     .help-text { margin: 0; color: var(--muted); font-size: 14px; }
+    .sync-status { margin: 10px 0 0; font-size: 13px; font-weight: 700; }
+    .sync-status.ok { color: var(--accent); }
+    .sync-status.error { color: var(--danger); }
+    .sync-status.syncing { color: var(--warn); }
     details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
     details summary { cursor: pointer; color: var(--accent-dark); font-weight: 700; }
     @media (max-width: 1050px) {
@@ -205,6 +209,18 @@
           <button type="button" class="secondary" id="sampleBtn">Add Sample</button>
         </div>
       </form>
+
+      <details open>
+        <summary>GitHub Sync</summary>
+        <p class="help-text">Links save to <code>data/ideas.json</code> in this repo. Your token stays in this browser only.</p>
+        <label for="githubToken">GitHub token (repo access)</label>
+        <input id="githubToken" type="password" autocomplete="off" placeholder="ghp_... or github_pat_...">
+        <div class="actions">
+          <button type="button" class="secondary" id="saveTokenBtn">Connect</button>
+          <button type="button" class="secondary" id="syncNowBtn">Sync now</button>
+        </div>
+        <p id="syncStatus" class="sync-status">Not connected — ideas stay in this browser only.</p>
+      </details>
     </aside>
 
     <section>
@@ -231,12 +247,26 @@
 
   <script>
     const storeKey = "idea-action-board-v1";
+    const tokenKey = "cliptoaction-github-token";
+    const shaKey = "cliptoaction-github-sha";
+    const GITHUB = {
+      owner: "Jaiswalmagic1",
+      repo: "ClipToAction",
+      path: "data/ideas.json"
+    };
+
     const form = document.getElementById("ideaForm");
     const board = document.getElementById("board");
     const stats = document.getElementById("stats");
     const sampleBtn = document.getElementById("sampleBtn");
+    const saveTokenBtn = document.getElementById("saveTokenBtn");
+    const syncNowBtn = document.getElementById("syncNowBtn");
+    const githubTokenInput = document.getElementById("githubToken");
+    const syncStatusEl = document.getElementById("syncStatus");
     const filterButtons = document.querySelectorAll("[data-filter]");
     let filter = "All";
+    let fileSha = localStorage.getItem(shaKey) || null;
+    let syncTimer = null;
 
 
     function extractUrl(...values) {
@@ -292,12 +322,192 @@
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("service-worker.js");
     }
+
+    function getToken() {
+      return localStorage.getItem(tokenKey) || "";
+    }
+
+    function setSyncStatus(kind, message) {
+      syncStatusEl.className = `sync-status ${kind}`;
+      syncStatusEl.textContent = message;
+    }
+
+    function toBase64Utf8(text) {
+      const bytes = new TextEncoder().encode(text);
+      let binary = "";
+      bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+      return btoa(binary);
+    }
+
+    function fromBase64Utf8(base64) {
+      const binary = atob(base64.replace(/\n/g, ""));
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+
+    async function githubRequest(path, options = {}) {
+      const token = getToken();
+      if (!token) throw new Error("GitHub token not set");
+
+      const response = await fetch(`https://api.github.com${path}`, {
+        ...options,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+          ...(options.headers || {})
+        }
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || `GitHub API error (${response.status})`);
+      }
+
+      if (response.status === 204) return null;
+      return response.json();
+    }
+
+    async function fetchIdeasFromGitHub() {
+      const token = getToken();
+      if (!token) return null;
+
+      const response = await fetch(
+        `https://api.github.com/repos/${GITHUB.owner}/${GITHUB.repo}/contents/${GITHUB.path}`,
+        {
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "X-GitHub-Api-Version": "2022-11-28"
+          }
+        }
+      );
+
+      if (response.status === 404) {
+        fileSha = null;
+        localStorage.removeItem(shaKey);
+        return [];
+      }
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || `GitHub API error (${response.status})`);
+      }
+
+      const data = await response.json();
+      fileSha = data.sha;
+      localStorage.setItem(shaKey, fileSha);
+      const parsed = JSON.parse(fromBase64Utf8(data.content));
+      return Array.isArray(parsed) ? parsed : [];
+    }
+
+    async function pushIdeasToGitHub(ideas) {
+      const payload = {
+        message: "Update saved video ideas",
+        content: toBase64Utf8(JSON.stringify(ideas, null, 2))
+      };
+      if (fileSha) payload.sha = fileSha;
+
+      const data = await githubRequest(
+        `/repos/${GITHUB.owner}/${GITHUB.repo}/contents/${GITHUB.path}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        }
+      );
+
+      fileSha = data.content.sha;
+      localStorage.setItem(shaKey, fileSha);
+    }
+
+    function mergeIdeas(localIdeas, remoteIdeas) {
+      const byId = new Map();
+      [...localIdeas, ...remoteIdeas].forEach((idea) => {
+        const existing = byId.get(idea.id);
+        if (!existing || new Date(idea.createdAt) > new Date(existing.createdAt)) {
+          byId.set(idea.id, idea);
+        }
+      });
+      return [...byId.values()].sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      );
+    }
+
     function loadIdeas() {
       return JSON.parse(localStorage.getItem(storeKey) || "[]");
     }
 
-    function saveIdeas(ideas) {
+    function saveIdeasLocal(ideas) {
       localStorage.setItem(storeKey, JSON.stringify(ideas));
+    }
+
+    function persistIdeas(ideas) {
+      saveIdeasLocal(ideas);
+      if (getToken()) scheduleGitHubSync(ideas);
+    }
+
+    function scheduleGitHubSync(ideas) {
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => syncToGitHub(ideas), 400);
+    }
+
+    async function syncToGitHub(ideas = loadIdeas()) {
+      if (!getToken()) {
+        setSyncStatus("idle", "Not connected — ideas stay in this browser only.");
+        return;
+      }
+
+      setSyncStatus("syncing", "Saving to GitHub...");
+      try {
+        await pushIdeasToGitHub(ideas);
+        setSyncStatus("ok", `Saved to GitHub (${ideas.length} idea${ideas.length === 1 ? "" : "s"})`);
+      } catch (error) {
+        setSyncStatus("error", error.message);
+      }
+    }
+
+    async function loadFromGitHubAndMerge() {
+      setSyncStatus("syncing", "Loading from GitHub...");
+      try {
+        const remoteIdeas = await fetchIdeasFromGitHub();
+        const localIdeas = loadIdeas();
+
+        if (remoteIdeas.length === 0 && localIdeas.length > 0) {
+          await pushIdeasToGitHub(localIdeas);
+          setSyncStatus("ok", `Uploaded ${localIdeas.length} local idea${localIdeas.length === 1 ? "" : "s"} to GitHub`);
+          return;
+        }
+
+        if (remoteIdeas.length > 0) {
+          const merged = mergeIdeas(localIdeas, remoteIdeas);
+          saveIdeasLocal(merged);
+          if (JSON.stringify(merged) !== JSON.stringify(remoteIdeas)) {
+            await pushIdeasToGitHub(merged);
+          }
+          setSyncStatus("ok", `Synced from GitHub (${merged.length} idea${merged.length === 1 ? "" : "s"})`);
+          return;
+        }
+
+        setSyncStatus("ok", "GitHub connected — ready to save");
+      } catch (error) {
+        setSyncStatus("error", error.message);
+      }
+    }
+
+    async function initApp() {
+      const savedToken = getToken();
+      if (savedToken) githubTokenInput.value = savedToken;
+
+      render();
+
+      if (savedToken) {
+        await loadFromGitHubAndMerge();
+        render();
+      }
+
+      loadPendingShare();
+      render();
     }
 
     function scoreIdea(idea) {
@@ -330,18 +540,18 @@
       idea.status = suggestedDecision(idea);
       const ideas = loadIdeas();
       ideas.unshift(idea);
-      saveIdeas(ideas);
+      persistIdeas(ideas);
       render();
     }
 
     function updateStatus(id, status) {
       const ideas = loadIdeas().map((idea) => idea.id === id ? { ...idea, status } : idea);
-      saveIdeas(ideas);
+      persistIdeas(ideas);
       render();
     }
 
     function deleteIdea(id) {
-      saveIdeas(loadIdeas().filter((idea) => idea.id !== id));
+      persistIdeas(loadIdeas().filter((idea) => idea.id !== id));
       render();
     }
 
@@ -357,9 +567,25 @@
       `).join("");
     }
 
+    function safeHref(url) {
+      // Only http(s) links become anchors. A javascript: or data: URL here would run
+      // when clicked, and once this list syncs from the API the URL is no longer
+      // guaranteed to have come from this browser.
+      return /^https?:\/\//i.test(String(url || "")) ? escapeHtml(url) : "";
+    }
+
+    function jsString(value) {
+      // For values interpolated into an onclick attribute. escapeHtml is not enough:
+      // the browser HTML-decodes the attribute before parsing it as JS, so an escaped
+      // quote comes back out as a real one.
+      return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+
     function renderCard(idea) {
       const date = new Date(idea.createdAt).toLocaleDateString();
-      const link = idea.url ? `<p><a href="${idea.url}" target="_blank" rel="noreferrer">Open video</a></p>` : "";
+      const href = safeHref(idea.url);
+      const link = href ? `<p><a href="${href}" target="_blank" rel="noreferrer">Open video</a></p>` : "";
+      const id = jsString(idea.id);
       return `
         <article class="card">
           <h4>${escapeHtml(idea.title)}</h4>
@@ -373,10 +599,10 @@
           <p><strong>Idea:</strong> ${escapeHtml(idea.notes || "No note added.")}</p>
           <p><strong>Action:</strong> ${escapeHtml(idea.action || "Define next action.")}</p>
           <div class="card-actions">
-            <button type="button" onclick="updateStatus('${idea.id}', 'Try')">Try</button>
-            <button type="button" class="secondary" onclick="updateStatus('${idea.id}', 'Save')">Save</button>
-            <button type="button" class="secondary" onclick="updateStatus('${idea.id}', 'Ignore')">Ignore</button>
-            <button type="button" class="danger" onclick="deleteIdea('${idea.id}')">Delete</button>
+            <button type="button" onclick="updateStatus('${id}', 'Try')">Try</button>
+            <button type="button" class="secondary" onclick="updateStatus('${id}', 'Save')">Save</button>
+            <button type="button" class="secondary" onclick="updateStatus('${id}', 'Ignore')">Ignore</button>
+            <button type="button" class="danger" onclick="deleteIdea('${id}')">Delete</button>
           </div>
         </article>
       `;
@@ -432,6 +658,20 @@
       });
     });
 
+    saveTokenBtn.addEventListener("click", async () => {
+      const token = githubTokenInput.value.trim();
+      if (!token) {
+        localStorage.removeItem(tokenKey);
+        setSyncStatus("idle", "Not connected — ideas stay in this browser only.");
+        return;
+      }
+      localStorage.setItem(tokenKey, token);
+      await loadFromGitHubAndMerge();
+      render();
+    });
+
+    syncNowBtn.addEventListener("click", () => syncToGitHub());
+
     filterButtons.forEach((button) => {
       button.addEventListener("click", () => {
         filter = button.dataset.filter;
@@ -439,8 +679,8 @@
         render();
       });
     });
-    loadPendingShare();
-    render();
+
+    initApp();
   </script>
 </body>
 </html>

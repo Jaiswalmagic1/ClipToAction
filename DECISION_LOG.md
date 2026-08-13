@@ -219,6 +219,37 @@ pre-commit hook runs before the commit object exists and cannot rewrite a messag
 via `git commit -m` — that is why tag injection lives in `prepare-commit-msg` here, and
 why the pre-commit hook only validates.
 
+### D18 — Only the Worker writes to a shared row. Anything a user typed is stored against that user.
+**Date:** 2026-08-13
+**Why:** the independent review before the first merge found that a copy-paste analysis
+(D9 tier 3) was written into the **shared** `analyses` table with only a clip-level
+ownership check, and that it also set `sources.state='analyzed'`. Any signed-in user could
+therefore publish a fabricated analysis to everyone who saved a reel, and stop that reel
+ever being downloaded, permanently.
+**Decided:** `analyses.user_id` — `''` means Worker-produced and shared; anything else is
+one user's paste and only that user sees it. A paste never sets `sources.state`.
+**The general rule this states:** a row that other people read may only be written by the
+Worker from a source the Worker itself obtained. User-supplied content goes in a row keyed
+to that user. Apply this to every shared table added later — topics, merged summaries,
+anything the dedupe model introduces.
+
+### D19 — The dedupe key must never merge two different videos, and never trust a host suffix
+**Date:** 2026-08-13
+**Why:** the same review found the canonicaliser dropped the entire query string, so every
+`facebook.com/watch?v=<id>` — Facebook's main desktop video URL — collapsed onto one
+`sources` row. No attacker needed: the first saver's video was downloaded and every other
+user silently attached to it, seeing a stranger's transcript as their own clip. Separately,
+`endsWith("youtube.com")` also matched `myyoutube.com`, letting anyone claim a real video's
+canonical key while pointing the download at a host they controlled.
+**Decided:** identifying query parameters are kept per host and tracking parameters are
+dropped; host matching is `host === domain || host.endsWith("." + domain)`, never a bare
+suffix; and only hosts on the platform allowlist can be saved at all.
+**Build rule:** any change to `canonical.js` ships with a test asserting two different
+videos do not collide, and that a lookalike host does not borrow a real one's key.
+**Second job this allowlist does:** it is the outer wall against pointing the PC worker at
+`192.168.x.x` or a cloud metadata address. `worker-pc/worker.py` re-checks resolved
+addresses independently, because that worker runs on a home LAN.
+
 ### D15 — GitHub auto-push stays in force for this project
 **Date:** 2026-08-12
 **Superseded by:** D16, the following day. **No longer the rule.**

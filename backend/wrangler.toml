@@ -9,6 +9,8 @@ database_id = "set-after-running-wrangler-d1-create"
 
 [vars]
 FIREBASE_PROJECT_ID = "set-to-your-firebase-project-id"
+# The one origin allowed to call this API from a browser. Leave unset only for local work.
+APP_ORIGIN = "https://jaiswalmagic1.github.io"
 
 # Secrets (set with `wrangler secret put <NAME>`, never in this file):
 #   KEY_ENCRYPTION_SECRET  — base64 32-byte key, encrypts users' provider API keys at rest

@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { canonicalUrl, platformFromUrl, extractUrl } from "../src/canonical.js";
+import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "../src/canonical.js";
 
 test("every YouTube link shape collapses to one canonical form", () => {
   const expected = "https://youtube.com/watch?v=dQw4w9WgXcQ";
@@ -34,6 +34,58 @@ test("share-sheet tracking parameters do not create a second source row", () => 
     canonicalUrl("https://www.facebook.com/reel/998877?fbclid=xyz"),
     canonicalUrl("https://facebook.com/reel/998877")
   );
+});
+
+test("Facebook watch links keep their video id", () => {
+  // The bug this pins: the fallback dropped the whole query string, so every
+  // facebook.com/watch?v=<id> — Facebook's main desktop video URL — collapsed onto one
+  // key. The first saver's video was downloaded and everyone else silently attached to it.
+  assert.notEqual(
+    canonicalUrl("https://www.facebook.com/watch?v=1111111"),
+    canonicalUrl("https://www.facebook.com/watch?v=2222222")
+  );
+  assert.equal(
+    canonicalUrl("https://www.facebook.com/watch?v=1111111&fbclid=trackme"),
+    canonicalUrl("https://facebook.com/watch?v=1111111")
+  );
+});
+
+test("parameter order cannot fork the key", () => {
+  assert.equal(
+    canonicalUrl("https://vimeo.com/x?b=2&a=1"),
+    canonicalUrl("https://vimeo.com/x?a=1&b=2")
+  );
+});
+
+test("a lookalike host never borrows a real platform's canonical key", () => {
+  // `endsWith("youtube.com")` also matched `myyoutube.com`. That let an attacker claim the
+  // canonical key of a real video while the download pointed at a host they controlled.
+  assert.notEqual(
+    canonicalUrl("https://myyoutube.com/watch?v=dQw4w9WgXcQ"),
+    canonicalUrl("https://youtube.com/watch?v=dQw4w9WgXcQ")
+  );
+  assert.notEqual(
+    canonicalUrl("https://evil-instagram.com/reel/ABC123"),
+    canonicalUrl("https://instagram.com/reel/ABC123")
+  );
+  assert.equal(platformFromUrl("https://myyoutube.com/watch?v=x"), "Unknown");
+  assert.equal(platformFromUrl("https://evil-instagram.com/reel/x"), "Unknown");
+  // A real subdomain still resolves to the platform.
+  assert.equal(platformFromUrl("https://m.youtube.com/watch?v=x"), "YouTube");
+});
+
+test("only http and https are accepted", () => {
+  assert.throws(() => canonicalUrl("javascript:alert(1)"));
+  assert.throws(() => canonicalUrl("data:text/html,hi"));
+  assert.throws(() => canonicalUrl("file:///etc/passwd"));
+});
+
+test("isSupportedUrl gates what the PC worker will ever fetch", () => {
+  assert.equal(isSupportedUrl("https://instagram.com/reel/ABC"), true);
+  assert.equal(isSupportedUrl("https://youtu.be/abc"), true);
+  assert.equal(isSupportedUrl("http://169.254.169.254/latest/meta-data/"), false);
+  assert.equal(isSupportedUrl("http://192.168.1.1/admin"), false);
+  assert.equal(isSupportedUrl("https://evil.example.com/x"), false);
 });
 
 test("different reels stay different", () => {
