@@ -35,11 +35,25 @@ notes are all derived later, never asked for up front.
 
 ### D2 — The Telegram bot is the mobile inbox; the PWA share target is secondary
 **Date:** 2026-06-28
-**Why:** Telegram is already installed, already in the Android share sheet, and queues
-undelivered messages for roughly 24 hours — so a link shared while the worker is offline
-is not lost.
-**Consequence:** the bot must stay dumb. It extracts a URL and stores it; it never
-analyses, never enriches, never blocks on anything slow.
+**Superseded by:** D17. **No longer the rule.**
+**Was:** Telegram as the primary capture path, because it is already installed and already
+in the Android share sheet.
+
+### D17 — The PWA share target is the only capture path. The Telegram bot is removed.
+**Date:** 2026-08-13
+**Supersedes:** D2.
+**Decided:** `telegram-bot/` is deleted. The installed PWA registers in the Android share
+sheet and does the same job.
+**Why:** the bot was built before the app existed. It is now a second capture path with a
+different identity model — it writes to the old `data/ideas.json` (D3, itself superseded)
+and has no Firebase user, so a link it captures cannot belong to anyone. Keeping it would
+mean maintaining two capture paths and two auth models to save one tap.
+**What is not lost:** Telegram's ~24h message queue was D2's real advantage. The backend
+replaces it — a saved link sits in `sources` as `pending` until the PC worker runs, so
+nothing is lost while the PC is off either.
+**Reversible:** the code stays in git history. If a Telegram entry point is ever wanted —
+for users without the app installed, say — it comes back as a client of the D6 API with a
+real user identity, not as a writer to a JSON file.
 
 ### D3 — `data/ideas.json` in the GitHub repo is the store of record
 **Date:** 2026-06-20

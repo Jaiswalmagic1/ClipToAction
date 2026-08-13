@@ -29,9 +29,6 @@ jobs:
       - name: Worker syntax check
         run: for f in backend/src/*.js; do node --check "$f"; done
 
-      - name: Telegram bot syntax check
-        run: node --check telegram-bot/bot.js
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

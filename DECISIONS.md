@@ -21,7 +21,7 @@ The reel is a seed, not the destination.
 | # | Topic | Decision |
 |---|---|---|
 | D1 | Capture | Link only. The user sends a URL and nothing else, ever. |
-| D2 | Mobile inbox | Telegram bot is primary; the PWA share target is secondary. The bot stays dumb. |
+| D2 | ~~Mobile inbox~~ | ~~Telegram bot is primary~~ — **superseded by D17.** |
 | D3 | ~~Storage~~ | ~~`data/ideas.json` in the repo~~ — **superseded by D6.** Its GitHub-token sync in `index.html` must be removed, not left running. |
 | D4 | Extraction | Download the video, transcribe the audio. Not captions. Breaches Instagram/Facebook ToS — accepted knowingly. |
 | D5 | Worker host | Jaiswal's PC for now. Must stay host-agnostic — moving to a VM is config, never a rewrite. |
@@ -35,6 +35,7 @@ The reel is a seed, not the destination.
 | D13 | External APIs | Request shapes come from official docs, never from memory. Unverified adapters are labelled as such. |
 | D14 | Discipline | gstack + PM Discipline enforced in this repo: decision log, pre-commit gate, server-side check. |
 | D15 | ~~Pushing~~ | ~~Golden Rule 6 stands — auto-push~~ — **superseded by D16.** |
+| D17 | Capture path | The PWA share target is the only way in. The Telegram bot is removed — one capture path, one identity model. Recoverable from git history if ever wanted. |
 | D16 | Releases | `main` is live and a push to it is a release. Branches are where work is built and proven, and push freely. Nothing crosses to `main` without passing CI + the PM tag + branch protection. |
 
 ---
