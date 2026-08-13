@@ -54,6 +54,28 @@ cd backend && npm test
 proves it.** A PR that changes behaviour and adds no test has not passed this gate,
 whatever CI reports.
 
+### Testing before release (D20)
+
+Green CI proves the logic under test. It does not prove the thing runs. Three levels, all
+free, in order:
+
+```bash
+cd backend && npm run dev
+```
+
+```bash
+cd backend && npm run deploy:staging
+```
+
+Only after a real reel has gone end to end through staging:
+
+```bash
+cd backend && npm run deploy:production
+```
+
+`wrangler deploy` with no `--env` has no database binding on purpose — production is always
+named explicitly, and never shares a secret value with staging.
+
 ### One-time setup on GitHub (not yet done)
 
 Settings → Branches → Add branch ruleset for `main`: require a pull request, and require

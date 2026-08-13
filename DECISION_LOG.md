@@ -250,6 +250,29 @@ videos do not collide, and that a lookalike host does not borrow a real one's ke
 `192.168.x.x` or a cloud metadata address. `worker-pc/worker.py` re-checks resolved
 addresses independently, because that worker runs on a home LAN.
 
+### D20 — Nothing reaches production untested. Local, then staging, then production.
+**Date:** 2026-08-13
+**Why:** Jaiswal's instruction — *"testing is needed before we release."* D16 already made
+`main` a release, but a green CI only proves the logic under test. Two independent reviews
+had already found defects that no test would have caught, and at that point the code had
+still never run against real infrastructure at all.
+**Decided — three levels, each proving something the one before cannot:**
+
+| Level | Command | Proves |
+|---|---|---|
+| Local | `npm run dev` (`wrangler dev --local`) | The Worker runs and its queries work. No account, nothing deployed. |
+| Staging | `npm run deploy:staging` | Real Cloudflare, real D1, real Firebase tokens — own database, no real users. |
+| Production | `npm run deploy:production` | — |
+
+**Binding rules:**
+- `wrangler deploy` with no `--env` has **no database binding**, so it cannot quietly ship
+  to production. Production is always named explicitly.
+- **Staging and production use different secret values.** A staging `WORKER_SERVICE_TOKEN`
+  that also works in production means a test run can reach real users' data.
+- A change is not releasable until it has been run through staging with a real reel — not
+  merely proven by tests. Green CI is necessary, not sufficient.
+**Cost:** none. Cloudflare's free tier covers a second Worker and a second D1.
+
 ### D15 — GitHub auto-push stays in force for this project
 **Date:** 2026-08-12
 **Superseded by:** D16, the following day. **No longer the rule.**

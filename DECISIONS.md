@@ -35,6 +35,7 @@ The reel is a seed, not the destination.
 | D13 | External APIs | Request shapes come from official docs, never from memory. Unverified adapters are labelled as such. |
 | D14 | Discipline | gstack + PM Discipline enforced in this repo: decision log, pre-commit gate, server-side check. |
 | D15 | ~~Pushing~~ | ~~Golden Rule 6 stands — auto-push~~ — **superseded by D16.** |
+| D20 | Environments | Local → staging → production, all free. Production is never the default deploy target and never shares a secret with staging. A change is not releasable until a real reel has gone through staging. |
 | D19 | Dedupe key | Identifying query params kept per host, tracking dropped; host matching is exact or a real subdomain, never a bare suffix; only allowlisted platforms can be saved. Changes ship with a collision test. |
 | D18 | Shared rows | Only the Worker writes a row other people read. Anything a user typed is stored against that user. |
 | D17 | Capture path | The PWA share target is the only way in. The Telegram bot is removed — one capture path, one identity model. Recoverable from git history if ever wanted. |

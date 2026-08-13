@@ -2,16 +2,49 @@ name = "cliptoaction-api"
 main = "src/worker.js"
 compatibility_date = "2026-08-12"
 
-[[d1_databases]]
+# There is deliberately NO database binding or deploy target at the top level. Every real
+# deploy names its environment, so `wrangler deploy` with no --env cannot quietly ship to
+# production (D20). Use the npm scripts:
+#
+#   npm run deploy:staging       -> cliptoaction-api-staging  + cliptoaction-staging D1
+#   npm run deploy:production    -> cliptoaction-api          + cliptoaction D1
+#
+# Secrets are per environment and must be set for BOTH:
+#   wrangler secret put KEY_ENCRYPTION_SECRET --env staging
+#   wrangler secret put WORKER_SERVICE_TOKEN  --env staging
+#
+#   KEY_ENCRYPTION_SECRET  base64 that decodes to exactly 32 bytes (the Worker asserts it)
+#   WORKER_SERVICE_TOKEN   the shared secret the PC worker uses to claim the queue
+#
+# Use DIFFERENT secret values in staging and production. A staging service token that also
+# works in production means a test run can reach real users' data.
+
+# ---------------------------------------------------------------- staging
+# Real Cloudflare infrastructure, its own database, no real users. Everything gets proven
+# here before production sees it.
+
+[env.staging]
+name = "cliptoaction-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "cliptoaction-staging"
+database_id = "set-after-wrangler-d1-create-cliptoaction-staging"
+
+[env.staging.vars]
+FIREBASE_PROJECT_ID = "set-to-your-firebase-project-id"
+APP_ORIGIN = "http://localhost:8788"
+
+# ---------------------------------------------------------------- production
+
+[env.production]
+name = "cliptoaction-api"
+
+[[env.production.d1_databases]]
 binding = "DB"
 database_name = "cliptoaction"
-database_id = "set-after-running-wrangler-d1-create"
+database_id = "set-after-wrangler-d1-create-cliptoaction"
 
-[vars]
+[env.production.vars]
 FIREBASE_PROJECT_ID = "set-to-your-firebase-project-id"
-# The one origin allowed to call this API from a browser. Leave unset only for local work.
 APP_ORIGIN = "https://jaiswalmagic1.github.io"
-
-# Secrets (set with `wrangler secret put <NAME>`, never in this file):
-#   KEY_ENCRYPTION_SECRET  — base64 32-byte key, encrypts users' provider API keys at rest
-#   WORKER_SERVICE_TOKEN   — shared secret the PC worker uses to claim the queue
