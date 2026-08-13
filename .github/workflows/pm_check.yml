@@ -33,9 +33,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # A new branch reports an all-zero "before"; fall back to the tip commit alone.
+          # The first push of a new branch reports an all-zero "before" -- which is the
+          # common case (checkout -b, several commits, push). Falling back to the tip
+          # commit alone there would re-create the very hole this job exists to close, so
+          # fall back to everything since the branch left main instead.
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            RANGE="$HEAD_SHA~1..$HEAD_SHA"
+            BASE=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || true)
+          fi
+
+          if [ -z "$BASE" ]; then
+            RANGE="$HEAD_SHA"           # no shared history at all: check every commit
           else
             RANGE="$BASE..$HEAD_SHA"
           fi

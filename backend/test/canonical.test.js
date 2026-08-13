@@ -50,6 +50,29 @@ test("Facebook watch links keep their video id", () => {
   );
 });
 
+test("X share links dedupe despite their per-share token", () => {
+  // X's share sheet appends ?s=20&t=<random>, different every time. Left in, every share
+  // of one tweet became a new source: a fresh download, transcription and AI call each.
+  const expected = canonicalUrl("https://x.com/someone/status/123");
+  assert.equal(canonicalUrl("https://x.com/someone/status/123?s=20&t=AbCdEf"), expected);
+  assert.equal(canonicalUrl("https://x.com/someone/status/123?s=46&t=ZzYyXx"), expected);
+  assert.equal(canonicalUrl("https://twitter.com/someone/status/123"), expected);
+});
+
+test("Instagram links dedupe whether or not the username is in the path", () => {
+  assert.equal(
+    canonicalUrl("https://www.instagram.com/somecreator/reel/ABC123/"),
+    canonicalUrl("https://instagram.com/reel/ABC123")
+  );
+});
+
+test("mobile and desktop Facebook hosts are the same site", () => {
+  assert.equal(
+    canonicalUrl("https://m.facebook.com/watch?v=555"),
+    canonicalUrl("https://www.facebook.com/watch?v=555")
+  );
+});
+
 test("parameter order cannot fork the key", () => {
   assert.equal(
     canonicalUrl("https://vimeo.com/x?b=2&a=1"),

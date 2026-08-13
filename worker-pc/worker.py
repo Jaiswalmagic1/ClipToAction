@@ -157,6 +157,18 @@ def post_transcript(source_id, text, lang, title, duration):
     response.raise_for_status()
 
 
+def classify_failure(error):
+    """Turns an exception into text that is safe for every user of a shared row to read."""
+    if isinstance(error, ValueError):
+        # Our own checks -- the messages are written to be shown (too long, private host).
+        return str(error)[:200]
+    if isinstance(error, requests.RequestException):
+        return "Could not reach ClipToAction while processing this video."
+    if isinstance(error, FileNotFoundError):
+        return "The audio could not be extracted from this video."
+    return "This video could not be downloaded or transcribed."
+
+
 def cleanup(source_id):
     """Removes every file this source produced, not just the .wav we ended up with.
 
@@ -181,8 +193,11 @@ def process(source):
     # strand every source in this batch, and the operator would see clips stuck on
     # "pending" with no error anywhere.
     except Exception as error:  # noqa: BLE001
+        # The full text goes to this machine's console only. What gets posted is a short
+        # classification, because sources.error is read by every user who saved the reel
+        # and an exception string can carry a URL, a path, or a provider's response.
         print(f"  failed: {type(error).__name__}: {error}")
-        report_failure(source["id"], f"{type(error).__name__}: {error}")
+        report_failure(source["id"], classify_failure(error))
     finally:
         cleanup(source["id"])
 

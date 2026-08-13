@@ -70,12 +70,19 @@ export async function verifyFirebaseToken(token, projectId) {
   );
 
   const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
-  const valid = await crypto.subtle.verify(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    base64UrlToBytes(parts[2]),
-    signed
-  );
+  let valid;
+  try {
+    // Decoding happens inside the try: a non-base64 signature is a bad token from an
+    // unauthenticated caller, not a server fault, and must not surface as a 500.
+    valid = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      base64UrlToBytes(parts[2]),
+      signed
+    );
+  } catch {
+    throw new AuthError("Bad token signature");
+  }
   if (!valid) throw new AuthError("Bad token signature");
 
   const now = Math.floor(Date.now() / 1000);

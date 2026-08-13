@@ -70,6 +70,10 @@ Put the returned `database_id` into `wrangler.toml`, set `FIREBASE_PROJECT_ID`, 
 wrangler d1 execute cliptoaction --remote --file=./schema.sql
 ```
 
+**On a database that already exists, that command does nothing** — every statement in
+`schema.sql` is `CREATE TABLE IF NOT EXISTS`, so schema changes never land. Apply the files
+in `migrations/` instead, in order. A fresh database needs only `schema.sql`.
+
 Generate and store the two secrets:
 
 ```bash

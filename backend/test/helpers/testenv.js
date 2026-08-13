@@ -75,8 +75,11 @@ export async function createTestEnv() {
   const providerCalls = [];
   globalThis.fetch = async (url, options) => {
     if (String(url) === JWKS_URL) {
+      // max-age=0 so auth.js re-fetches on every verification. Tests that need an
+      // isolated database create a second harness with its own signing key, and a cached
+      // key set from the first would reject every token the second one mints.
       return new Response(JSON.stringify(jwks), {
-        headers: { "Content-Type": "application/json", "cache-control": "max-age=3600" }
+        headers: { "Content-Type": "application/json", "cache-control": "max-age=0" }
       });
     }
     // Any AI provider call in a test is recorded and refused, so no test can reach the

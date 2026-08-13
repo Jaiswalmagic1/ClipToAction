@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import worker from "../src/worker.js";
 import { createTestEnv } from "./helpers/testenv.js";
 
+const SERVICE_TOKEN = "service-token-for-tests";
+
 let harness;
 let alice;
 let bob;
@@ -181,6 +183,9 @@ describe("a pasted analysis stays with the user who pasted it", () => {
     const saved = await saveClip(alice, PASTE_REEL);
     const sourceId = saved.body.clip.source_id;
 
+    // The transcript endpoint now only completes a source that is actually in flight,
+    // so claim it first the way the PC worker would.
+    await harness.call(worker, "/v1/queue?limit=10", { serviceToken: "service-token-for-tests" });
     await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
       method: "POST",
       serviceToken: "service-token-for-tests",
@@ -229,6 +234,7 @@ describe("delta sync", () => {
     const alicesClip = await saveClip(alice, url);
     const sourceId = alicesClip.body.clip.source_id;
 
+    await harness.call(worker, "/v1/queue?limit=10", { serviceToken: "service-token-for-tests" });
     await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
       method: "POST",
       serviceToken: "service-token-for-tests",
@@ -248,28 +254,120 @@ describe("delta sync", () => {
   });
 });
 
+describe("the download queue", () => {
+  const SERVICE = "service-token-for-tests";
+
+  // Each test here gets its own database, so counts are exact rather than "whatever
+  // earlier tests happened to leave behind" — the flaw that made the first version of
+  // these tests pass with the fix removed.
+  async function queueHarness(sourceCount) {
+    const local = await createTestEnv();
+    const token = await local.mintToken("queueuser");
+    for (let i = 0; i < sourceCount; i += 1) {
+      await local.call(worker, "/v1/clips", {
+        method: "POST",
+        token,
+        body: { url: `https://instagram.com/reel/Q${i}/` }
+      });
+    }
+    return local;
+  }
+
+  test("a negative limit claims one source, not the whole queue", async () => {
+    const local = await queueHarness(12);
+    try {
+      const response = await local.call(worker, "/v1/queue?limit=-1", { serviceToken: SERVICE });
+      assert.equal(response.status, 200);
+      // Unbounded would return all 12; the maximum would return 10. Only a real clamp
+      // to the minimum returns 1.
+      assert.equal(response.body.sources.length, 1);
+    } finally {
+      local.restore();
+    }
+  });
+
+  test("a limit above the maximum is capped", async () => {
+    const local = await queueHarness(12);
+    try {
+      const response = await local.call(worker, "/v1/queue?limit=999", { serviceToken: SERVICE });
+      assert.equal(response.body.sources.length, 10);
+    } finally {
+      local.restore();
+    }
+  });
+
+  test("an in-flight claim is not re-issued until its lease expires", async () => {
+    const local = await queueHarness(1);
+    try {
+      const first = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      assert.equal(first.body.sources.length, 1);
+
+      const second = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      assert.equal(second.body.sources.length, 0, "still leased");
+
+      // Age the claim past the 15-minute lease.
+      local.database
+        .prepare("UPDATE sources SET claimed_at = ?")
+        .run(Date.now() - 20 * 60 * 1000);
+
+      const third = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      assert.equal(third.body.sources.length, 1, "an expired lease must be reclaimable");
+      assert.equal(third.body.sources[0].attempts, 1, "attempts reflects the earlier claim");
+    } finally {
+      local.restore();
+    }
+  });
+
+  test("a source that used up its attempts is retired with a visible error", async () => {
+    const local = await queueHarness(1);
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+        local.database
+          .prepare("UPDATE sources SET claimed_at = ?")
+          .run(Date.now() - 20 * 60 * 1000);
+      }
+      // One more poll runs the sweeper.
+      await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+
+      const source = local.database.prepare("SELECT state, error FROM sources").get();
+      assert.equal(source.state, "failed", "must not sit in 'downloading' forever");
+      assert.ok(source.error, "and must carry an error the app can show");
+    } finally {
+      local.restore();
+    }
+  });
+
+  test("a late failure cannot drag a finished reel back into the queue", async () => {
+    const local = await queueHarness(1);
+    try {
+      await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      const sourceId = local.database.prepare("SELECT id FROM sources").get().id;
+
+      await local.call(worker, `/v1/sources/${sourceId}/transcript`, {
+        method: "POST",
+        serviceToken: SERVICE,
+        body: { text: "finished by a second worker", engine: "test" }
+      });
+
+      // A stalled worker's timeout arriving after its lease expired.
+      const late = await local.call(worker, `/v1/sources/${sourceId}/error`, {
+        method: "POST",
+        serviceToken: SERVICE,
+        body: { error: "ReadTimeout" }
+      });
+      assert.equal(late.body.applied, false, "a stale failure must be ignored");
+
+      const source = local.database.prepare("SELECT state, error FROM sources").get();
+      assert.equal(source.state, "transcribed");
+      assert.equal(source.error, null, "and must not put an error on a completed reel");
+    } finally {
+      local.restore();
+    }
+  });
+});
+
 describe("abuse limits", () => {
-  test("the queue cannot be drained with a negative limit", async () => {
-    const response = await harness.call(worker, "/v1/queue?limit=-1", {
-      serviceToken: "service-token-for-tests"
-    });
-    assert.equal(response.status, 200);
-    assert.ok(response.body.sources.length <= 10, "limit must clamp to the maximum");
-  });
-
-  test("a claimed source is not handed out again straight away", async () => {
-    await saveClip(alice, "https://instagram.com/reel/QUEUED/");
-    const first = await harness.call(worker, "/v1/queue?limit=10", {
-      serviceToken: "service-token-for-tests"
-    });
-    const second = await harness.call(worker, "/v1/queue?limit=10", {
-      serviceToken: "service-token-for-tests"
-    });
-
-    assert.ok(first.body.sources.length > 0);
-    assert.equal(second.body.sources.length, 0, "an in-flight claim must not be re-issued");
-  });
-
   test("an oversized body is refused before it is parsed", async () => {
     const response = await harness.call(worker, "/v1/notes", {
       method: "POST",
@@ -279,13 +377,62 @@ describe("abuse limits", () => {
     assert.equal(response.status, 413);
   });
 
-  test("internal errors do not leak their text to the client", async () => {
-    const response = await harness.call(worker, "/v1/clips/does-not-exist", {
-      method: "PATCH",
-      token: alice,
-      body: { status: "nonsense" }
-    });
+  test("a malformed body is a 400, not a 413 or a 500", async () => {
+    const response = await worker.fetch(
+      new Request("https://api.test/v1/notes", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${alice}`, "Content-Type": "application/json" },
+        body: "{not json"
+      }),
+      harness.env
+    );
     assert.equal(response.status, 400);
-    assert.ok(!/SELECT|UPDATE|sqlite/i.test(JSON.stringify(response.body)));
+  });
+
+  test("the daily save cap holds", async () => {
+    const local = await createTestEnv();
+    const token = await local.mintToken("prolific");
+    try {
+      let lastStatus = 0;
+      for (let i = 0; i < 201; i += 1) {
+        const response = await local.call(worker, "/v1/clips", {
+          method: "POST",
+          token,
+          body: { url: `https://instagram.com/reel/CAP${i}/` }
+        });
+        lastStatus = response.status;
+      }
+      assert.equal(lastStatus, 429, "the 201st save in a day must be refused");
+    } finally {
+      local.restore();
+    }
+  });
+
+  test("an internal fault returns a generic message, never SQL", async () => {
+    const local = await createTestEnv();
+    const token = await local.mintToken("alice");
+    try {
+      const saved = await local.call(worker, "/v1/clips", {
+        method: "POST",
+        token,
+        body: { url: "https://instagram.com/reel/BOOM/" }
+      });
+
+      // Force a real database fault on the next write so the catch-all is genuinely
+      // exercised — the previous version of this test never reached it.
+      local.database.exec("DROP TABLE notes");
+
+      const response = await local.call(worker, "/v1/notes", {
+        method: "POST",
+        token,
+        body: { clip_id: saved.body.clip.id, body: "this write will fault" }
+      });
+
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error, "Something went wrong.");
+      assert.ok(!/SELECT|INSERT|sqlite|notes/i.test(JSON.stringify(response.body)));
+    } finally {
+      local.restore();
+    }
   });
 });

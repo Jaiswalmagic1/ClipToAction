@@ -32,10 +32,24 @@ const IDENTIFYING_PARAMS = {
 };
 
 // Share sheets and ad platforms bolt these on. They never identify the video.
+//
+// `s` and `t` matter more than they look: X's share sheet appends `?s=20&t=<random>` to
+// every share, and `t` is different every time. Leaving them in meant every share of the
+// same tweet became a new source row — a fresh download, transcription and AI call each
+// time. That is finding #2 in reverse: not a collision, a failure to dedupe.
 const TRACKING_PARAMS = new Set([
-  "igshid", "igsh", "fbclid", "gclid", "si", "ref", "ref_src", "ref_url",
-  "feature", "app", "source", "mc_cid", "mc_eid", "_rdr", "mibextid", "rdid"
+  "igshid", "igsh", "fbclid", "gclid", "si", "s", "t", "ref", "ref_src", "ref_url",
+  "feature", "app", "source", "mc_cid", "mc_eid", "_rdr", "mibextid", "rdid", "trk",
+  "originalSubdomain", "share_id", "lipi"
 ]);
+
+// Hosts that are the same site under different names.
+const HOST_ALIASES = {
+  "twitter.com": "x.com",
+  "m.facebook.com": "facebook.com",
+  "web.facebook.com": "facebook.com",
+  "fb.com": "facebook.com"
+};
 
 function normalisedHost(parsed) {
   return parsed.hostname.replace(/^www\./, "").toLowerCase();
@@ -97,15 +111,17 @@ export function canonicalUrl(rawUrl) {
     if (id) return `https://youtube.com/watch?v=${id}`;
   }
   if (hostIs(host, "instagram.com")) {
-    // /p/<code> and /reel/<code> are the same post; normalise both to /reel/<code>.
-    const post = /^\/(?:p|reel|reels|tv)\/([^/]+)/.exec(path);
+    // /p/<code>, /reel/<code> and /<user>/reel/<code> are all the same post.
+    const post = /\/(?:p|reel|reels|tv)\/([^/]+)/.exec(path);
     if (post) return `https://instagram.com/reel/${post[1]}`;
   }
 
   // Everything else keeps its identifying parameters. Dropping the whole query here would
   // collapse every facebook.com/watch?v=<id> — Facebook's main desktop video URL — onto a
   // single key.
-  const canonicalHost = hostIs(host, "facebook.com") ? "facebook.com" : host;
+  const canonicalHost = hostIs(host, "facebook.com")
+    ? "facebook.com"
+    : HOST_ALIASES[host] || host;
   return `https://${canonicalHost}${path}${stableQuery(parsed, IDENTIFYING_PARAMS[platform])}`;
 }
 

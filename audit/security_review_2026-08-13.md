@@ -7,6 +7,33 @@ render path in `index.html`.
 
 **Verdict when the review ran: merge blocked.** 3 critical/high findings each sufficient alone.
 
+## Second review of the fixes — also blocked, also fixed, 2026-08-13
+
+A second independent pass reviewed the fixes themselves (the first reviewer never saw that
+code). It blocked too, and it was right. What it found:
+
+| Issue | Fix |
+|---|---|
+| `jsString()` escaped neither `"` nor `&`, so finding #14 was still open — `x" onmouseover="alert(1)` broke out of the attribute | `onclick` removed entirely. Card buttons carry `data-id`/`data-act` and one delegated listener reads them, so no card value is ever parsed as JavaScript. |
+| A GitHub-token sync UI had been **swept into the commit by accident** — pre-existing uncommitted work. It puts a repo-write PAT in localStorage on the live `*.github.io` origin, which is shared across every Pages site on the account | Preserved on branch `github-sync-wip`, removed from `release-gate`. If it ships at all, the write path belongs behind the Worker per D11. |
+| X's share sheet appends `?s=&t=<random>`, and `t` differs every time — so every share of one tweet became a new source. Finding #2 in reverse, on a supported platform | `s`/`t`/`trk` added to the tracking denylist; `twitter.com`, `m.facebook.com` and `web.facebook.com` aliased to their canonical hosts; `instagram.com/<user>/reel/<code>` no longer forks from `/reel/<code>`. |
+| A worker whose lease expired could POST a late failure and drag an already-analysed reel back into the queue, putting an error on it that every saver would see | `AND state = 'downloading'` on both `storeFailure` and `storeTranscript`. |
+| A source claimed 3 times without a report stranded at `attempts=3, state='downloading', error=NULL` — invisible forever | A sweeper in `claimQueue` retires them to `failed` with a visible error. |
+| `claimQueue` selected then updated without a guard, so two workers could claim the same rows | Each claim UPDATE is conditional on the row still being in the state it was selected in; rows that lose the race drop out of that batch. |
+| `pm_check.yml`'s all-zero-SHA fallback checked only the tip commit — which is the **first push of every new branch**, re-creating the original bug | Falls back to `git merge-base origin/main`. |
+| `schema.sql` is all `CREATE TABLE IF NOT EXISTS`, so re-running it on an existing database silently applies nothing | `backend/migrations/0001_*.sql` added, and the README now says so. |
+| PC worker posted raw exception text into the shared `sources.error` | `classify_failure()` — full text to the local console, a classification to the shared row. |
+| Delta sync pivoted on `c.updated_at`, so marking 20 clips read re-sent 20 transcripts | Pivots on `c.created_at`. |
+| A non-base64 signature threw outside the try and returned 500 instead of 401; malformed JSON returned 413 instead of 400 | Decode moved inside the try; `RequestError` carries its own status. |
+| **Three tests passed with their fix reverted** — the limit clamp, the lease, and the error-leak test, which never reached the code path it was named for | All three rewritten against isolated databases with exact counts. Every fix is now mutation-tested: reverting it fails a test. |
+
+Tests: 44 → 52, and the suite now catches all 8 mutations checked, including the ones that
+previously slipped through.
+
+Still open, deliberately, before first deploy rather than before merge: the D1 test shim's
+`batch()` is not transactional (real D1 rolls back), and there are no tests for
+`worker-pc/` at all.
+
 ## Status — all 16 fixed, 2026-08-13
 
 Every finding below has been fixed on `release-gate`. The fixes are recorded as D18 and

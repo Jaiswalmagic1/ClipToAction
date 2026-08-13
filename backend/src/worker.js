@@ -58,18 +58,26 @@ function fail(env, message, status = 400) {
 const now = () => Date.now();
 const newId = () => crypto.randomUUID();
 
+/** A problem with the caller's request. Carries the status the router should return. */
+class RequestError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
 /** Rejects oversized bodies before spending CPU parsing them. */
 async function readJson(request) {
   const declared = Number(request.headers.get("Content-Length") || 0);
-  if (declared > MAX_BODY_BYTES) throw new Error("That request is too large.");
+  if (declared > MAX_BODY_BYTES) throw new RequestError("That request is too large.", 413);
 
   const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) throw new Error("That request is too large.");
+  if (text.length > MAX_BODY_BYTES) throw new RequestError("That request is too large.", 413);
 
   try {
     return JSON.parse(text || "{}");
   } catch {
-    throw new Error("Body must be valid JSON.");
+    throw new RequestError("Body must be valid JSON.", 400);
   }
 }
 
@@ -180,7 +188,7 @@ async function deltaSync(request, env, userId) {
   const sources = await env.DB.prepare(
     `SELECT s.* FROM sources s
      JOIN clips c ON c.source_id = s.id
-     WHERE c.user_id = ?1 AND (s.updated_at > ?2 OR c.updated_at > ?2)`
+     WHERE c.user_id = ?1 AND (s.updated_at > ?2 OR c.created_at > ?2)`
   )
     .bind(userId, since)
     .all();
@@ -188,7 +196,7 @@ async function deltaSync(request, env, userId) {
   const transcripts = await env.DB.prepare(
     `SELECT t.* FROM transcripts t
      JOIN clips c ON c.source_id = t.source_id
-     WHERE c.user_id = ?1 AND (t.created_at > ?2 OR c.updated_at > ?2)`
+     WHERE c.user_id = ?1 AND (t.created_at > ?2 OR c.created_at > ?2)`
   )
     .bind(userId, since)
     .all();
@@ -199,7 +207,7 @@ async function deltaSync(request, env, userId) {
      JOIN clips c ON c.source_id = a.source_id
      WHERE c.user_id = ?1
        AND (a.user_id = ?3 OR a.user_id = ?4)
-       AND (a.created_at > ?2 OR c.updated_at > ?2)`
+       AND (a.created_at > ?2 OR c.created_at > ?2)`
   )
     .bind(userId, since, SHARED, userId)
     .all();
@@ -286,8 +294,21 @@ async function claimQueue(request, env) {
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 3, 1), 10);
   const timestamp = now();
 
+  // Anything that used up its attempts and then went quiet is retired here rather than
+  // sitting in 'downloading' forever with no error — a clip stuck on "pending" and nothing
+  // to show for it is the silent failure Golden Rule 29 forbids.
+  await env.DB.prepare(
+    `UPDATE sources
+     SET state = 'failed',
+         error = COALESCE(error, 'Gave up after ' || attempts || ' attempts.'),
+         claimed_at = NULL, updated_at = ?1
+     WHERE state = 'downloading' AND attempts >= ?2 AND COALESCE(claimed_at, 0) < ?3`
+  )
+    .bind(timestamp, MAX_ATTEMPTS, timestamp - CLAIM_LEASE_MS)
+    .run();
+
   // A claim is a lease. Without the timeout, a worker that dies mid-download leaves the
-  // source in 'downloading' forever and the clip sits on "pending" with no error.
+  // source in 'downloading' forever.
   const rows = await env.DB.prepare(
     `SELECT id, url_canonical, url_original, platform, attempts
      FROM sources
@@ -300,17 +321,25 @@ async function claimQueue(request, env) {
     .bind(limit, timestamp - CLAIM_LEASE_MS, MAX_ATTEMPTS)
     .all();
 
+  // Each claim is conditional on the row still being in the state we selected it in, so
+  // two workers polling at once cannot both win the same source — the second one's UPDATE
+  // matches nothing and that row is dropped from its batch.
+  const claimed = [];
   for (const row of rows.results) {
-    await env.DB.prepare(
+    const result = await env.DB.prepare(
       `UPDATE sources
        SET state = 'downloading', attempts = attempts + 1, claimed_at = ?1, updated_at = ?1
-       WHERE id = ?2`
+       WHERE id = ?2
+         AND (state = 'pending'
+              OR (state = 'downloading' AND COALESCE(claimed_at, 0) < ?3))`
     )
-      .bind(timestamp, row.id)
+      .bind(timestamp, row.id, timestamp - CLAIM_LEASE_MS)
       .run();
+
+    if (result.meta.changes) claimed.push(row);
   }
 
-  return json(env, { sources: rows.results });
+  return json(env, { sources: claimed });
 }
 
 async function storeTranscript(request, env, sourceId) {
@@ -327,11 +356,13 @@ async function storeTranscript(request, env, sourceId) {
        ON CONFLICT (source_id) DO UPDATE SET text = ?2, lang = ?3, engine = ?4, created_at = ?5`
     ).bind(sourceId, text, body.lang || null, body.engine || "unknown", timestamp),
     env.DB.prepare(
+      // Only a source still in flight may be completed. A worker whose lease expired can
+      // come back late, and without this it would overwrite a newer transcript.
       `UPDATE sources
        SET state = 'transcribed', title = COALESCE(?1, title),
            duration_sec = COALESCE(?2, duration_sec), error = NULL, claimed_at = NULL,
            updated_at = ?3
-       WHERE id = ?4`
+       WHERE id = ?4 AND state = 'downloading'`
     ).bind(body.title || null, body.duration_sec || null, timestamp, sourceId)
   ]);
 
@@ -434,16 +465,21 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
 async function storeFailure(request, env, sourceId) {
   const body = await readJson(request);
   const message = String(body.error || "Unknown failure").slice(0, 500);
-  await env.DB.prepare(
+
+  // `AND state = 'downloading'` is what stops a worker whose lease already expired from
+  // dragging a finished source back into the queue. Without it, a late timeout from a
+  // stalled worker would reset a reel that another worker had since transcribed and
+  // analysed — and put an error on it that every user who saved it would see.
+  const result = await env.DB.prepare(
     `UPDATE sources
      SET state = CASE WHEN attempts >= ?4 THEN 'failed' ELSE 'pending' END,
          error = ?1, claimed_at = NULL, updated_at = ?2
-     WHERE id = ?3`
+     WHERE id = ?3 AND state = 'downloading'`
   )
     .bind(message, now(), sourceId, MAX_ATTEMPTS)
     .run();
 
-  return json(env, { ok: true });
+  return json(env, { ok: true, applied: Boolean(result.meta.changes) });
 }
 
 // ---------------------------------------------------------------- tier 3: copy-paste
@@ -561,11 +597,11 @@ export default {
       return fail(env, "Not found.", 404);
     } catch (error) {
       if (error instanceof AuthError) return fail(env, error.message, 401);
+      if (error instanceof RequestError) return fail(env, error.message, error.status);
       // Anything else is ours, not theirs. Internal text can quote SQL and bound values,
       // so it never reaches the client.
       console.error("Unhandled worker error:", error);
-      const clientSafe = /too large|valid JSON/i.test(error.message);
-      return fail(env, clientSafe ? error.message : "Something went wrong.", clientSafe ? 413 : 500);
+      return fail(env, "Something went wrong.", 500);
     }
   }
 };
