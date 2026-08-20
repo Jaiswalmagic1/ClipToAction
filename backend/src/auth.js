@@ -8,6 +8,9 @@ const JWKS_URL =
 
 let jwksCache = { keys: null, expiresAt: 0 };
 
+/** Anything the client can fix by signing in again. The router maps this to 401. */
+export class AuthError extends Error {}
+
 function base64UrlToBytes(value) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
@@ -42,15 +45,21 @@ async function getJwks() {
  */
 export async function verifyFirebaseToken(token, projectId) {
   const parts = String(token || "").split(".");
-  if (parts.length !== 3) throw new Error("Malformed token");
+  if (parts.length !== 3) throw new AuthError("Malformed token");
 
-  const header = decodeJson(parts[0]);
-  const claims = decodeJson(parts[1]);
+  let header;
+  let claims;
+  try {
+    header = decodeJson(parts[0]);
+    claims = decodeJson(parts[1]);
+  } catch {
+    throw new AuthError("Malformed token");
+  }
 
-  if (header.alg !== "RS256") throw new Error("Unexpected token algorithm");
+  if (header.alg !== "RS256") throw new AuthError("Unexpected token algorithm");
 
   const jwk = (await getJwks()).find((candidate) => candidate.kid === header.kid);
-  if (!jwk) throw new Error("Unknown signing key");
+  if (!jwk) throw new AuthError("Unknown signing key");
 
   const key = await crypto.subtle.importKey(
     "jwk",
@@ -61,28 +70,39 @@ export async function verifyFirebaseToken(token, projectId) {
   );
 
   const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
-  const valid = await crypto.subtle.verify(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    base64UrlToBytes(parts[2]),
-    signed
-  );
-  if (!valid) throw new Error("Bad token signature");
+  let valid;
+  try {
+    // Decoding happens inside the try: a non-base64 signature is a bad token from an
+    // unauthenticated caller, not a server fault, and must not surface as a 500.
+    valid = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      base64UrlToBytes(parts[2]),
+      signed
+    );
+  } catch {
+    throw new AuthError("Bad token signature");
+  }
+  if (!valid) throw new AuthError("Bad token signature");
 
   const now = Math.floor(Date.now() / 1000);
-  if (claims.exp <= now) throw new Error("Token expired");
-  if (claims.iat > now + 60) throw new Error("Token issued in the future");
-  if (claims.aud !== projectId) throw new Error("Token audience mismatch");
+  if (claims.exp <= now) throw new AuthError("Token expired");
+  if (claims.iat > now + 60) throw new AuthError("Token issued in the future");
+  if (claims.aud !== projectId) throw new AuthError("Token audience mismatch");
   if (claims.iss !== `https://securetoken.google.com/${projectId}`) {
-    throw new Error("Token issuer mismatch");
+    throw new AuthError("Token issuer mismatch");
   }
-  if (!claims.sub) throw new Error("Token missing subject");
+  if (!claims.sub) throw new AuthError("Token missing subject");
 
   return claims;
 }
 
 async function encryptionKey(secret) {
   const material = base64UrlToBytes(secret);
+  // A short secret would silently give AES-192 or AES-128 instead of failing.
+  if (material.length !== 32) {
+    throw new Error("KEY_ENCRYPTION_SECRET must decode to exactly 32 bytes");
+  }
   return crypto.subtle.importKey("raw", material, { name: "AES-GCM" }, false, [
     "encrypt",
     "decrypt"
@@ -123,8 +143,9 @@ export async function decryptSecret(packedBase64, secret) {
 }
 
 /**
- * Constant-time-ish comparison for the PC worker's service token.
- * Avoids leaking length/position information through early exit.
+ * Compares the PC worker's service token without leaking *where* it first differs.
+ * It does return early on a length mismatch, so the length is observable — that is
+ * accepted: the token is high-entropy and knowing its length does not help an attacker.
  */
 export function tokensMatch(provided, expected) {
   if (typeof provided !== "string" || typeof expected !== "string") return false;

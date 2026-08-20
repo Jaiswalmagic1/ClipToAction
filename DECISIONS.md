@@ -21,7 +21,7 @@ The reel is a seed, not the destination.
 | # | Topic | Decision |
 |---|---|---|
 | D1 | Capture | Link only. The user sends a URL and nothing else, ever. |
-| D2 | Mobile inbox | Telegram bot is primary; the PWA share target is secondary. The bot stays dumb. |
+| D2 | ~~Mobile inbox~~ | ~~Telegram bot is primary~~ — **superseded by D17.** |
 | D3 | ~~Storage~~ | ~~`data/ideas.json` in the repo~~ — **superseded by D6.** Its GitHub-token sync in `index.html` must be removed, not left running. |
 | D4 | Extraction | Download the video, transcribe the audio. Not captions. Breaches Instagram/Facebook ToS — accepted knowingly. |
 | D5 | Worker host | Jaiswal's PC for now. Must stay host-agnostic — moving to a VM is config, never a rewrite. |
@@ -34,7 +34,12 @@ The reel is a seed, not the destination.
 | D12 | Accounts | Everything under `cliptoaction@gmail.com`, not `rumeein@gmail.com`. |
 | D13 | External APIs | Request shapes come from official docs, never from memory. Unverified adapters are labelled as such. |
 | D14 | Discipline | gstack + PM Discipline enforced in this repo: decision log, pre-commit gate, server-side check. |
-| D15 | Pushing | Golden Rule 6 stands — auto-push. Revisit before the first external user. |
+| D15 | ~~Pushing~~ | ~~Golden Rule 6 stands — auto-push~~ — **superseded by D16.** |
+| D20 | Environments | Local → staging → production, all free. Production is never the default deploy target and never shares a secret with staging. A change is not releasable until a real reel has gone through staging. |
+| D19 | Dedupe key | Identifying query params kept per host, tracking dropped; host matching is exact or a real subdomain, never a bare suffix; only allowlisted platforms can be saved. Changes ship with a collision test. |
+| D18 | Shared rows | Only the Worker writes a row other people read. Anything a user typed is stored against that user. |
+| D17 | Capture path | The PWA share target is the only way in. The Telegram bot is removed — one capture path, one identity model. Recoverable from git history if ever wanted. |
+| D16 | Releases | `main` is live and a push to it is a release. Branches are where work is built and proven, and push freely. Nothing crosses to `main` without passing CI + the PM tag + branch protection. |
 
 ---
 
@@ -76,6 +81,9 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
+| Test suite | 15 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation |
+| CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
+| Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |
 | Cloudflare / Firebase / Gemini accounts | Not created |
 | Anything running end to end | No |

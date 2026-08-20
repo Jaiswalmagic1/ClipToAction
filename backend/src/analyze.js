@@ -5,6 +5,25 @@
 
 import { decryptSecret } from "./auth.js";
 
+/**
+ * A provider failure, carrying only text that is safe to show every user who saved the
+ * reel. Provider response bodies must never travel: an OpenAI 401 quotes a fragment of the
+ * key, and a 429 carries organisation and billing detail.
+ */
+export class AnalysisError extends Error {
+  constructor(publicReason) {
+    super(publicReason);
+    this.publicReason = publicReason;
+  }
+}
+
+function classify(status) {
+  if (status === 401 || status === 403) return "the connected AI key was rejected";
+  if (status === 429) return "the AI provider's rate or quota limit was reached";
+  if (status >= 500) return "the AI provider was unavailable";
+  return "the AI provider refused the request";
+}
+
 export const ANALYSIS_PROMPT = `You are analysing the transcript of a short social-media video.
 
 Reply with ONE fenced json code block and nothing else — no preamble, no explanation.
@@ -43,10 +62,12 @@ export function parseAnalysis(raw) {
 
 async function callGemini(prompt, apiKey) {
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // The key goes in a header, not the query string — a Google error that echoes the
+      // request URI would otherwise carry the whole key into a shared error column.
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.2, maxOutputTokens: MAX_OUTPUT_TOKENS }
@@ -54,10 +75,10 @@ async function callGemini(prompt, apiKey) {
     }
   );
 
-  if (!response.ok) throw new Error(`Gemini ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new AnalysisError(classify(response.status));
   const body = await response.json();
   const text = body.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini returned no text");
+  if (!text) throw new AnalysisError("the AI returned an empty reply");
   return { text, model: body.modelVersion || GEMINI_MODEL };
 }
 
@@ -74,10 +95,10 @@ async function callOpenAICompatible(prompt, apiKey, provider) {
     })
   });
 
-  if (!response.ok) throw new Error(`${provider} ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new AnalysisError(classify(response.status));
   const body = await response.json();
   const text = body.choices?.[0]?.message?.content;
-  if (!text) throw new Error(`${provider} returned no text`);
+  if (!text) throw new AnalysisError("the AI returned an empty reply");
   return { text, model };
 }
 
@@ -97,10 +118,10 @@ async function callAnthropic(prompt, apiKey) {
     })
   });
 
-  if (!response.ok) throw new Error(`Anthropic ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new AnalysisError(classify(response.status));
   const body = await response.json();
   const text = body.content?.[0]?.text;
-  if (!text) throw new Error("Anthropic returned no text");
+  if (!text) throw new AnalysisError("the AI returned an empty reply");
   return { text, model: ANTHROPIC_MODEL };
 }
 
@@ -137,12 +158,15 @@ export async function analyzeSource(env, sourceId, transcript) {
   } else if (OPENAI_COMPATIBLE[owner.ai_provider]) {
     result = await callOpenAICompatible(prompt, apiKey, owner.ai_provider);
   } else {
-    throw new Error(`Unsupported provider: ${owner.ai_provider}`);
+    throw new AnalysisError("that AI provider is not supported");
   }
 
-  return {
-    payload: parseAnalysis(result.text),
-    provider: owner.ai_provider,
-    model: result.model
-  };
+  let payload;
+  try {
+    payload = parseAnalysis(result.text);
+  } catch {
+    throw new AnalysisError("the AI's reply was not in the expected format");
+  }
+
+  return { payload, provider: owner.ai_provider, model: result.model };
 }

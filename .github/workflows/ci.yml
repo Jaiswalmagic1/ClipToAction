@@ -1,0 +1,79 @@
+name: CI
+
+# The release gate (D16). `main` is live — GitHub Pages serves index.html from it,
+# so merging to main IS the release. This job is what a branch has to pass before
+# it earns that. It runs on every branch push too, so a branch is never a surprise
+# at merge time.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests and checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # node:sqlite, which the API tests run against, needs 24.
+          node-version: '24'
+
+      - name: Worker unit tests
+        working-directory: backend
+        run: node --test
+
+      - name: Worker syntax check
+        run: for f in backend/src/*.js; do node --check "$f"; done
+
+      - name: PWA syntax check
+        run: |
+          # index.html is the file main actually serves; its script block was unchecked.
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('index.html', 'utf8');
+            const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)];
+            if (!blocks.length) throw new Error('no inline script found in index.html');
+            for (const [, code] of blocks) new Function(code);
+            console.log(blocks.length + ' inline script block(s) parsed.');
+          "
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: PC worker syntax check
+        run: python -c "import ast; ast.parse(open('worker-pc/worker.py', encoding='utf-8').read())"
+
+      - name: Secret scan
+        run: |
+          # Matches credential *shapes*, not prefixes. A bare prefix also appears in
+          # placeholders and docs -- index.html's token field literally reads
+          # 'ghp_... or github_pat_...' -- and a check that fails on a clean repo is
+          # a check people switch off. Requiring the trailing character run is what
+          # separates a real key from a description of one.
+          #
+          # Covers every provider this product actually supports. The earlier version
+          # missed sk-proj- (the '-' ends the character class four chars in), Groq's
+          # gsk_, xAI's xai-, and both of this project's own secrets.
+          if grep -rInE '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIzaSy[A-Za-z0-9_-]{30,}|sk-(proj-)?[A-Za-z0-9_-]{32,}|sk-ant-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}|xoxb-[0-9]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(KEY_ENCRYPTION_SECRET|WORKER_SERVICE_TOKEN|CLOUDFLARE_API_TOKEN)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9+/_-]{20,})' \
+               --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.claude \
+               --exclude=ci.yml . ; then
+            echo ""
+            echo "FAILED: something shaped like a live credential is committed."
+            echo "Rotate it first -- git history keeps it even after you delete the line."
+            exit 1
+          fi
+          echo "No credentials found."
+
+      - name: Committed .env files
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "FAILED: a .env file is tracked by git."
+            exit 1
+          fi
+          echo "No .env files tracked."

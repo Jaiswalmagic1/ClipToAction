@@ -4,10 +4,20 @@ The backend for the app and the PC enrichment worker.
 
 ## Why it is shaped this way
 
-`sources`, `transcripts` and `analyses` are **shared across all users** — one row per unique
-reel. If fifty people save the same viral clip, it is downloaded, transcribed and analysed
-once. `clips`, `notes`, `questions`, `topics` and `tasks` are per-user and carry
-`updated_at`, so the app syncs only what changed instead of re-reading the whole notebook.
+`sources` and `transcripts` are **shared across all users** — one row per unique reel. If
+fifty people save the same viral clip, it is downloaded and transcribed once. `clips`,
+`notes`, `questions`, `topics` and `tasks` are per-user and carry `updated_at`, so the app
+syncs only what changed instead of re-reading the whole notebook.
+
+`analyses` is split by `user_id`: `''` means the Worker produced it with a connected key
+and it is shared, anything else is one user's copy-paste result and only that user ever
+sees it. **A user's paste never writes into a shared row and never sets `sources.state`** —
+otherwise anyone could publish a fabricated analysis to everyone who saved a reel, and mark
+it analysed so it was never actually downloaded.
+
+Only hosts on the platform allowlist in `src/canonical.js` can be saved at all. An
+arbitrary URL would let a signed-in user aim the PC worker at their own server, or at an
+address inside the operator's own network.
 
 ## Endpoints
 
@@ -27,46 +37,89 @@ once. `clips`, `notes`, `questions`, `topics` and `tasks` are per-user and carry
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/v1/queue?limit=3` | Claim pending sources to download and transcribe. |
-| POST | `/v1/sources/:id/transcript` | Store the transcript. |
-| POST | `/v1/sources/:id/analysis` | Store the analysis. |
+| GET | `/v1/queue?limit=3` | Claim pending sources. A claim is a 15-minute lease, so a worker that dies mid-download does not strand them. |
+| POST | `/v1/sources/:id/transcript` | Store the transcript. The Worker then analyses it if any saver has a key connected. |
 | POST | `/v1/sources/:id/error` | Record a failure — retried up to 3 times, then marked `failed`. |
 
 Failures are stored on the source and returned by sync, so the app can show what went
-wrong rather than leaving a clip stuck on "pending".
+wrong rather than leaving a clip stuck on "pending". `sources.error` is read by everyone
+who saved the reel, so an analysis failure is recorded as a fixed classification — never a
+provider's response body, which can quote a fragment of the key that failed.
+
+## Tests
+
+```bash
+npm test
+```
+
+The API tests run the real Worker against an in-memory SQLite database and real RS256
+tokens signed by a key pair generated in the harness, so authentication, authorisation and
+cross-user isolation are genuinely exercised — including the cases that must fail.
+
+## Three environments (D20)
+
+Nothing reaches production untested. Each level proves something the one before it cannot.
+
+| Level | Command | What it proves | Costs |
+|---|---|---|---|
+| Local | `npm run dev` | The Worker runs, routes and queries work. No account, nothing deployed. | nothing |
+| Staging | `npm run deploy:staging` | Real Cloudflare, real D1, real Firebase tokens — with its own database and no real users. | nothing |
+| Production | `npm run deploy:production` | — | nothing |
+
+`wrangler deploy` with no `--env` has no database binding on purpose, so it cannot quietly
+ship to production. **Staging and production must use different secret values** — a staging
+service token that also works in production means a test run can reach real users' data.
 
 ## Setup
 
 ```bash
 npm install -g wrangler
+```
+
+```bash
 wrangler login
+```
+
+Create both databases and put each returned `database_id` into the matching block in
+`wrangler.toml`, along with your `FIREBASE_PROJECT_ID`:
+
+```bash
+wrangler d1 create cliptoaction-staging
+```
+
+```bash
 wrangler d1 create cliptoaction
 ```
 
-Put the returned `database_id` into `wrangler.toml`, set `FIREBASE_PROJECT_ID`, then:
+Apply the schema to each:
 
 ```bash
-wrangler d1 execute cliptoaction --remote --file=./schema.sql
+wrangler d1 execute cliptoaction-staging --remote --file=./schema.sql
 ```
 
-Generate and store the two secrets:
+**On a database that already exists, that command does nothing** — every statement in
+`schema.sql` is `CREATE TABLE IF NOT EXISTS`, so schema changes never land. Apply the files
+in `migrations/` instead, in order. A fresh database needs only `schema.sql`.
+
+Generate a secret value (run it once per environment — do not reuse):
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
 ```bash
-wrangler secret put KEY_ENCRYPTION_SECRET
+wrangler secret put KEY_ENCRYPTION_SECRET --env staging
 ```
 
 ```bash
-wrangler secret put WORKER_SERVICE_TOKEN
+wrangler secret put WORKER_SERVICE_TOKEN --env staging
 ```
 
-Deploy:
+Then deploy staging, point the PC worker's `API_BASE` at it, and put a real reel through
+before touching production.
 
 ```bash
-wrangler deploy
+npm run deploy:staging
 ```
 
 ## AI providers

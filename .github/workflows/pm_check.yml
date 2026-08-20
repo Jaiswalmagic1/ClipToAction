@@ -1,46 +1,72 @@
 name: PM Discipline Check
 
-# Server-side half of D14. The local hook can be skipped with --no-verify or
-# missing entirely on a fresh clone where core.hooksPath was never set; this
-# check cannot be bypassed from a developer machine.
+# Server-side half of D14. The local hook can be skipped with --no-verify or missing
+# entirely on a fresh clone where core.hooksPath was never set; this check cannot be
+# bypassed from a developer machine.
+#
+# It runs on pull requests, not only on push to main: a check that never runs on a PR
+# cannot be a required status check, and by the time code reaches main it is already live.
+#
+# It inspects EVERY commit in the range, not just the tip. Checking only the tip let a
+# code commit through behind a docs commit -- the tip touched no code, so the job passed
+# green while unreviewed code landed.
 
 on:
   push:
+    branches: ['**']
+  pull_request:
     branches: [main]
 
 jobs:
   pm-check:
+    name: PM Discipline Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Check whether code files changed
-        id: code_check
+      - name: Every code-touching commit carries the review tag
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD | grep -E '\.(py|html|js|mjs|sql)$' | grep -v 'review_pass' || true)
-          if [ -n "$CHANGED" ]; then
-            echo "code_changed=true" >> $GITHUB_OUTPUT
-            echo "Changed code files:"
-            echo "$CHANGED"
-          else
-            echo "code_changed=false" >> $GITHUB_OUTPUT
-            echo "No code files changed — skipping PM check."
+          set -euo pipefail
+
+          # The first push of a new branch reports an all-zero "before" -- which is the
+          # common case (checkout -b, several commits, push). Falling back to the tip
+          # commit alone there would re-create the very hole this job exists to close, so
+          # fall back to everything since the branch left main instead.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || true)
           fi
 
-      - name: Verify the PM review tag is in the commit message
-        if: steps.code_check.outputs.code_changed == 'true'
-        run: |
-          MSG=$(git log -1 --pretty=%B)
-          echo "Commit message: $MSG"
-          if echo "$MSG" | grep -q "\[PM-REVIEWED\]"; then
-            echo "PM review tag found. Check passed."
+          if [ -z "$BASE" ]; then
+            RANGE="$HEAD_SHA"           # no shared history at all: check every commit
           else
+            RANGE="$BASE..$HEAD_SHA"
+          fi
+          echo "Checking $RANGE"
+
+          FAILED=0
+          for SHA in $(git rev-list --no-merges "$RANGE"); do
+            CODE=$(git diff-tree --no-commit-id --name-only -r "$SHA" \
+                   | grep -E '\.(py|html|js|mjs|sql)$' | grep -v 'review_pass' || true)
+            [ -z "$CODE" ] && continue
+
+            if git log -1 --pretty=%B "$SHA" | grep -q "\[PM-REVIEWED\]"; then
+              echo "ok    $SHA"
+            else
+              echo "FAIL  $SHA — touches code, no [PM-REVIEWED] tag"
+              echo "$CODE" | sed 's/^/        /'
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" = "1" ]; then
             echo ""
-            echo "FAILED: code files changed but [PM-REVIEWED] is missing from the commit message."
-            echo "Complete review_pass.json before committing code, and make sure the local"
-            echo "hooks are enabled: git config core.hooksPath .githooks"
-            echo ""
+            echo "Complete review_pass.json before committing code, and enable the local hooks:"
+            echo "  git config core.hooksPath .githooks"
             exit 1
           fi
+          echo "All code-touching commits are reviewed."

@@ -357,9 +357,21 @@
       `).join("");
     }
 
+    function safeHref(url) {
+      // Only http(s) links become anchors. A javascript: or data: URL here would run when
+      // clicked, and once this list syncs from the API the URL no longer comes from this
+      // browser.
+      return /^https?:\/\//i.test(String(url || "")) ? escapeHtml(url) : "";
+    }
+
     function renderCard(idea) {
       const date = new Date(idea.createdAt).toLocaleDateString();
-      const link = idea.url ? `<p><a href="${idea.url}" target="_blank" rel="noreferrer">Open video</a></p>` : "";
+      const href = safeHref(idea.url);
+      const link = href ? `<p><a href="${href}" target="_blank" rel="noreferrer">Open video</a></p>` : "";
+      // The id goes in a data attribute read by the delegated listener below, never
+      // interpolated into an onclick string. Escaping a value into executable attribute
+      // text is a class of bug worth designing out rather than escaping around.
+      const id = escapeHtml(idea.id);
       return `
         <article class="card">
           <h4>${escapeHtml(idea.title)}</h4>
@@ -373,10 +385,10 @@
           <p><strong>Idea:</strong> ${escapeHtml(idea.notes || "No note added.")}</p>
           <p><strong>Action:</strong> ${escapeHtml(idea.action || "Define next action.")}</p>
           <div class="card-actions">
-            <button type="button" onclick="updateStatus('${idea.id}', 'Try')">Try</button>
-            <button type="button" class="secondary" onclick="updateStatus('${idea.id}', 'Save')">Save</button>
-            <button type="button" class="secondary" onclick="updateStatus('${idea.id}', 'Ignore')">Ignore</button>
-            <button type="button" class="danger" onclick="deleteIdea('${idea.id}')">Delete</button>
+            <button type="button" data-id="${id}" data-act="Try">Try</button>
+            <button type="button" class="secondary" data-id="${id}" data-act="Save">Save</button>
+            <button type="button" class="secondary" data-id="${id}" data-act="Ignore">Ignore</button>
+            <button type="button" class="danger" data-id="${id}" data-act="delete">Delete</button>
           </div>
         </article>
       `;
@@ -396,6 +408,15 @@
         `;
       }).join("");
     }
+
+    // One delegated listener for every card button. Survives re-render, and means no card
+    // value is ever parsed as JavaScript.
+    board.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-id]");
+      if (!button) return;
+      if (button.dataset.act === "delete") deleteIdea(button.dataset.id);
+      else updateStatus(button.dataset.id, button.dataset.act);
+    });
 
     function escapeHtml(value) {
       return String(value)

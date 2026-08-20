@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS sources (
   state         TEXT NOT NULL,             -- pending | downloading | transcribed | analyzed | failed
   error         TEXT,                      -- surfaced in the UI, never swallowed
   attempts      INTEGER NOT NULL DEFAULT 0,
+  claimed_at    INTEGER,                   -- lease: a claim older than the timeout is retryable
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -45,8 +46,13 @@ CREATE TABLE IF NOT EXISTS transcripts (
   created_at INTEGER NOT NULL
 );
 
+-- An analysis is shared (user_id = '') only when the Worker produced it with a connected
+-- key. A copy-paste analysis is text the user typed, so it is stored against that user and
+-- nobody else ever sees it. Without that split, one user's paste would overwrite the
+-- authoritative analysis for every other person who saved the same reel.
 CREATE TABLE IF NOT EXISTS analyses (
-  source_id     TEXT PRIMARY KEY REFERENCES sources (id) ON DELETE CASCADE,
+  source_id     TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+  user_id       TEXT NOT NULL DEFAULT '',  -- '' = shared; otherwise the pasting user
   provider      TEXT NOT NULL,             -- which tier produced it, incl. 'manual'
   model         TEXT,
   summary       TEXT NOT NULL,
@@ -54,7 +60,8 @@ CREATE TABLE IF NOT EXISTS analyses (
   learn_more    TEXT NOT NULL,             -- JSON array — tools/terms/people to dig into
   claims        TEXT NOT NULL,             -- JSON array [{claim, confidence, why}]
   suggested_task TEXT,
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (source_id, user_id)
 );
 
 -- ---------------------------------------------------------------- per-user layer

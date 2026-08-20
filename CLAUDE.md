@@ -30,9 +30,57 @@ what it supersedes, and mark the old entry superseded — then build.
 | **2. Plan** | Name the exact files and changes. Wait for an explicit go-ahead on anything non-trivial. |
 | **3. Build** | Only what was agreed. Nothing extra (Golden Rule 21). |
 | **4. Review** | Does it match the plan? Does it break anything? Is it security-clean? Is `DECISION_LOG.md` current? **Before pushing.** |
-| **5. Ship** | Commit, push, and say how to verify it. |
+| **5. Ship** | Open a PR from your branch. Merging to `main` is the release (D16). |
 
 Step 4 is recorded in `review_pass.json` and enforced — see below.
+
+## Branches and `main` (D16)
+
+**`main` is live.** GitHub Pages serves `index.html` from it, so merging to `main` *is* the
+release — never a way to save work.
+
+- **Work on a branch and push it freely.** Nothing on a branch is served, so pushing a
+  branch is backup, not release.
+- **Never commit or push directly to `main`.** Golden Rule 6's auto-push does not apply to
+  `main` here.
+- **Crossing to `main` means passing everything:** CI green (tests, syntax on all three
+  runtimes, secret scan, no tracked `.env`), the `[PM-REVIEWED]` tag, and branch protection.
+
+```bash
+cd backend && npm test
+```
+
+**A change to canonicalisation, the analysis contract, or auth ships with the test that
+proves it.** A PR that changes behaviour and adds no test has not passed this gate,
+whatever CI reports.
+
+### Testing before release (D20)
+
+Green CI proves the logic under test. It does not prove the thing runs. Three levels, all
+free, in order:
+
+```bash
+cd backend && npm run dev
+```
+
+```bash
+cd backend && npm run deploy:staging
+```
+
+Only after a real reel has gone end to end through staging:
+
+```bash
+cd backend && npm run deploy:production
+```
+
+`wrangler deploy` with no `--env` has no database binding on purpose — production is always
+named explicitly, and never shares a secret value with staging.
+
+### One-time setup on GitHub (not yet done)
+
+Settings → Branches → Add branch ruleset for `main`: require a pull request, and require
+the status checks **CI / Tests and checks** and **PM Discipline Check** to pass. Without
+this the gate is advisory — CI will still run and go red, but nothing stops a merge.
 
 ## The enforcement — enable it once per clone
 
@@ -70,6 +118,5 @@ Never fill the checklist in as a formality. It is a claim that Review actually h
 |---|---|
 | `backend/` | Cloudflare Worker + D1 schema. The API for both the app and the PC worker. |
 | `worker-pc/` | Python worker: downloads audio, transcribes it, posts the transcript back. |
-| `telegram-bot/` | Mobile inbox. Extracts a URL and stores it. Stays dumb. |
-| `index.html` | The PWA. Still on the old GitHub-token sync — being replaced (D3 → D6). |
+| `index.html` | The PWA — the only capture path (D17). Still on the old GitHub-token sync, being replaced (D3 → D6). |
 | `.githooks/` | PM Discipline gate. Not active until `core.hooksPath` is set. |

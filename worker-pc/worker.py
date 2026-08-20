@@ -10,17 +10,20 @@ Host-agnostic by design: it only needs API_BASE and SERVICE_TOKEN, so moving it 
 cloud VM later is a config change, not a rewrite.
 """
 
+import ipaddress
 import os
+import re
 import shutil
+import socket
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 from yt_dlp import YoutubeDL
-from yt_dlp.utils import DownloadError
 
 load_dotenv()
 
@@ -63,8 +66,44 @@ def report_failure(source_id, message):
         print(f"  ! could not report failure for {source_id}: {error}")
 
 
+UUID_PATTERN = re.compile(r"\A[0-9a-fA-F-]{36}\Z")
+
+
+def assert_public_host(url):
+    """Refuses anything resolving inside a private network.
+
+    The API already restricts saves to known platforms, but this worker runs on a home
+    LAN -- a router admin page, a NAS, or a cloud metadata endpoint is one bad URL away.
+    Two independent checks are cheaper than trusting one.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise ValueError("Link has no host.")
+
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror as error:
+        raise ValueError(f"Could not resolve {host}.") from error
+
+    for entry in resolved:
+        address = ipaddress.ip_address(entry[4][0])
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+        ):
+            raise ValueError(f"{host} resolves to a private address; refusing to fetch it.")
+
+
 def download_audio(source):
     """Downloads audio only and returns (path, title, duration_sec)."""
+    if not UUID_PATTERN.match(source["id"]):
+        raise ValueError("Source id is not a UUID; refusing to build a path from it.")
+
+    assert_public_host(source["url_original"])
+
     target = MEDIA_DIR / source["id"]
     options = {
         "format": "bestaudio/best",
@@ -118,20 +157,49 @@ def post_transcript(source_id, text, lang, title, duration):
     response.raise_for_status()
 
 
+def classify_failure(error):
+    """Turns an exception into text that is safe for every user of a shared row to read."""
+    if isinstance(error, ValueError):
+        # Our own checks -- the messages are written to be shown (too long, private host).
+        return str(error)[:200]
+    if isinstance(error, requests.RequestException):
+        return "Could not reach ClipToAction while processing this video."
+    if isinstance(error, FileNotFoundError):
+        return "The audio could not be extracted from this video."
+    return "This video could not be downloaded or transcribed."
+
+
+def cleanup(source_id):
+    """Removes every file this source produced, not just the .wav we ended up with.
+
+    When ffmpeg extraction fails, yt-dlp has already written the source .m4a/.webm and
+    download_audio raises before returning a path -- so keying cleanup off the return
+    value leaves that file behind for good.
+    """
+    if not UUID_PATTERN.match(source_id):
+        return
+    for leftover in MEDIA_DIR.glob(f"{source_id}.*"):
+        leftover.unlink(missing_ok=True)
+
+
 def process(source):
     print(f"- {source['platform']}: {source['url_canonical']}")
-    audio_path = None
     try:
         audio_path, title, duration = download_audio(source)
         text, lang = transcribe(audio_path)
         post_transcript(source["id"], text, lang, title, duration)
         print(f"  transcribed {len(text)} chars ({lang})")
-    except (DownloadError, ValueError, FileNotFoundError, requests.RequestException) as error:
-        print(f"  failed: {error}")
-        report_failure(source["id"], error)
+    # Deliberately broad: a whisper RuntimeError or an OSError killing the loop would
+    # strand every source in this batch, and the operator would see clips stuck on
+    # "pending" with no error anywhere.
+    except Exception as error:  # noqa: BLE001
+        # The full text goes to this machine's console only. What gets posted is a short
+        # classification, because sources.error is read by every user who saved the reel
+        # and an exception string can carry a URL, a path, or a provider's response.
+        print(f"  failed: {type(error).__name__}: {error}")
+        report_failure(source["id"], classify_failure(error))
     finally:
-        if audio_path and audio_path.exists():
-            audio_path.unlink()
+        cleanup(source["id"])
 
 
 def main():

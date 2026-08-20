@@ -35,11 +35,25 @@ notes are all derived later, never asked for up front.
 
 ### D2 — The Telegram bot is the mobile inbox; the PWA share target is secondary
 **Date:** 2026-06-28
-**Why:** Telegram is already installed, already in the Android share sheet, and queues
-undelivered messages for roughly 24 hours — so a link shared while the worker is offline
-is not lost.
-**Consequence:** the bot must stay dumb. It extracts a URL and stores it; it never
-analyses, never enriches, never blocks on anything slow.
+**Superseded by:** D17. **No longer the rule.**
+**Was:** Telegram as the primary capture path, because it is already installed and already
+in the Android share sheet.
+
+### D17 — The PWA share target is the only capture path. The Telegram bot is removed.
+**Date:** 2026-08-13
+**Supersedes:** D2.
+**Decided:** `telegram-bot/` is deleted. The installed PWA registers in the Android share
+sheet and does the same job.
+**Why:** the bot was built before the app existed. It is now a second capture path with a
+different identity model — it writes to the old `data/ideas.json` (D3, itself superseded)
+and has no Firebase user, so a link it captures cannot belong to anyone. Keeping it would
+mean maintaining two capture paths and two auth models to save one tap.
+**What is not lost:** Telegram's ~24h message queue was D2's real advantage. The backend
+replaces it — a saved link sits in `sources` as `pending` until the PC worker runs, so
+nothing is lost while the PC is off either.
+**Reversible:** the code stays in git history. If a Telegram entry point is ever wanted —
+for users without the app installed, say — it comes back as a client of the D6 API with a
+real user identity, not as a writer to a JSON file.
 
 ### D3 — `data/ideas.json` in the GitHub repo is the store of record
 **Date:** 2026-06-20
@@ -205,11 +219,106 @@ pre-commit hook runs before the commit object exists and cannot rewrite a messag
 via `git commit -m` — that is why tag injection lives in `prepare-commit-msg` here, and
 why the pre-commit hook only validates.
 
+### D18 — Only the Worker writes to a shared row. Anything a user typed is stored against that user.
+**Date:** 2026-08-13
+**Why:** the independent review before the first merge found that a copy-paste analysis
+(D9 tier 3) was written into the **shared** `analyses` table with only a clip-level
+ownership check, and that it also set `sources.state='analyzed'`. Any signed-in user could
+therefore publish a fabricated analysis to everyone who saved a reel, and stop that reel
+ever being downloaded, permanently.
+**Decided:** `analyses.user_id` — `''` means Worker-produced and shared; anything else is
+one user's paste and only that user sees it. A paste never sets `sources.state`.
+**The general rule this states:** a row that other people read may only be written by the
+Worker from a source the Worker itself obtained. User-supplied content goes in a row keyed
+to that user. Apply this to every shared table added later — topics, merged summaries,
+anything the dedupe model introduces.
+
+### D19 — The dedupe key must never merge two different videos, and never trust a host suffix
+**Date:** 2026-08-13
+**Why:** the same review found the canonicaliser dropped the entire query string, so every
+`facebook.com/watch?v=<id>` — Facebook's main desktop video URL — collapsed onto one
+`sources` row. No attacker needed: the first saver's video was downloaded and every other
+user silently attached to it, seeing a stranger's transcript as their own clip. Separately,
+`endsWith("youtube.com")` also matched `myyoutube.com`, letting anyone claim a real video's
+canonical key while pointing the download at a host they controlled.
+**Decided:** identifying query parameters are kept per host and tracking parameters are
+dropped; host matching is `host === domain || host.endsWith("." + domain)`, never a bare
+suffix; and only hosts on the platform allowlist can be saved at all.
+**Build rule:** any change to `canonical.js` ships with a test asserting two different
+videos do not collide, and that a lookalike host does not borrow a real one's key.
+**Second job this allowlist does:** it is the outer wall against pointing the PC worker at
+`192.168.x.x` or a cloud metadata address. `worker-pc/worker.py` re-checks resolved
+addresses independently, because that worker runs on a home LAN.
+
+### D20 — Nothing reaches production untested. Local, then staging, then production.
+**Date:** 2026-08-13
+**Why:** Jaiswal's instruction — *"testing is needed before we release."* D16 already made
+`main` a release, but a green CI only proves the logic under test. Two independent reviews
+had already found defects that no test would have caught, and at that point the code had
+still never run against real infrastructure at all.
+**Decided — three levels, each proving something the one before cannot:**
+
+| Level | Command | Proves |
+|---|---|---|
+| Local | `npm run dev` (`wrangler dev --local`) | The Worker runs and its queries work. No account, nothing deployed. |
+| Staging | `npm run deploy:staging` | Real Cloudflare, real D1, real Firebase tokens — own database, no real users. |
+| Production | `npm run deploy:production` | — |
+
+**Binding rules:**
+- `wrangler deploy` with no `--env` has **no database binding**, so it cannot quietly ship
+  to production. Production is always named explicitly.
+- **Staging and production use different secret values.** A staging `WORKER_SERVICE_TOKEN`
+  that also works in production means a test run can reach real users' data.
+- A change is not releasable until it has been run through staging with a real reel — not
+  merely proven by tests. Green CI is necessary, not sufficient.
+**Cost:** none. Cloudflare's free tier covers a second Worker and a second D1.
+
 ### D15 — GitHub auto-push stays in force for this project
 **Date:** 2026-08-12
-**Decided:** Golden Rule 6 applies unchanged — code, docs and config are pushed without
-asking. Kartaan's D20 (never auto-push) does **not** carry over.
-**Why:** nothing here is live for anyone but Jaiswal yet, and the repo is the deployment
-target for GitHub Pages. This must be revisited before the first external user — at that
-point pushing becomes publishing.
-**Still excluded:** force pushes, branch deletion, and any destructive git operation.
+**Superseded by:** D16, the following day. **No longer the rule.**
+**Was:** Golden Rule 6 applies unchanged — code, docs and config pushed without asking.
+**Why it was wrong:** it treated the repo as storage. It is the deployment.
+
+### D16 — `main` is a release. Branches are where work is built and proven. Supersedes D15.
+**Date:** 2026-08-13
+**Supersedes:** D15 (auto-push to `main`). Golden Rule 6 does **not** apply to `main` in
+this project — the same carve-out Kartaan made in its D20, for the same reason.
+**Decided, in Jaiswal's framing:**
+
+| | What it is |
+|---|---|
+| A branch | Where things are built and tested. Push freely — nothing on a branch is served to anyone. |
+| `main` | Released and live. Moving `main` **is** the release. |
+| The crossing | Nothing reaches `main` without passing every gate. |
+
+**Why:** GitHub Pages serves `index.html` straight from `main`, so a push to `main` is not
+saving work — it publishes. Jaiswal's own words: *"if at all that is something needs to be
+pushed, the system has to be built in a way that it has to be verified and validated,
+tested against everything possible. Only then it should go ahead and be pushed."*
+
+**Why branches still push freely:** a rule of "never push" would leave the only copy of
+the work on one PC. Separating backup from release keeps both properties — the work is
+safe, and nothing ships unproven.
+
+**The gate — all of it must pass, and it is machine-checked, not claimed:**
+
+1. `.github/workflows/ci.yml` — unit tests, syntax checks on all three runtimes, a
+   secret scan, and a check that no `.env` is tracked.
+2. `.github/workflows/pm_check.yml` — the D14 `[PM-REVIEWED]` tag.
+3. Branch protection on `main` requiring both, so the gate cannot be walked around.
+
+**Why the tests exist at all:** without them "verified and validated" is a checkbox a
+session ticks — exactly the failure D14 was built to stop. The first suite covers what can
+break silently: URL canonicalisation (the D10 dedupe key — if it drifts, every reel is
+re-downloaded and nothing errors), parsing a pasted AI reply (D9 tier 3), and the analysis
+validator.
+
+**Build rule that follows:** a change to canonicalisation, to the analysis contract, or to
+auth ships **with** the test that proves it. A pull request that changes behaviour and adds
+no test has not passed this gate, whatever CI says.
+
+**Recorded because it was found while building this:** the secret scan's first version
+matched credential *prefixes* and failed on the clean repo — `index.html`'s token field
+literally reads `ghp_... or github_pat_...`. A gate that cries wolf gets switched off, so
+it now matches credential shapes, and was verified both ways: silent on the clean repo,
+still catches a planted key.
