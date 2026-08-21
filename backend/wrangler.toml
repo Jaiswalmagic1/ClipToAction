@@ -39,6 +39,7 @@ database_id = "f4477836-8420-46c1-addb-d2af749af3f2"
 # Staging only, and deliberately so: production serves the app from GitHub Pages (D16).
 [env.staging.assets]
 directory = ".staging-assets"
+binding = "ASSETS"
 not_found_handling = "404-page"
 # Serve /app.html literally. Cloudflare otherwise redirects it to /app, and the address
 # a phone tests against should be the same one GitHub Pages will serve at the swap (D21).

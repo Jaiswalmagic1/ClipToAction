@@ -590,6 +590,15 @@ export default {
     const { pathname } = new URL(request.url);
     const segments = pathname.split("/").filter(Boolean);
 
+    // Staging serves the app from static assets alongside this API (D26). Assets are
+    // matched by filename, and `html_handling = "none"` keeps /app.html literal — but that
+    // also means the bare address matches no file and would fall through to the 404 below.
+    // Somebody typing the address on a phone must land on the app, not on a JSON error.
+    // Guarded on the binding: production has no assets and is unaffected.
+    if (env.ASSETS && (pathname === "/" || pathname === "")) {
+      return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
+    }
+
     try {
       if (segments[0] !== "v1") return fail(env, "Not found.", 404);
 
