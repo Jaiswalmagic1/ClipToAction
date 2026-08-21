@@ -195,16 +195,18 @@
           <option value="xai">xAI — paid</option>
           <option value="manual">Copy and paste — no key needed</option>
         </select>
+        <div id="providerHelp"></div>
         <label for="apiKey">Your key</label>
         <input type="password" id="apiKey" placeholder="Paste your key" autocomplete="off">
         <p class="muted">Stored locked up on the server and never shown again, not even to
-          you. Saving with this box empty <strong>removes</strong> the key you saved before,
-          so paste it again whenever you save this screen.</p>
+          you. Leave this box empty to keep the key you saved before — you only need to
+          paste one when you are setting it up or changing it. Choosing
+          <strong>Copy and paste</strong> removes it, since none is being used.</p>
+        <div id="settingsMsg"></div>
         <div class="row" style="margin-top:12px">
           <button id="saveSettings">Save</button>
           <button class="secondary" id="settingsBack">Back to notebook</button>
         </div>
-        <div id="settingsMsg"></div>
       </div>
     </div>
   </div>
@@ -331,6 +333,11 @@ function say(target, text, kind = "err") {
   notice.className = `notice ${kind}`;
   notice.textContent = text;
   host.append(notice);
+
+  // A confirmation nobody can see is the same as no confirmation. On a phone, or once a
+  // panel grows, the message can sit below the fold and the button looks like it did
+  // nothing — which is exactly how this was reported.
+  notice.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 function jsonList(value) {
@@ -672,6 +679,7 @@ function render() {
   }
   if (location.hash === "#/settings") {
     show("settingsView");
+    renderProviderHelp();
     return;
   }
   show("listView");
@@ -725,20 +733,143 @@ $("saveSettings").onclick = async () => {
   $("saveSettings").disabled = true;
   try {
     const result = await api("/v1/settings", { method: "PUT", body: JSON.stringify(body) });
+
+    // The key is wiped from the box because it is never shown back. On its own that reads
+    // as "it did not save" — an empty box is what failure looks like. The placeholder has
+    // to carry the reassurance instead.
     $("apiKey").value = "";
-    say(
-      "settingsMsg",
-      result.key_stored
-        ? "Saved. New clips will be summarised with it."
-        : "Saved. You will be given the text to paste into your own AI.",
-      "ok"
-    );
+    $("apiKey").placeholder = result.key_stored
+      ? "A key is saved — leave this empty to keep it"
+      : "Paste your key";
+
+    // Three different things, and they used to share two messages between them: no key
+    // because none is wanted, no key because none has been pasted yet, and a key in place.
+    // Telling someone who picked Groq that they will be handed text to paste is simply
+    // wrong, and it reads as though the app ignored what they chose.
+    let message;
+    if (result.provider === "manual") {
+      message = "Saved. You will be given the text to paste into your own AI.";
+    } else if (result.key_stored) {
+      message = "Saved. New clips will be summarised with it.";
+    } else {
+      message = "Saved — but there is no key yet, so nothing will be summarised. "
+        + "Paste your key above and save again.";
+    }
+    say("settingsMsg", message, result.key_stored || result.provider === "manual" ? "ok" : "warn");
   } catch (error) {
     say("settingsMsg", error.message);
   } finally {
     $("saveSettings").disabled = false;
   }
 };
+
+// Where a key actually comes from. Telling someone they need a key and then leaving them
+// to find it is the friction D9's copy-paste tier exists to avoid — and it is worse than
+// no instruction at all, because they cannot even tell whether it will cost them money.
+//
+// Addresses checked on 2026-08-21. Google's, Groq's and Anthropic's answered. OpenAI's and
+// xAI's refuse automated requests, so those two could NOT be confirmed from here and are
+// the ones to re-check first if anyone reports a dead link (D13).
+const PROVIDER_HELP = {
+  gemini: {
+    where: "Google AI Studio",
+    url: "https://aistudio.google.com/apikey",
+    cost: "Free",
+    steps: [
+      "Sign in with the Google account you want to use.",
+      "Click Create API key, give it any name, and create it.",
+      "Copy it and paste it above."
+    ],
+    // Read off Google's own consent screen on 2026-08-21.
+    warning: "On the free tier Google may read what is sent and use it to improve their AI."
+  },
+  groq: {
+    where: "the Groq console",
+    url: "https://console.groq.com/keys",
+    cost: "Free",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."]
+  },
+  openai: {
+    where: "the OpenAI platform",
+    url: "https://platform.openai.com/api-keys",
+    cost: "Paid",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    warning: "This is charged separately. A ChatGPT Plus subscription does not include it."
+  },
+  anthropic: {
+    where: "the Anthropic console",
+    url: "https://console.anthropic.com/settings/keys",
+    cost: "Paid",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    warning: "This is charged separately. A Claude Pro subscription does not include it."
+  },
+  xai: {
+    where: "the xAI console",
+    url: "https://console.x.ai/",
+    cost: "Paid",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    warning: "This is charged separately."
+  },
+  manual: {
+    none: true,
+    note: "Nothing to set up. Each clip gives you some text to copy into whatever AI you "
+      + "already use, and you paste the answer back."
+  }
+};
+
+function renderProviderHelp() {
+  const help = PROVIDER_HELP[$("provider").value];
+  const host = $("providerHelp");
+  host.innerHTML = "";
+  if (!help) return;
+
+  if (help.none) {
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.textContent = help.note;
+    host.append(line);
+    $("apiKey").disabled = true;
+    return;
+  }
+  $("apiKey").disabled = false;
+
+  const box = document.createElement("div");
+  box.className = "notice";
+
+  const heading = document.createElement("p");
+  heading.style.margin = "0 0 6px";
+  const cost = document.createElement("strong");
+  cost.textContent = `${help.cost}. `;
+  heading.append(cost, document.createTextNode(`Get your key from ${help.where}:`));
+
+  const link = document.createElement("a");
+  link.href = help.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = help.url.replace(/^https:\/\//, "");
+
+  const list = document.createElement("ol");
+  list.className = "plain";
+  for (const step of help.steps) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    list.append(item);
+  }
+
+  box.append(heading, link, list);
+
+  if (help.warning) {
+    const warning = document.createElement("p");
+    warning.className = "muted";
+    warning.style.margin = "6px 0 0";
+    warning.textContent = help.warning;
+    box.append(warning);
+  }
+
+  host.append(box);
+}
+
+$("provider").onchange = renderProviderHelp;
 
 $("settingsBack").onclick = () => { location.hash = ""; };
 $("navSettings").onclick = () => { location.hash = "#/settings"; };

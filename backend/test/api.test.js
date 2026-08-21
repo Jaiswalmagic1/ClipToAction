@@ -159,6 +159,94 @@ describe("one user cannot reach another user's data", () => {
   });
 });
 
+describe("saving settings does not silently throw the key away", () => {
+  // Found by the 2026-08-21 UAT pass. The screen offers a provider AND a key box, and the
+  // key is never shown back — so saving the screen to change only the provider used to
+  // wipe the key with nothing on screen to say so, and every later clip quietly went
+  // unsummarised. Deliberately not shaped like a real key: the CI secret scan reads this
+  // file too.
+  const KEY = "carols-first-key-value-not-a-real-one";
+  const REPLACEMENT = "carols-second-key-value-not-a-real-one";
+
+  const cipherFor = (user) =>
+    harness.database.prepare("SELECT ai_key_cipher FROM users WHERE id = ?").get(user)
+      ?.ai_key_cipher ?? null;
+
+  const providerFor = (user) =>
+    harness.database.prepare("SELECT ai_provider FROM users WHERE id = ?").get(user)
+      ?.ai_provider ?? null;
+
+  const save = async (token, body) =>
+    harness.call(worker, "/v1/settings", { method: "PUT", token, body });
+
+  let carol;
+
+  before(async () => {
+    carol = await harness.mintToken("carol");
+    const stored = await save(carol, { provider: "gemini", api_key: KEY });
+    assert.equal(stored.body.key_stored, true);
+  });
+
+  test("saving with no key at all keeps the key already stored", async () => {
+    const before = cipherFor("carol");
+    assert.ok(before, "the key should have been stored by the setup step");
+
+    const response = await save(carol, { provider: "groq" });
+
+    assert.equal(response.status, 200);
+    assert.equal(cipherFor("carol"), before, "the stored key must be untouched");
+    assert.equal(response.body.key_stored, true, "and the app must be told it is still there");
+  });
+
+  test("saving with no key still changes which AI is used", async () => {
+    await save(carol, { provider: "anthropic" });
+    assert.equal(providerFor("carol"), "anthropic");
+  });
+
+  test("an empty or whitespace key is treated as no key, not as a key", async () => {
+    const before = cipherFor("carol");
+
+    const blank = await save(carol, { provider: "gemini", api_key: "" });
+    assert.equal(cipherFor("carol"), before);
+    assert.equal(blank.body.key_stored, true);
+
+    const spaces = await save(carol, { provider: "gemini", api_key: "   " });
+    assert.equal(cipherFor("carol"), before, "whitespace must not be encrypted and stored");
+    assert.equal(spaces.body.key_stored, true);
+  });
+
+  test("sending a new key replaces the old one", async () => {
+    const before = cipherFor("carol");
+
+    const response = await save(carol, { provider: "gemini", api_key: REPLACEMENT });
+
+    assert.equal(response.body.key_stored, true);
+    const after = cipherFor("carol");
+    assert.notEqual(after, before, "the stored value must actually change");
+    assert.ok(after && !after.includes(REPLACEMENT), "and it must not be stored in the clear");
+  });
+
+  test("choosing copy-and-paste clears the key, because none is in use", async () => {
+    assert.ok(cipherFor("carol"), "there should be a key to clear");
+
+    const response = await save(carol, { provider: "manual" });
+
+    assert.equal(response.body.key_stored, false);
+    assert.equal(cipherFor("carol"), null);
+    assert.equal(providerFor("carol"), "manual");
+  });
+
+  test("one person's settings never touch another's key", async () => {
+    const dave = await harness.mintToken("dave");
+    await save(dave, { provider: "gemini", api_key: "daves-key-value-not-a-real-one" });
+    const davesKey = cipherFor("dave");
+
+    await save(carol, { provider: "groq", api_key: "carols-third-key-value-not-a-real-one" });
+
+    assert.equal(cipherFor("dave"), davesKey, "Dave's key must be exactly as he left it");
+  });
+});
+
 describe("a pasted analysis stays with the user who pasted it", () => {
   const PASTE_REEL = "https://instagram.com/reel/PASTE/";
   const payload = {

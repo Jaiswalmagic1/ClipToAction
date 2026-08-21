@@ -274,17 +274,48 @@ async function saveSettings(request, env, userId) {
     return fail(env, "That does not look like an API key.");
   }
 
-  // 'manual' is the copy-paste tier — it has no key to store.
-  const cipher =
-    body.provider === "manual" || !body.api_key
-      ? null
-      : await encryptSecret(String(body.api_key), env.KEY_ENCRYPTION_SECRET);
+  const timestamp = now();
+  const suppliedKey = String(body.api_key || "").trim();
 
-  await env.DB.prepare(`UPDATE users SET ai_provider = ?1, ai_key_cipher = ?2 WHERE id = ?3`)
-    .bind(body.provider, cipher, userId)
+  // 'manual' is the copy-paste tier. Choosing it is a statement that no key is in use, so
+  // the stored one goes rather than sitting encrypted for nothing.
+  if (body.provider === "manual") {
+    await env.DB.prepare(
+      `UPDATE users SET ai_provider = ?1, ai_key_cipher = NULL, last_seen_at = ?2 WHERE id = ?3`
+    )
+      .bind(body.provider, timestamp, userId)
+      .run();
+    return json(env, { ok: true, provider: body.provider, key_stored: false });
+  }
+
+  if (suppliedKey) {
+    const cipher = await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET);
+    await env.DB.prepare(
+      `UPDATE users SET ai_provider = ?1, ai_key_cipher = ?2, last_seen_at = ?3 WHERE id = ?4`
+    )
+      .bind(body.provider, cipher, timestamp, userId)
+      .run();
+    return json(env, { ok: true, provider: body.provider, key_stored: true });
+  }
+
+  // No key was sent, so the stored one is left alone. This screen is also how someone
+  // changes which AI they use, and the key is never shown back to them — so if saving
+  // without retyping it wiped it, they would have no way of noticing. Their clips would
+  // simply stop being summarised with nothing on screen to explain why, which is the
+  // silent failure Golden Rule 29 forbids.
+  await env.DB.prepare(`UPDATE users SET ai_provider = ?1, last_seen_at = ?2 WHERE id = ?3`)
+    .bind(body.provider, timestamp, userId)
     .run();
 
-  return json(env, { ok: true, provider: body.provider, key_stored: Boolean(cipher) });
+  const existing = await env.DB.prepare(`SELECT ai_key_cipher FROM users WHERE id = ?1`)
+    .bind(userId)
+    .first();
+
+  return json(env, {
+    ok: true,
+    provider: body.provider,
+    key_stored: Boolean(existing?.ai_key_cipher)
+  });
 }
 
 // ---------------------------------------------------------------- service routes
