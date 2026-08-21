@@ -46,6 +46,7 @@ The reel is a seed, not the destination.
 | D24 | Build order | A layer is not built until the layer beneath it has been proven end to end, with a throwaway if needed. |
 | D25 | Secret scan | Allows exactly one literal — the Firebase web key, which must ship in the app and is restricted to Firebase services. Nothing else. |
 | D26 | Staging hosting | The staging Worker also serves the app, so it can be opened on a phone at all. Production keeps the app on GitHub Pages. |
+| D27 | Topics | The AI proposes topics, two levels deep. The topic rows stay per-user even though the analysis that suggested them is shared. Five questions still open. |
 
 ---
 

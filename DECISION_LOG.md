@@ -471,3 +471,42 @@ GitHub Pages and the API on Cloudflare, as D16 has it.
 is the one address where the app and the API share an origin — so a cross-site problem that
 only appears in production would not show up in a staging test. Worth remembering when the
 swap is made.
+
+### D27 — The AI proposes topics, two levels deep. The topics themselves stay per-user.
+**Date:** 2026-08-21
+**Status:** direction settled by Jaiswal; the questions listed at the end are **not** settled
+and must be answered before this is built.
+**Builds on:** D22, which said grouping arrives later as a view *over* the list rather than
+instead of it. That still holds — the list stays the way in.
+**Options considered:** the user files clips into topics by hand; the AI proposes them; both.
+**Decided:** the AI proposes. Jaiswal's words — *"ai decides topics with subcategory"*.
+**And two levels, not one:** a topic with sub-topics under it, not a flat list of tags.
+**Why the AI:** filing by hand is the effort the whole product exists to remove. D1 already
+rules out asking for a category at capture time, and asking for one afterwards is the same
+tax moved later. The analysis already returns `learn_more` — the tools, terms and concepts
+each reel names — which is the raw material.
+
+**The consequence that has to be got right first:** analyses are **shared** across everyone
+who saved a reel (D10), but topics are **per-user** (D10 again, and D18 — anything a user
+owns is stored against that user). So a proposed topic name may live in the shared analysis,
+and every user who saved that reel may be *offered* the same name — but the `topics` row and
+the `clip_topics` link are created per user, in their own notebook. One person renaming or
+deleting a topic must never touch anyone else's. Anything that puts a user's own topic into
+a shared row breaks D18.
+
+**Schema consequence:** `topics` is flat today — no `parent_id`. Two levels needs a
+migration, and `schema.sql` is all `CREATE TABLE IF NOT EXISTS`, so it goes in
+`backend/migrations/` and not by editing the schema file. There is already real data from
+three accounts.
+
+**Contract consequence:** having the AI name topics means changing the analysis contract,
+which under D16 ships with the test that proves it. Every analysis produced before that
+change has no topic, so there must be an answer for the ones already stored.
+
+**Still open — do not build until these are answered:**
+1. Does the AI name topics inside the existing analysis, or in a separate pass?
+2. One topic per clip, or several?
+3. What happens to clips analysed before this existed?
+4. Can the user rename, merge or override what the AI chose — and if they rename a topic
+   the AI keeps proposing, does it stop fighting them?
+5. How are two near-identical topic names kept from splitting one subject in two?
