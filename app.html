@@ -198,7 +198,8 @@
         <label for="apiKey">Your key</label>
         <input type="password" id="apiKey" placeholder="Paste your key" autocomplete="off">
         <p class="muted">Stored locked up on the server and never shown again, not even to
-          you. Leave it blank to keep the key you already saved.</p>
+          you. Saving with this box empty <strong>removes</strong> the key you saved before,
+          so paste it again whenever you save this screen.</p>
         <div class="row" style="margin-top:12px">
           <button id="saveSettings">Save</button>
           <button class="secondary" id="settingsBack">Back to notebook</button>
@@ -291,14 +292,23 @@ function applyDelta(delta) {
 async function api(path, options = {}) {
   if (!user) throw new Error("Sign in first.");
   const token = await user.getIdToken();
-  const response = await fetch(API_BASE + path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {})
-    }
-  });
+
+  let response;
+  try {
+    response = await fetch(API_BASE + path, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(options.headers || {})
+      }
+    });
+  } catch {
+    // fetch only throws when the request never got there. The browser's own words for
+    // that are "Failed to fetch", which means nothing to anyone reading the screen.
+    throw new Error("you appear to be offline.");
+  }
+
   let body = {};
   try { body = await response.json(); } catch { /* an empty or non-JSON body */ }
   if (!response.ok) throw new Error(body.error || `Something went wrong (${response.status}).`);
