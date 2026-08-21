@@ -132,6 +132,7 @@
   <h1 id="home">ClipToAction</h1>
   <div class="who" id="who" hidden>
     <span id="whoEmail"></span>
+    <button class="link" id="navGuide">How it works</button>
     <button class="link" id="navSettings">Settings</button>
     <button class="link" id="signOut">Sign out</button>
   </div>
@@ -143,6 +144,9 @@
     <p>Share a reel link. It gets watched, written down and filed, so you can find it again
        and keep learning from it.</p>
     <button id="signIn">Sign in with Google</button>
+    <p class="muted" style="margin-top:14px">
+      New here? <a href="#/guide" id="guideFromSignIn">Read how it works</a> first — it takes a minute.
+    </p>
     <div id="signInError"></div>
   </div>
 
@@ -211,6 +215,96 @@
       </div>
     </div>
   </div>
+    <div id="guideView" hidden>
+      <div class="panel">
+        <h2>How ClipToAction works</h2>
+
+        <p>You see a good reel, save it, and never look at it again. This turns those reels
+           into a notebook you can actually search and learn from.</p>
+
+        <h3>1. Send it a link</h3>
+        <p>That is the whole of what you do. On a phone, tap <strong>Share</strong> on the
+           reel and pick ClipToAction — the same way you would share to WhatsApp. On a
+           computer, paste the link into the box at the top.</p>
+        <p class="muted">You never type a title, a note or a category. Everything else is
+           worked out for you.</p>
+
+        <h3>2. It listens to the video for you</h3>
+        <p>The reel is fetched, the speech is written down word for word, and then an AI
+           reads that and pulls out what was actually said. While that happens the clip
+           shows where it has got to:</p>
+        <ul class="plain">
+          <li><strong>Waiting to be picked up</strong> — saved, nothing has started yet.</li>
+          <li><strong>Being watched now</strong> — it is fetching and listening.</li>
+          <li><strong>Written down — no summary yet</strong> — the words are in, the
+              summary is not. See step 3.</li>
+          <li><strong>Ready</strong> — done, open it.</li>
+          <li><strong>Could not be read</strong> — something went wrong, and it says so
+              rather than pretending.</li>
+        </ul>
+        <p class="muted">A reel someone else already saved is not fetched twice — you get
+           their result straight away.</p>
+
+        <h3>3. Choose who does the summarising — one setup step</h3>
+        <p>The summaries are not done on our account. They run on yours, so it is your
+           information and nobody else is paying for it. There are two ways, and one of
+           them costs nothing and needs no account:</p>
+        <ul class="plain">
+          <li><strong>Connect an AI account.</strong> Google Gemini and Groq both give
+              these away free. Open <strong>Settings</strong>, pick one, and it shows you
+              exactly where to get it and what the catch is. After that every new clip is
+              summarised on its own.</li>
+          <li><strong>Do it yourself — no account needed.</strong> Open a clip and press
+              <strong>Copy the question</strong>. Paste that into whatever AI you already
+              use — ChatGPT, Gemini, Claude, anything. Copy its whole reply, paste it back
+              into the box, and save. Same result.</li>
+        </ul>
+        <p class="muted">Until you pick one of those, reels are saved and written down but
+           nothing gets summarised.</p>
+
+        <h3>4. What you get on each clip</h3>
+        <ul class="plain">
+          <li><strong>What it said</strong> — a few sentences, so you can tell in seconds
+              whether it is what you were looking for.</li>
+          <li><strong>The main points</strong> — the actual steps, numbers and tactics.</li>
+          <li><strong>Worth checking before you act on it</strong> — the claims the video
+              makes, each marked by how much to trust it. Red means treat it with caution.
+              Reels are full of confident nonsense; this is there to catch it.</li>
+          <li><strong>Things to look into</strong> — the tools and terms it named, for when
+              you want to go deeper.</li>
+          <li><strong>Everything that was said</strong> — the full words, if you want them.</li>
+          <li><strong>Your notes</strong> — what you thought. This is what turns a saved
+              reel into something of your own.</li>
+        </ul>
+
+        <h3>5. Finding it again</h3>
+        <p>The search box looks inside everything — the summary, the full words of the
+           video, and your own notes. So you can search for something you half-remember
+           hearing, not just a title.</p>
+        <p>Mark clips <strong>Keeping</strong>, <strong>Done</strong> or
+           <strong>Archived</strong> to keep the list under control. Archived ones stay
+           searchable but drop out of the main list.</p>
+
+        <h3>6. Put it on your phone</h3>
+        <p>Open this page in your phone's browser, then use the browser menu and choose
+           <strong>Add to Home screen</strong>. That is what puts ClipToAction in the share
+           menu, so you can send reels to it straight from Instagram or Facebook.</p>
+
+        <h3>Worth knowing</h3>
+        <ul class="plain">
+          <li>Your notebook is kept on your device as well, so it still opens and reads
+              when you have no signal.</li>
+          <li>Signing out clears that copy from the device.</li>
+          <li>Free AI accounts usually allow the provider to read and learn from what is
+              sent to them. Settings says which ones do.</li>
+        </ul>
+
+        <div class="row" style="margin-top:16px">
+          <button class="secondary" id="guideBack">Back to notebook</button>
+        </div>
+      </div>
+    </div>
+
 </main>
 
 <script type="module">
@@ -253,6 +347,7 @@ const EMPTY = {
 };
 let store = structuredClone(EMPTY);
 let user = null;
+let signedIn = false;
 let filter = "all";
 let query = "";
 
@@ -424,7 +519,9 @@ function searchText(clip) {
 }
 
 function show(view) {
-  for (const name of ["listView", "clipView", "settingsView"]) $(name).hidden = name !== view;
+  for (const name of ["listView", "clipView", "settingsView"]) {
+    $(name).hidden = name !== view;
+  }
   // A clip has its own page (D22) — the save box belongs to the notebook, not on top of it.
   $("saveView").hidden = view !== "listView";
 }
@@ -438,6 +535,23 @@ function renderList() {
     .sort((a, b) => b.created_at - a.created_at);
 
   $("clipList").innerHTML = "";
+
+  // Nothing anywhere told a new person that saving reels does not, on its own, produce
+  // anything. They sign in, share a reel, see it accepted, and quietly get no summary.
+  // `ai_provider` is null only until they choose for the first time.
+  if (store.settings && !store.settings.ai_provider) {
+    const prompt = document.createElement("div");
+    prompt.className = "notice warn";
+    prompt.append(document.createTextNode(
+      "Your reels are being saved, but nothing is being summarised yet — that needs one "
+      + "setup step. It takes a minute, and there is a free way that needs no account. "
+    ));
+    const link = document.createElement("a");
+    link.href = "#/settings";
+    link.textContent = "Set it up";
+    prompt.append(link);
+    $("clipList").append(prompt);
+  }
 
   if (!wanted.length) {
     const empty = document.createElement("p");
@@ -480,6 +594,107 @@ function renderList() {
     card.onclick = () => { location.hash = `#/clip/${clip.id}`; };
     $("clipList").append(card);
   }
+}
+
+// ---------------------------------------------------------------- doing it by hand (D9)
+/**
+ * The copy-and-paste tier, which is what lets someone use this without ever connecting an
+ * AI account. It was offered in Settings and did nothing, because only the server half
+ * existed: the app never asked for the question or offered anywhere to paste the answer.
+ *
+ * Shown whenever a clip has been written down but has no summary — which covers both
+ * "never connected an AI" and "connected one, but this clip did not get summarised".
+ */
+function byHandSection(clip) {
+  const section = document.createElement("div");
+
+  const heading = document.createElement("div");
+  heading.className = "notice warn";
+  heading.textContent = store.settings?.has_key
+    ? "This one has not been summarised. You can do it yourself below."
+    : "This one has been written down but not summarised. Either connect an AI in "
+      + "Settings, or do it yourself below — no account needed.";
+  section.append(heading);
+
+  const steps = document.createElement("ol");
+  steps.className = "plain";
+  for (const step of [
+    "Press the button below. It copies the reel's words and the question to ask about them.",
+    "Paste that into any AI you already use — ChatGPT, Gemini, Claude, whichever.",
+    "Copy its whole reply and paste it in the box underneath, then save."
+  ]) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    steps.append(item);
+  }
+  section.append(steps);
+
+  const copyButton = document.createElement("button");
+  copyButton.textContent = "Copy the question";
+
+  const fallback = document.createElement("textarea");
+  fallback.readOnly = true;
+  fallback.hidden = true;
+  fallback.style.marginTop = "8px";
+
+  const status = document.createElement("div");
+  status.id = "byHandMsg";
+
+  copyButton.onclick = async () => {
+    copyButton.disabled = true;
+    say("byHandMsg", "");
+    try {
+      const { prompt } = await api(`/v1/clips/${clip.id}/prompt`);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        say("byHandMsg", "Copied. Now paste it into your AI.", "ok");
+      } catch {
+        // Copying can be refused outright — an insecure address, or a browser that only
+        // allows it straight after a tap. Showing the text is not a nice extra here; it
+        // is the difference between the feature working and not.
+        fallback.value = prompt;
+        fallback.hidden = false;
+        fallback.select();
+        say("byHandMsg", "Your browser would not let the app copy it. "
+          + "The text is below — select it all and copy it yourself.", "warn");
+      }
+    } catch (error) {
+      say("byHandMsg", error.message);
+    } finally {
+      copyButton.disabled = false;
+    }
+  };
+
+  const answer = document.createElement("textarea");
+  answer.placeholder = "Paste the AI's whole reply here";
+  answer.style.marginTop = "10px";
+
+  const saveButton = document.createElement("button");
+  saveButton.textContent = "Save the answer";
+  saveButton.style.marginTop = "8px";
+  saveButton.onclick = async () => {
+    const pasted = answer.value.trim();
+    if (!pasted) {
+      say("byHandMsg", "Paste the AI's reply first.");
+      return;
+    }
+    saveButton.disabled = true;
+    say("byHandMsg", "");
+    try {
+      await api(`/v1/clips/${clip.id}/analysis`, {
+        method: "POST",
+        body: JSON.stringify({ pasted })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("byHandMsg", error.message);
+      saveButton.disabled = false;
+    }
+  };
+
+  section.append(copyButton, fallback, answer, saveButton, status);
+  return section;
 }
 
 // ---------------------------------------------------------------- one clip's own page
@@ -622,12 +837,7 @@ function renderClip(clipId) {
       `Summarised by ${analysis.provider}${analysis.model ? ` (${analysis.model})` : ""}.`;
     panel.append(credit);
   } else if (transcript) {
-    const none = document.createElement("div");
-    none.className = "notice warn";
-    none.textContent =
-      "This one has been written down but not summarised — no AI account is connected yet. " +
-      "Open Settings to connect one.";
-    panel.append(none);
+    panel.append(byHandSection(clip));
   }
 
   if (transcript) {
@@ -680,7 +890,25 @@ function renderClip(clipId) {
 }
 
 // ---------------------------------------------------------------- routing
+/**
+ * The guide has to be readable before signing in — somebody deciding whether to hand over
+ * their Google account should be able to find out what this thing does first. So it lives
+ * outside the signed-in area and this decides, in one place, which of the three shells is
+ * on screen.
+ */
+function applyChrome() {
+  const onGuide = location.hash === "#/guide";
+  $("guideView").hidden = !onGuide;
+  $("signInView").hidden = signedIn || onGuide;
+  $("appView").hidden = !signedIn || onGuide;
+  $("who").hidden = !signedIn;
+}
+
 function render() {
+  applyChrome();
+  if (location.hash === "#/guide") return;
+  if (!signedIn) return;
+
   const match = location.hash.match(/^#\/clip\/(.+)$/);
   if (match) {
     show("clipView");
@@ -898,6 +1126,8 @@ $("provider").onchange = renderProviderHelp;
 
 $("settingsBack").onclick = () => { location.hash = ""; };
 $("navSettings").onclick = () => { location.hash = "#/settings"; };
+$("navGuide").onclick = () => { location.hash = "#/guide"; };
+$("guideBack").onclick = () => { location.hash = ""; };
 $("home").onclick = () => { location.hash = ""; };
 
 // ---------------------------------------------------------------- search and filters
@@ -932,9 +1162,8 @@ $("signOut").onclick = () => {
 
 onAuthStateChanged(auth, async (account) => {
   user = account;
-  $("signInView").hidden = Boolean(account);
-  $("appView").hidden = !account;
-  $("who").hidden = !account;
+  signedIn = Boolean(account);
+  applyChrome();
   if (!account) { store = structuredClone(EMPTY); return; }
 
   $("whoEmail").textContent = account.email || "";
