@@ -29,10 +29,10 @@ name = "cliptoaction-api-staging"
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "cliptoaction-staging"
-database_id = "set-after-wrangler-d1-create-cliptoaction-staging"
+database_id = "f4477836-8420-46c1-addb-d2af749af3f2"
 
 [env.staging.vars]
-FIREBASE_PROJECT_ID = "set-to-your-firebase-project-id"
+FIREBASE_PROJECT_ID = "cliptoaction-ff144"
 APP_ORIGIN = "http://localhost:8788"
 
 # ---------------------------------------------------------------- production
@@ -46,5 +46,5 @@ database_name = "cliptoaction"
 database_id = "set-after-wrangler-d1-create-cliptoaction"
 
 [env.production.vars]
-FIREBASE_PROJECT_ID = "set-to-your-firebase-project-id"
+FIREBASE_PROJECT_ID = "cliptoaction-ff144"
 APP_ORIGIN = "https://jaiswalmagic1.github.io"
