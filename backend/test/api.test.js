@@ -247,6 +247,71 @@ describe("saving settings does not silently throw the key away", () => {
   });
 });
 
+describe("sync tells the app what the user's settings are, without telling it the key", () => {
+  // The settings screen used to open on a default provider and an empty key box every
+  // time, whatever the person had actually chosen, because nothing in the API said. That
+  // made a saved key indistinguishable from no key at all, which is how two "it did not
+  // save" reports happened on 2026-08-21.
+  const KEY = "erins-key-value-not-a-real-one";
+
+  let erin;
+  let frank;
+
+  before(async () => {
+    erin = await harness.mintToken("erin");
+    frank = await harness.mintToken("frank");
+  });
+
+  const settingsFromSync = async (token) => {
+    const sync = await harness.call(worker, "/v1/sync?since=0", { token });
+    assert.equal(sync.status, 200);
+    return sync.body.settings;
+  };
+
+  const save = async (token, body) =>
+    harness.call(worker, "/v1/settings", { method: "PUT", token, body });
+
+  test("before anything is chosen, sync says so rather than guessing", async () => {
+    const settings = await settingsFromSync(erin);
+    assert.deepEqual(settings, { ai_provider: null, has_key: false });
+  });
+
+  test("after saving a key, sync reports the provider and that a key is held", async () => {
+    await save(erin, { provider: "groq", api_key: KEY });
+    assert.deepEqual(await settingsFromSync(erin), { ai_provider: "groq", has_key: true });
+  });
+
+  test("the key itself never comes back through sync", async () => {
+    const sync = await harness.call(worker, "/v1/sync?since=0", { token: erin });
+    const body = JSON.stringify(sync.body);
+    assert.ok(!body.includes(KEY), "the key must not be in the response");
+    assert.ok(!body.includes("ai_key_cipher"), "nor may the encrypted form be");
+
+    const cipher = harness.database
+      .prepare("SELECT ai_key_cipher FROM users WHERE id = ?").get("erin").ai_key_cipher;
+    assert.ok(cipher, "there should be a stored key for this to be a real test");
+    assert.ok(!body.includes(cipher), "not even the ciphertext may be handed to the client");
+  });
+
+  test("changing the provider without a key still reports the key is held", async () => {
+    await save(erin, { provider: "anthropic" });
+    assert.deepEqual(await settingsFromSync(erin), { ai_provider: "anthropic", has_key: true });
+  });
+
+  test("choosing copy-and-paste reports no key held", async () => {
+    await save(erin, { provider: "manual" });
+    assert.deepEqual(await settingsFromSync(erin), { ai_provider: "manual", has_key: false });
+  });
+
+  test("one person's settings are never reported to another", async () => {
+    await save(erin, { provider: "gemini", api_key: KEY });
+    await save(frank, { provider: "xai" });
+
+    assert.deepEqual(await settingsFromSync(erin), { ai_provider: "gemini", has_key: true });
+    assert.deepEqual(await settingsFromSync(frank), { ai_provider: "xai", has_key: false });
+  });
+});
+
 describe("a pasted analysis stays with the user who pasted it", () => {
   const PASTE_REEL = "https://instagram.com/reel/PASTE/";
   const payload = {

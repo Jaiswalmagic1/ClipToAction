@@ -239,7 +239,7 @@ const provider = new GoogleAuthProvider();
 // D6 requires delta sync: the whole notebook is kept on the device and only what changed
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
 const EMPTY = {
-  since: 0, clips: [], notes: [], questions: [], topics: [],
+  since: 0, settings: null, clips: [], notes: [], questions: [], topics: [],
   tasks: [], sources: [], transcripts: [], analyses: []
 };
 let store = structuredClone(EMPTY);
@@ -286,6 +286,7 @@ function applyDelta(delta) {
   store.analyses = mergeRows(
     store.analyses, delta.analyses || [], (row) => `${row.source_id}|${row.user_id}`
   );
+  if (delta.settings) store.settings = delta.settings;
   store.since = delta.now || store.since;
   saveCache();
 }
@@ -679,7 +680,7 @@ function render() {
   }
   if (location.hash === "#/settings") {
     show("settingsView");
-    renderProviderHelp();
+    renderSettings();
     return;
   }
   show("listView");
@@ -734,13 +735,13 @@ $("saveSettings").onclick = async () => {
   try {
     const result = await api("/v1/settings", { method: "PUT", body: JSON.stringify(body) });
 
-    // The key is wiped from the box because it is never shown back. On its own that reads
-    // as "it did not save" — an empty box is what failure looks like. The placeholder has
-    // to carry the reassurance instead.
-    $("apiKey").value = "";
-    $("apiKey").placeholder = result.key_stored
-      ? "A key is saved — leave this empty to keep it"
-      : "Paste your key";
+    // Keep the device copy in step with what was just saved, so the screen is right
+    // immediately rather than only after the next sync. The key is wiped from the box
+    // because it is never shown back, and on its own an empty box reads as "it did not
+    // save" — renderSettings puts the reassurance in the placeholder instead.
+    store.settings = { ai_provider: result.provider, has_key: Boolean(result.key_stored) };
+    saveCache();
+    renderSettings();
 
     // Three different things, and they used to share two messages between them: no key
     // because none is wanted, no key because none has been pasted yet, and a key in place.
@@ -816,6 +817,21 @@ const PROVIDER_HELP = {
       + "already use, and you paste the answer back."
   }
 };
+
+/**
+ * Put the person's own choices on the settings screen. Without this it opened on the first
+ * provider in the list with an empty key box every time, so someone who had connected Groq
+ * months ago was shown "Gemini" and no key — indistinguishable from never having set it up.
+ */
+function renderSettings() {
+  const settings = store.settings;
+  if (settings?.ai_provider) $("provider").value = settings.ai_provider;
+  $("apiKey").value = "";
+  $("apiKey").placeholder = settings?.has_key
+    ? "A key is saved — leave this empty to keep it"
+    : "Paste your key";
+  renderProviderHelp();
+}
 
 function renderProviderHelp() {
   const help = PROVIDER_HELP[$("provider").value];

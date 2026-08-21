@@ -212,8 +212,23 @@ async function deltaSync(request, env, userId) {
     .bind(userId, since, SHARED, userId)
     .all();
 
+  // The user's own settings, so the settings screen can show what they actually chose
+  // instead of opening on a default and an empty key box every time. Sent on every sync
+  // rather than gated on `since`: it is a single row, and `last_seen_at` moves on every
+  // request anyway, so gating it would return it every time regardless.
+  //
+  // `has_key` and never the key. The stored value is only ever decrypted inside the Worker
+  // to call a provider (D11), and there is a test that it cannot come back through here.
+  const user = await env.DB.prepare(`SELECT ai_provider, ai_key_cipher FROM users WHERE id = ?1`)
+    .bind(userId)
+    .first();
+
   return json(env, {
     now: timestamp,
+    settings: {
+      ai_provider: user?.ai_provider || null,
+      has_key: Boolean(user?.ai_key_cipher)
+    },
     clips: clips.results,
     notes: notes.results,
     questions: questions.results,
