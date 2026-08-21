@@ -45,6 +45,7 @@ The reel is a seed, not the destination.
 | D23 | Old sync | The GitHub-token sync goes in the same change that adds Google sign-in. Both paths are never live at once. |
 | D24 | Build order | A layer is not built until the layer beneath it has been proven end to end, with a throwaway if needed. |
 | D25 | Secret scan | Allows exactly one literal — the Firebase web key, which must ship in the app and is restricted to Firebase services. Nothing else. |
+| D26 | Staging hosting | The staging Worker also serves the app, so it can be opened on a phone at all. Production keeps the app on GitHub Pages. |
 
 ---
 

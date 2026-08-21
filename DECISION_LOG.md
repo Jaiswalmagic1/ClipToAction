@@ -426,3 +426,48 @@ planted on the *same line* as the allowed one.
 entirely — Firebase would hold Jaiswal's key and every user would run on his allowance.
 That is D8 reversed, and it moves the cost to him. Raised with him on 2026-08-21 and left
 switched off deliberately. If it is ever wanted, it is a decision to make on purpose.
+
+### D26 — The staging Worker also serves the app. Production still does not.
+**Date:** 2026-08-21
+**Narrows:** D16 and D21, which both assume GitHub Pages serves the app. Unchanged for
+production; this applies to staging alone.
+**The problem:** Firebase only permits Google sign-in from `localhost` and from domains on
+its authorised list. While the app existed only on a laptop's `localhost`, **it could not
+be opened on a phone at all** — so the small-screen layout and, far more seriously, the
+Android share sheet had never been run once. The share sheet is the only way anyone is
+meant to capture a reel (D17), which meant the product's entire everyday use was untested.
+**Options considered:**
+
+| | Why not |
+|---|---|
+| Put `app.html` on `main` so GitHub Pages serves it | Merging to `main` is a release (D16). Testing is not a reason to release. |
+| A new Cloudflare Pages project | Another service to create and keep in step, for a test |
+| Expose the laptop over the local network | Not HTTPS, so Firebase sign-in still refuses, and it proves nothing about the real thing |
+| **Serve it from the staging Worker** | **chosen** |
+
+**Decided:** the staging Worker serves the app from a static assets folder alongside its
+API. `wrangler.toml` gains `[env.staging.assets]` only — production is untouched.
+**Why it is safe:** assets are matched by filename and every API route begins with `/v1/`,
+so the two cannot collide; anything that matches no file falls through to the Worker
+exactly as before. Verified after deploying: `/app.html`, `/manifest.json`,
+`/share-target.html`, `/icon.svg` and `/` all serve, and `/v1/sync` with no sign-in still
+returns `401 {"error":"Sign in first."}`.
+**`html_handling = "none"`** so `/app.html` is served literally. Cloudflare otherwise
+redirects it to `/app`, and the address a phone is tested against should be the same one
+GitHub Pages will serve when the swap happens (D21).
+**No second copy of the app.** `app.html` at the repo root stays the single source.
+`backend/scripts/build-staging-assets.mjs` assembles the deploy folder and rewrites, on the
+way through, the two files that still point at the old app — `manifest.json`'s `start_url`
+and the share target's redirect. They are rewritten rather than edited, because D21 says
+the live page and its plumbing stay untouched until the swap. The folder is gitignored.
+**Also added to `app.html`:** a manifest link and a service worker registration. Android
+will not offer to install the app without them, and an app that cannot be installed never
+appears in the share sheet. The staging service worker caches nothing on purpose — a
+cached `app.html` during testing makes edits look like they did not happen, which had
+already cost time once.
+**Rules out:** serving the app from the production Worker. Production keeps the app on
+GitHub Pages and the API on Cloudflare, as D16 has it.
+**Consequence:** the staging address must be added to Firebase's authorised domains, and it
+is the one address where the app and the API share an origin — so a cross-site problem that
+only appears in production would not show up in a staging test. Worth remembering when the
+swap is made.

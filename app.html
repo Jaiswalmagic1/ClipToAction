@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#102a43">
+  <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon.svg">
   <title>ClipToAction</title>
   <style>
@@ -234,6 +235,14 @@ import {
 
 const auth = getAuth(initializeApp(FIREBASE_CONFIG));
 const provider = new GoogleAuthProvider();
+
+// Android will not offer to install the app — and so will not put it in the share sheet,
+// which is the only way in (D17) — without a registered service worker. A failure here
+// must not stop the app loading: it only costs installability, and it is expected on any
+// address that is not HTTPS.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("service-worker.js").catch(() => {});
+}
 
 // ---------------------------------------------------------------- local notebook
 // D6 requires delta sync: the whole notebook is kept on the device and only what changed
