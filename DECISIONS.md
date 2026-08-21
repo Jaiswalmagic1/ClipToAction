@@ -4,7 +4,7 @@ Running list of what is settled and what is still open. Updated every session.
 **Why each decision was made — options considered, factors weighed — is in
 [DECISION_LOG.md](DECISION_LOG.md).** That file is binding; this one is its index.
 
-Last updated: 2026-08-12
+Last updated: 2026-08-21
 
 ---
 
@@ -62,8 +62,8 @@ The reel is a seed, not the destination.
 
 | Step | Covers | State |
 |---|---|---|
-| 1 | D1 schema + Worker API (auth, dedupe, delta sync, copy-paste tier) | Built, **not deployed** |
-| 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | Built, **never run for real** |
+| 1 | D1 schema + Worker API (auth, dedupe, delta sync, copy-paste tier) | Built and **deployed to staging** 2026-08-21 |
+| 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | Download + transcribe **proven on a real reel**; the API half not yet exercised |
 | 3 | App rewrite — Google sign-in, delta sync, notebook view | Not started |
 | 4 | The six value features (below) | Not started |
 | 5 | Compliance + launch gates | Not started |
@@ -81,9 +81,11 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | 15 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation |
+| Test suite | 52 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, and the auth surface end to end |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |
-| Cloudflare / Firebase / Gemini accounts | Not created |
-| Anything running end to end | No |
+| Cloudflare / Firebase accounts | **Created** 2026-08-21 under `cliptoaction@gmail.com`. Cloudflare account `06b97f8f…`, subdomain `cliptoaction.workers.dev`, Firebase project `cliptoaction-ff144` (Google sign-in on, Analytics off). Gemini API key still not created. |
+| Staging | **Live** — `https://cliptoaction-api-staging.cliptoaction.workers.dev`, database `cliptoaction-staging`, both secrets set |
+| Production | Nothing created. No database, no secrets, not deployed (D20) |
+| Anything running end to end | No — nothing can save a clip until the app exists, so no reel has been through the full chain |
