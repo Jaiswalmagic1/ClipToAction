@@ -60,9 +60,26 @@ jobs:
           # Covers every provider this product actually supports. The earlier version
           # missed sk-proj- (the '-' ends the character class four chars in), Groq's
           # gsk_, xAI's xai-, and both of this project's own secrets.
-          if grep -rInE '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIzaSy[A-Za-z0-9_-]{30,}|sk-(proj-)?[A-Za-z0-9_-]{32,}|sk-ant-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}|xoxb-[0-9]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(KEY_ENCRYPTION_SECRET|WORKER_SERVICE_TOKEN|CLOUDFLARE_API_TOKEN)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9+/_-]{20,})' \
-               --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.claude \
-               --exclude=ci.yml . ; then
+          #
+          # ONE allowed value (D25). A Firebase web key and a Gemini key are the same
+          # shape -- AIzaSy plus 33 characters -- so no pattern can tell them apart, and
+          # the Firebase one has to ship inside the app to work at all. Google documents
+          # it as safe to commit, and it is restricted to Firebase services only, checked
+          # 2026-08-21. So exactly this literal is allowed and nothing else is: the value
+          # is deleted from each matching line and the line is re-tested, so a line
+          # carrying this key AND a real one still fails. Never widen this to a file or a
+          # pattern. If the key is ever rotated, this value changes with it.
+          ALLOWED='AIzaSyCFkOgIiDpWSbikd_QICx--z_MhQhtditY'
+          PATTERN='(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIzaSy[A-Za-z0-9_-]{30,}|sk-(proj-)?[A-Za-z0-9_-]{32,}|sk-ant-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}|xoxb-[0-9]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(KEY_ENCRYPTION_SECRET|WORKER_SERVICE_TOKEN|CLOUDFLARE_API_TOKEN)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9+/_-]{20,})'
+
+          FOUND=$(grep -rInE "$PATTERN" \
+                    --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.claude \
+                    --exclude=ci.yml . \
+                  | sed "s/$ALLOWED//g" \
+                  | grep -E "$PATTERN" || true)
+
+          if [ -n "$FOUND" ]; then
+            echo "$FOUND"
             echo ""
             echo "FAILED: something shaped like a live credential is committed."
             echo "Rotate it first -- git history keeps it even after you delete the line."

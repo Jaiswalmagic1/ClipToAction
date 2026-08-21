@@ -40,6 +40,11 @@ The reel is a seed, not the destination.
 | D18 | Shared rows | Only the Worker writes a row other people read. Anything a user typed is stored against that user. |
 | D17 | Capture path | The PWA share target is the only way in. The Telegram bot is removed — one capture path, one identity model. Recoverable from git history if ever wanted. |
 | D16 | Releases | `main` is live and a push to it is a release. Branches are where work is built and proven, and push freely. Nothing crosses to `main` without passing CI + the PM tag + branch protection. |
+| D21 | App rewrite | Built as a new page beside the live one. `index.html` is never left half-migrated; one commit swaps it. |
+| D22 | Notebook view | A list of clips, newest first, with search. Each clip opens its own page, and that page is what grows. |
+| D23 | Old sync | The GitHub-token sync goes in the same change that adds Google sign-in. Both paths are never live at once. |
+| D24 | Build order | A layer is not built until the layer beneath it has been proven end to end, with a throwaway if needed. |
+| D25 | Secret scan | Allows exactly one literal — the Firebase web key, which must ship in the app and is restricted to Firebase services. Nothing else. |
 
 ---
 
@@ -63,8 +68,8 @@ The reel is a seed, not the destination.
 | Step | Covers | State |
 |---|---|---|
 | 1 | D1 schema + Worker API (auth, dedupe, delta sync, copy-paste tier) | Built and **deployed to staging** 2026-08-21 |
-| 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | Download + transcribe **proven on a real reel**; the API half not yet exercised |
-| 3 | App rewrite — Google sign-in, delta sync, notebook view | Not started |
+| 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | **Proven end to end on staging** 2026-08-21 — save → claim → download → transcribe → post back → Gemini analysis → read back |
+| 3 | App rewrite — Google sign-in, delta sync, notebook view | **In progress** — decided in D21–D23, being built on a branch |
 | 4 | The six value features (below) | Not started |
 | 5 | Compliance + launch gates | Not started |
 
@@ -85,7 +90,7 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |
-| Cloudflare / Firebase accounts | **Created** 2026-08-21 under `cliptoaction@gmail.com`. Cloudflare account `06b97f8f…`, subdomain `cliptoaction.workers.dev`, Firebase project `cliptoaction-ff144` (Google sign-in on, Analytics off). Gemini API key still not created. |
+| Cloudflare / Firebase accounts | **Created** 2026-08-21 under `cliptoaction@gmail.com`. Cloudflare account `06b97f8f…`, subdomain `cliptoaction.workers.dev`, Firebase project `cliptoaction-ff144` (Google sign-in on, Analytics off), web app `ClipToAction Web` registered. **Gemini API key created** and connected to staging. |
 | Staging | **Live** — `https://cliptoaction-api-staging.cliptoaction.workers.dev`, database `cliptoaction-staging`, both secrets set |
 | Production | Nothing created. No database, no secrets, not deployed (D20) |
-| Anything running end to end | No — nothing can save a clip until the app exists, so no reel has been through the full chain |
+| Anything running end to end | **Yes** — two real reels (Instagram and Facebook) went the whole way through staging on 2026-08-21, analysis included |

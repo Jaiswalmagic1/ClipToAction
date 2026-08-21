@@ -193,6 +193,50 @@ out of his personal account keeps ownership, billing and any future transfer cle
 
 ---
 
+## The app
+
+### D21 — The new app is built beside the live page, never on top of it
+**Date:** 2026-08-21
+**Options considered:** rewrite `index.html` in place; build the new app at a new path and
+swap when it works.
+**Decided:** build it as a separate page on a branch. `index.html` keeps serving the old
+app, untouched, until the new one is proven — then one commit swaps it.
+**Why:** GitHub Pages serves `index.html` straight from `main` (D16), so a half-finished
+rewrite of that file is a half-finished public website. There is no safe intermediate state
+when the file being edited *is* the release.
+**Rules out:** any commit to `main` that leaves `index.html` in a partly-migrated state.
+The swap is a single change that either works or is not made.
+**Consequence:** for the length of the app work there are two apps in the repo. That is the
+intended cost, and the old one is deleted by the same commit that promotes the new one.
+
+### D22 — The notebook is a list of clips; each clip opens its own page that grows
+**Date:** 2026-08-21
+**Options considered:** one long page that everything is appended to; a list of clips, each
+opening its own entry; clips grouped under topics.
+**Decided:** a list, newest first, with search. Tapping a clip opens that clip's own page,
+and that page is what grows as the user asks questions and writes notes.
+**Why:** the product's core claim is that the reel is a seed, not the destination — the
+entry has to be a place that grows. One long page cannot be that past a few dozen clips,
+and topic grouping is a real feature (one of the six) that does not exist yet, so it cannot
+be the only way in. Grouping is added later as a view over the list, not instead of it.
+**Rules out:** a design where a clip has no page of its own.
+**Consequence:** the list must be cheap to render from local storage and only ask the
+server for what changed (D6). Search runs over what is already on the device.
+
+### D23 — The GitHub-token sync is removed in the same change that adds Google sign-in
+**Date:** 2026-08-21
+**Completes:** D3, which was superseded by D6 and whose sync was left running.
+**Options considered:** leave the old sync in place as a fallback until the new one settles;
+remove it in the same change.
+**Decided:** remove it in the same change.
+**Why:** it stores a GitHub token with write access to the repository in browser storage on
+a public `*.github.io` origin. That is not a fallback, it is a live exposure, and the only
+reason to keep it would be distrust of the new path — which is what staging is for. It has
+already been preserved once on the `github-sync-wip` branch, so nothing is lost.
+**Rules out:** any build where both sync paths are live at once.
+
+---
+
 ## How this project is built
 
 ### D14 — gstack workflow and PM Discipline are adopted and enforced in this repo
@@ -322,3 +366,63 @@ matched credential *prefixes* and failed on the clean repo — `index.html`'s to
 literally reads `ghp_... or github_pat_...`. A gate that cries wolf gets switched off, so
 it now matches credential shapes, and was verified both ways: silent on the clean repo,
 still catches a planted key.
+
+### D24 — A layer is not built until the layer beneath it has been proven end to end
+**Date:** 2026-08-21
+**Options considered:** build the app first and discover the backend's gaps through it;
+prove the backend by hand first, then build the app on something known to work.
+**Decided:** prove first. Before the app was written, one sign-in token was obtained by
+hand, one clip was saved with it, and the whole chain was watched through on staging —
+save, claim, download, transcribe, post back, analyse, read back.
+**Why:** the app was the only thing that could produce a sign-in token, which made it look
+like the app had to come first. It did not: a twenty-line throwaway page produced the same
+token. Building the app first would have stacked new untested code on an untested chain,
+and every failure would have had two possible homes.
+**What it actually caught, before a line of app code existed:** the service token goes in an
+`X-Service-Token` header and not a bearer token; analysis silently does nothing until some
+user has a key connected; Instagram reports no duration but Facebook does.
+**Rules out:** "we will find out when the app runs." If a layer cannot be exercised without
+the thing being built on top of it, exercise it with a throwaway.
+**Extends:** D20 — that rule says nothing ships untested; this one says nothing is *built
+on* untested.
+
+### D25 — The secret scan allows exactly one literal: the Firebase web key
+**Date:** 2026-08-21
+**Amends:** the secret scan established in D16. The scan itself, and the reason it matches
+shapes rather than prefixes, is unchanged.
+**The problem:** a Firebase web key and a Gemini key are the same shape — `AIzaSy` plus 33
+characters. No pattern can tell them apart. But the Firebase one *has* to be inside the
+app to work at all, so `app.html` (D21) makes the scan go red on a repo that is clean.
+**Options considered:**
+
+| | Why not |
+|---|---|
+| Exclude `app.html` from the scan | Blinds the gate on the file most likely to leak a real key |
+| Break the key into pieces so the pattern misses it | Defeating the gate rather than deciding about it — exactly what D14 exists to stop |
+| Serve the Firebase config from the Worker instead | The key still reaches the browser, so it protects nothing; it costs a request on every open and a new endpoint |
+| **Allow one exact literal value** | **chosen** |
+
+**Decided:** the scan deletes exactly one known value from each matching line and re-tests
+the line. Anything still matching fails.
+**Why this is safe to publish:** confirmed from `https://firebase.google.com/docs/projects/api-keys`
+— Firebase web keys identify a project, they do not authorise; Google documents them as
+fine to commit. That holds **only while the key is restricted**, because an unrestricted
+key can reach any API enabled on the project, and Google says explicitly never to allow the
+Gemini API on a public key. Checked in Google Cloud Console on 2026-08-21: the browser key
+is restricted to 25 Firebase services and the Gemini API is **not** among them. The Gemini
+key is a separate credential, scoped to the Gemini API alone.
+**Also done at the same time:** `Firebase AI Logic API` was removed from the browser key's
+list. It is a client-side route to the same Gemini models through a Firebase proxy, its
+App Check guard is not set up, and this project does not use it — analysis runs in the
+Worker (D11). It was access given away for no benefit.
+**Rules out:** widening this to a file exclusion, a pattern, or a second value without a
+new decision. One value, written in the workflow, with the reason next to it.
+**Build rule:** if the Firebase key is ever rotated, the value in `ci.yml` changes with it.
+**Proven both ways before it was committed** (Golden Rule 24): passes on the real repo;
+still fails on a different Google key planted in its own file; still fails on a real key
+planted on the *same line* as the allowed one.
+
+**Noted, not decided:** Firebase AI Logic would remove the bring-your-own-key step
+entirely — Firebase would hold Jaiswal's key and every user would run on his allowance.
+That is D8 reversed, and it moves the cost to him. Raised with him on 2026-08-21 and left
+switched off deliberately. If it is ever wanted, it is a decision to make on purpose.
