@@ -261,6 +261,9 @@
         </ul>
         <p class="muted">Until you pick one of those, reels are saved and written down but
            nothing gets summarised.</p>
+        <p>Reels you saved <em>before</em> connecting an AI are not summarised on their own
+           — open one and press <strong>Summarise it now</strong>. It is one at a time on
+           purpose, so a free daily allowance is never used up without you asking.</p>
 
         <h3>4. What you get on each clip</h3>
         <ul class="plain">
@@ -611,10 +614,39 @@ function byHandSection(clip) {
   const heading = document.createElement("div");
   heading.className = "notice warn";
   heading.textContent = store.settings?.has_key
-    ? "This one has not been summarised. You can do it yourself below."
+    ? "This one has not been summarised yet."
     : "This one has been written down but not summarised. Either connect an AI in "
       + "Settings, or do it yourself below — no account needed.";
   section.append(heading);
+
+  // A summary is otherwise only ever made the moment a reel finishes being written down.
+  // Somebody who saves ten reels and connects an AI afterwards would get summaries on the
+  // eleventh and nothing at all for the ten already sitting there. One press, one clip:
+  // sweeping the whole backlog unasked could burn a free daily allowance in one go and
+  // look, from the outside, exactly like the app breaking.
+  if (store.settings?.has_key) {
+    const now = document.createElement("button");
+    now.textContent = "Summarise it now";
+    now.style.marginBottom = "6px";
+    now.onclick = async () => {
+      now.disabled = true;
+      say("byHandMsg", "Asking your AI — this takes a few seconds.", "ok");
+      try {
+        await api(`/v1/clips/${clip.id}/summarise`, { method: "POST" });
+        await sync();
+        render();
+      } catch (error) {
+        say("byHandMsg", error.message);
+        now.disabled = false;
+      }
+    };
+    section.append(now);
+
+    const or = document.createElement("p");
+    or.className = "muted";
+    or.textContent = "Or do it yourself, without using your AI account:";
+    section.append(or);
+  }
 
   const steps = document.createElement("ol");
   steps.className = "plain";

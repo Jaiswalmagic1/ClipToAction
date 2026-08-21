@@ -73,6 +73,7 @@ export async function createTestEnv() {
 
   const realFetch = globalThis.fetch;
   const providerCalls = [];
+  let providerResponder = null;
   globalThis.fetch = async (url, options) => {
     if (String(url) === JWKS_URL) {
       // max-age=0 so auth.js re-fetches on every verification. Tests that need an
@@ -83,8 +84,14 @@ export async function createTestEnv() {
       });
     }
     // Any AI provider call in a test is recorded and refused, so no test can reach the
-    // network and a leaked key would be visible here.
+    // network and a leaked key would be visible here. A test that needs to exercise a
+    // *successful* analysis installs a responder with `answerProviderWith`; anything it
+    // does not answer still gets the refusal.
     providerCalls.push({ url: String(url), options });
+    if (providerResponder) {
+      const answer = providerResponder(String(url), options);
+      if (answer) return answer;
+    }
     return new Response(JSON.stringify({ error: "blocked in tests" }), { status: 503 });
   };
 
@@ -154,6 +161,26 @@ export async function createTestEnv() {
         status: response.status,
         body: text ? JSON.parse(text) : null
       };
+    },
+
+    /** Every AI provider call a test caused, so a test can check which key was used. */
+    providerCalls,
+
+    /** Answer the next provider calls with `responder(url, options)`; null clears it. */
+    answerProviderWith(responder) {
+      providerResponder = responder;
+    },
+
+    /** A Gemini reply carrying `payload` as the fenced json block the parser expects. */
+    geminiReplyWith(payload) {
+      const fenced = ["```json", JSON.stringify(payload, null, 2), "```"].join(String.fromCharCode(10));
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: fenced }] } }],
+          modelVersion: "gemini-test"
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
     },
 
     restore() {

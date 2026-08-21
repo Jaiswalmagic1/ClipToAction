@@ -543,6 +543,61 @@ async function buildPrompt(env, userId, clipId) {
   return json(env, { prompt: ANALYSIS_PROMPT + row.text });
 }
 
+/**
+ * Summarise one clip the user already has, on their own key, because they asked.
+ *
+ * A summary is otherwise only ever made at the moment a transcript lands. Someone who
+ * saves ten reels and connects an AI afterwards would get summaries on the eleventh and
+ * nothing at all for the ten already sitting there — a dead end with no way out of it
+ * inside the app.
+ *
+ * Deliberately one clip per press rather than sweeping the backlog the moment a key is
+ * connected: these run on free allowances, and quietly spending someone's daily limit
+ * without being asked would look like the app breaking for no reason.
+ */
+async function summariseOnDemand(request, env, userId, clipId) {
+  const row = await env.DB.prepare(
+    `SELECT c.source_id, t.text FROM clips c
+     JOIN transcripts t ON t.source_id = c.source_id
+     WHERE c.id = ?1 AND c.user_id = ?2`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!row) return fail(env, "No transcript yet for this clip.", 404);
+
+  const already = await env.DB.prepare(
+    `SELECT 1 AS found FROM analyses WHERE source_id = ?1 AND user_id = ?2`
+  )
+    .bind(row.source_id, SHARED)
+    .first();
+  if (already) return json(env, { ok: true, already: true });
+
+  try {
+    const analysis = await analyzeSource(env, row.source_id, row.text, userId);
+    if (!analysis) {
+      return fail(env, "Connect an AI account in Settings first, or use copy and paste.");
+    }
+
+    const problems = await storeAnalysis(
+      env,
+      row.source_id,
+      SHARED,
+      analysis.payload,
+      analysis.provider,
+      analysis.model
+    );
+    if (problems.length) throw new AnalysisError("the AI's reply was malformed");
+    return json(env, { ok: true });
+  } catch (error) {
+    // Unlike the automatic run, nothing is written to `sources.error` here. That column is
+    // read by everyone who saved the reel, and one person's key failing is not a fact
+    // about the reel. The person who pressed the button is watching, so the reason goes
+    // back to them and nowhere else.
+    const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+    return fail(env, `Could not summarise it: ${reason}`);
+  }
+}
+
 async function acceptPastedAnalysis(request, env, userId, clipId) {
   // A paste is only meaningful against a transcript this user can already see, which also
   // stops anyone pasting an analysis for a reel that has not been downloaded yet.
@@ -643,6 +698,9 @@ export default {
         }
         if (segments[3] === "prompt" && request.method === "GET") {
           return await buildPrompt(env, userId, segments[2]);
+        }
+        if (segments[3] === "summarise" && request.method === "POST") {
+          return await summariseOnDemand(request, env, userId, segments[2]);
         }
         if (segments[3] === "analysis" && request.method === "POST") {
           return await acceptPastedAnalysis(request, env, userId, segments[2]);

@@ -130,8 +130,26 @@ async function callAnthropic(prompt, apiKey) {
  * Returns null when nobody who saved it has a key — that is the normal copy-paste path,
  * not an error.
  */
-export async function analyzeSource(env, sourceId, transcript) {
-  const owner = await env.DB.prepare(
+/**
+ * `payerId` names the one person whose key must be used. It is set when somebody presses
+ * "Summarise this one" for themselves: they are volunteering their own allowance, and
+ * quietly spending an earlier saver's instead would be wrong. Left null — the automatic
+ * run when a transcript lands — the first saver with a key pays, which is D10's cost model
+ * and is unchanged.
+ */
+export async function analyzeSource(env, sourceId, transcript, payerId = null) {
+  const owner = payerId
+    ? await env.DB.prepare(
+        `SELECT ai_provider, ai_key_cipher
+         FROM users
+         WHERE id = ?1
+           AND ai_key_cipher IS NOT NULL
+           AND ai_provider IS NOT NULL
+           AND ai_provider != 'manual'`
+      )
+        .bind(payerId)
+        .first()
+    : await env.DB.prepare(
     `SELECT u.ai_provider, u.ai_key_cipher
      FROM clips c
      JOIN users u ON u.id = c.user_id

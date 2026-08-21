@@ -312,6 +312,190 @@ describe("sync tells the app what the user's settings are, without telling it th
   });
 });
 
+describe("summarising a clip you already had, on your own key", () => {
+  // A summary was only ever made at the moment a transcript landed. Save ten reels, then
+  // connect an AI, and you got summaries on the eleventh and nothing for the ten — with no
+  // way out of it inside the app.
+  const GRACE_KEY = "graces-key-value-not-a-real-one";
+  const HENRY_KEY = "henrys-key-value-not-a-real-one";
+
+  const ANSWER = {
+    summary: "A short summary of what the video said.",
+    key_points: ["the first point", "the second point"],
+    learn_more: ["something worth reading about"],
+    claims: [{ claim: "a claim", confidence: "medium", why: "no source was given" }],
+    suggested_task: null
+  };
+
+  const reel = (name) => `https://www.instagram.com/reel/${name}/`;
+
+  const sourceFor = (name) =>
+    harness.database.prepare("SELECT * FROM sources WHERE url_canonical LIKE ?").get(`%${name}%`);
+
+  const clipFor = (user, name) =>
+    harness.database
+      .prepare("SELECT id FROM clips WHERE user_id = ? AND source_id = ?")
+      .get(user, sourceFor(name).id);
+
+  /**
+   * Drives a transcript in without going through the queue. Claiming returns a batch
+   * shared with every other test in this file, so which sources come back depends on what
+   * ran before — deterministic setup matters more here than exercising the claim path,
+   * which has its own tests.
+   */
+  const transcribe = async (name) => {
+    const source = sourceFor(name);
+    assert.ok(source, `no source was created for ${name}`);
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(source.id);
+    const response = await harness.call(worker, `/v1/sources/${source.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "the words that were said in the video", lang: "en", engine: "test" }
+    });
+    assert.equal(response.status, 200);
+  };
+
+  let grace;
+  let henry;
+
+  before(async () => {
+    grace = await harness.mintToken("grace");
+    henry = await harness.mintToken("henry");
+
+    // Everything is saved and transcribed while nobody holds a key. That is both the state
+    // this feature exists for, and the only way to stop the automatic run at transcript
+    // time from summarising these before the tests reach them.
+    await saveClip(grace, reel("SUMMARISE1"));
+    await saveClip(henry, reel("SUMMARISE1"));
+
+    // Grace saves this one FIRST, so she is who the automatic run would have charged.
+    await saveClip(grace, reel("WHOSEKEY"));
+    await saveClip(henry, reel("WHOSEKEY"));
+
+    await saveClip(grace, reel("PROVIDERDOWN"));
+
+    await transcribe("SUMMARISE1");
+    await transcribe("WHOSEKEY");
+    await transcribe("PROVIDERDOWN");
+
+    assert.equal(sourceFor("SUMMARISE1").state, "transcribed", "nothing may be summarised yet");
+  });
+
+  after(() => harness.answerProviderWith(null));
+
+  test("without a key it says so plainly instead of failing", async () => {
+    const response = await harness.call(worker, `/v1/clips/${clipFor("grace", "SUMMARISE1").id}/summarise`, {
+      method: "POST",
+      token: grace
+    });
+
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /Connect an AI account/);
+  });
+
+  test("a clip that is not yours cannot be summarised", async () => {
+    const irene = await harness.mintToken("irene");
+    const response = await harness.call(worker, `/v1/clips/${clipFor("grace", "SUMMARISE1").id}/summarise`, {
+      method: "POST",
+      token: irene
+    });
+    assert.equal(response.status, 404);
+  });
+
+  test("a clip with no transcript yet cannot be summarised", async () => {
+    const saved = await saveClip(grace, reel("NOTRANSCRIPT"));
+    const response = await harness.call(worker, `/v1/clips/${saved.body.clip.id}/summarise`, {
+      method: "POST",
+      token: grace
+    });
+    assert.equal(response.status, 404);
+  });
+
+  test("with a key it summarises, and the result reaches everyone who saved the reel", async () => {
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: grace,
+      body: { provider: "gemini", api_key: GRACE_KEY }
+    });
+    harness.answerProviderWith(() => harness.geminiReplyWith(ANSWER));
+
+    const response = await harness.call(worker, `/v1/clips/${clipFor("grace", "SUMMARISE1").id}/summarise`, {
+      method: "POST",
+      token: grace
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.ok, true);
+
+    const graceSync = await harness.call(worker, "/v1/sync?since=0", { token: grace });
+    const stored = graceSync.body.analyses.find((a) => a.summary === ANSWER.summary);
+    assert.ok(stored, "the person who pressed the button must see it");
+    assert.equal(stored.user_id, "", "and it is shared, not filed against them (D10)");
+
+    // Henry saved the same reel and did nothing. Shared analyses are the whole cost model.
+    const henrySync = await harness.call(worker, "/v1/sync?since=0", { token: henry });
+    assert.ok(henrySync.body.analyses.some((a) => a.summary === ANSWER.summary));
+
+    const source = sourceFor("SUMMARISE1");
+    assert.equal(source.state, "analyzed");
+    assert.equal(source.error, null);
+  });
+
+  test("pressing it again does not spend the allowance a second time", async () => {
+    const callsBefore = harness.providerCalls.length;
+
+    const response = await harness.call(worker, `/v1/clips/${clipFor("grace", "SUMMARISE1").id}/summarise`, {
+      method: "POST",
+      token: grace
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.already, true);
+    assert.equal(harness.providerCalls.length, callsBefore, "no AI call may be made");
+  });
+
+  test("it spends the presser's own key, never another saver's", async () => {
+    // Grace saved this one first and already has a key, so she is exactly who the
+    // automatic run would have charged. Henry presses the button, so Henry pays.
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: henry,
+      body: { provider: "gemini", api_key: HENRY_KEY }
+    });
+    harness.answerProviderWith(() => harness.geminiReplyWith(ANSWER));
+
+    const callsBefore = harness.providerCalls.length;
+    const response = await harness.call(worker, `/v1/clips/${clipFor("henry", "WHOSEKEY").id}/summarise`, {
+      method: "POST",
+      token: henry
+    });
+    assert.equal(response.status, 200);
+
+    const call = harness.providerCalls[callsBefore];
+    assert.ok(call, "an AI call should have been made");
+    const keyUsed = call.options.headers["x-goog-api-key"];
+    assert.equal(keyUsed, HENRY_KEY, "Henry pressed it, so Henry's key pays");
+    assert.notEqual(keyUsed, GRACE_KEY);
+  });
+
+  test("a provider failure is reported to the presser and not onto the shared reel", async () => {
+    harness.answerProviderWith(null); // falls back to the harness's blanket refusal
+
+    const response = await harness.call(worker, `/v1/clips/${clipFor("grace", "PROVIDERDOWN").id}/summarise`, {
+      method: "POST",
+      token: grace
+    });
+
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /Could not summarise it/);
+
+    // The reel is shared. One person's key failing is not a fact about the reel, so it
+    // must not be written where everyone who saved it will read it.
+    const source = sourceFor("PROVIDERDOWN");
+    assert.equal(source.error, null, "nothing may be written to the shared row");
+    assert.equal(source.state, "transcribed", "and it stays retryable");
+  });
+});
+
 describe("a pasted analysis stays with the user who pasted it", () => {
   const PASTE_REEL = "https://instagram.com/reel/PASTE/";
   const payload = {
