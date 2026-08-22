@@ -47,6 +47,7 @@ The reel is a seed, not the destination.
 | D25 | Secret scan | Allows exactly one literal — the Firebase web key, which must ship in the app and is restricted to Firebase services. Nothing else. |
 | D26 | Staging hosting | The staging Worker also serves the app, so it can be opened on a phone at all. Production keeps the app on GitHub Pages. |
 | D27 | Topics | The AI proposes topics, two levels deep. The topic rows stay per-user even though the analysis that suggested them is shared. All questions answered; backend built 2026-08-22. |
+| D28 | Transcripts | Whisper always translates -- the transcript is English whatever was spoken -- and the model floor moves from `base` to `small`. Measured, not argued: transcribe mode is wrong at every size. |
 
 ---
 
@@ -88,7 +89,7 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | 97 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, and topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved |
+| Test suite | 107 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved — and whether the app can tell the PC worker is running. Plus 3 in `worker-pc`, `python -m unittest discover -p "test_*.py"`, guarding the transcription settings (D28) |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |

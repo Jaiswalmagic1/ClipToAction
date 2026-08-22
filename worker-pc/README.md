@@ -35,7 +35,25 @@ set with `wrangler secret put WORKER_SERVICE_TOKEN`).
 python worker.py
 ```
 
-First run downloads the whisper model (~150 MB for `base`). After that it is offline.
+First run downloads the whisper model (~500 MB for `small`). After that it is offline.
+
+## The transcript always comes back in English
+
+Whisper is asked to **translate**, never to write the spoken language down (D28). Asked to
+write Hindi in Hindi it produces broken text on the Hinglish these reels are actually in,
+and every summary, topic and search built on top inherits it. This is not a model-size
+problem — it was measured at `base`, `small` and `medium`, and all three fail the same way.
+Do not put `task="transcribe"` back.
+
+`transcripts.lang` still records what was **spoken**; `engine` ends in `:translate` to say
+the text beside it is English.
+
+```bash
+python -m unittest discover -p "test_*.py" -v
+```
+
+Three tests guard exactly that. They read the source rather than importing it, so they need
+no model and no `.env`, and they run in CI on every push.
 
 ## Letting it run itself
 

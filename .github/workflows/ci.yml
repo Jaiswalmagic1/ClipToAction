@@ -49,6 +49,12 @@ jobs:
       - name: PC worker syntax check
         run: python -c "import ast; ast.parse(open('worker-pc/worker.py', encoding='utf-8').read())"
 
+      - name: PC worker tests
+        # Guards the two settings that decide whether a transcript is usable at all (D28).
+        # Standard library only, no model download, no .env -- see test_worker.py.
+        working-directory: worker-pc
+        run: python -m unittest discover -p "test_*.py" -v
+
       - name: Secret scan
         run: |
           # Matches credential *shapes*, not prefixes. A bare prefix also appears in

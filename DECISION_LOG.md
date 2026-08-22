@@ -557,3 +557,64 @@ has been looked at is marked, named or not.
 saved it would otherwise mean one database round trip per saver inside the single request
 the PC worker is waiting on. Fifty are filed at once; everyone after that is filed by the
 sort button, which costs nothing because the name is already on the shared analysis.
+
+---
+
+### D28 — The transcript is always English. Whisper translates; it never writes Hindi down.
+**Date:** 2026-08-22
+**Options considered:** (a) ask whisper to translate, always, whatever was spoken;
+(b) keep asking it to write the spoken language down, and use a bigger model; (c) run it
+twice per reel and keep both the English and the original; (d) detect the language first,
+then transcribe English and translate everything else.
+**Decided:** (a), plus `WHISPER_MODEL` moves from `base` to `small`.
+
+**Why — measured, not argued.** A real reel Jaiswal saved came back as 378 characters of
+broken Devanagari, and Gemini's summary of it opened *"The transcript appears to be heavily
+corrupted"*. The same audio (`669b7ff5-7e04-4e6e-877c-045558222acf`, 29 seconds) was pulled
+down again and run six ways on the same PC:
+
+| Model | Task | Result | Time |
+|---|---|---|---|
+| base | transcribe — what ran until today | garbage, 243 chars | 242s |
+| base | translate | clean English, 480 chars | 11s |
+| small | transcribe | readable Devanagari, still the wrong words | 90s |
+| **small** | **translate** | **503 chars, nothing dropped** | **16s** |
+| medium | translate | good, ending clipped | 46s |
+| medium | transcribe | the best Devanagari of the six, still misspelt | 145s |
+
+**The finding that decides it: this was never the model's size.** Every `transcribe` run
+is wrong and every `translate` run is right, at every size. Option (b) does not fix it —
+`medium` is eight times the weight of `base` and still cannot spell the Hinglish these
+reels are actually in. Whisper's transcribe mode has to pick one language and commit to
+writing it out; these creators switch between Hindi and English inside a sentence, so
+whichever it picks is wrong half the time. Translation has no such problem — it is
+producing English either way.
+
+Every `transcribe` run is also 6–15x slower than its `translate` twin. That is the same
+fault seen from the other side: a decode that fails its confidence checks is retried at
+rising temperatures before whisper gives up, so the broken answer costs the most.
+
+**Why `small` and not `base`, given base already worked:** `base` translated correctly but
+dropped words. `small` cost five more seconds on a 29-second clip and kept the lot.
+`medium` cost three times as much again and was worse — it clipped the ending. `small` is
+the floor here, not a preference.
+
+**Not turbo, ever, for this.** OpenAI's own Whisper README states `turbo` is not trained
+for translation. Since translation is now the only mode this product uses, `large-v3-turbo`
+is disqualified however fast it is — checked 2026-08-22 (Golden Rule 1).
+
+**Stated before Jaiswal chose, and chosen anyway:** the Hindi words are not kept anywhere.
+A Hindi reel is stored in English and the original phrasing is gone. He was offered (c) and
+(d) and took (a) — English is what every downstream feature reads anyway, so a second pass
+would double the time per reel to store something nothing looks at.
+
+**What follows, and must not be undone by a later tidy-up:**
+
+- `transcripts.lang` still records the language that was **spoken** — that is true and
+  worth keeping. But the text beside it is English, so `engine` now ends in `:translate`.
+  Without that, the row reads as a lie to anyone who finds it later.
+- Nothing may reintroduce `task="transcribe"` for non-English audio on the theory that a
+  larger model will cope. That was tested at three sizes and it does not.
+
+**Rules out:** any feature that quotes a clip back in the language it was spoken in, and
+any search that expects Hindi words to be findable in the transcript.
