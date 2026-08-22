@@ -503,10 +503,36 @@ three accounts.
 which under D16 ships with the test that proves it. Every analysis produced before that
 change has no topic, so there must be an answer for the ones already stored.
 
-**Still open — do not build until these are answered:**
-1. Does the AI name topics inside the existing analysis, or in a separate pass?
-2. One topic per clip, or several?
-3. What happens to clips analysed before this existed?
-4. Can the user rename, merge or override what the AI chose — and if they rename a topic
-   the AI keeps proposing, does it stop fighting them?
-5. How are two near-identical topic names kept from splitting one subject in two?
+**Answered by Jaiswal, same day:**
+
+| Question | Answer |
+|---|---|
+| Where does the AI name them? | **In the summary itself** — topic and sub-topic worked out in the same pass, no second call |
+| How many per clip? | **One topic and one sub-topic.** Not tags, not several |
+| Clips already summarised, with no topic? | **Give the user the option to categorise them** — they are not left stranded |
+| Can the user override the AI? | **Yes, and the user's choice is final.** Once someone sets a topic by hand the AI must never overwrite it again |
+| How are near-identical names stopped from splitting a subject? | **By checking** against what already exists before a new topic is made |
+
+**The last answer collides with D10, and the collision has to be resolved in its favour.**
+"Check what already exists" cannot mean showing the AI the user's topic list, because the
+analysis is **shared** — one analysis per reel, reused by everyone who saved it. An analysis
+shaped around one person's topics is no longer reusable by anyone else, and D10's dedupe is
+the entire cost model: without it, 1,000 users means paying to analyse the same viral reel a
+thousand times.
+
+**So the checking moves out of the AI call and into filing, per user.** The AI names a topic
+and sub-topic blind, from the reel alone, and that stays in the shared analysis. When the
+clip lands in a particular person's notebook, the Worker matches that proposed name against
+**that user's** existing topics — normalised, so "Amazon listing" and "Amazon Listings" meet
+— and reuses the existing one rather than making a second. Same outcome Jaiswal asked for,
+without making analyses per-user.
+
+**What follows from "the user's choice is final":** a clip needs to carry whether its topic
+was set by a person or proposed by the AI. Without that flag, the next time anything re-runs,
+the AI quietly overwrites a decision someone made deliberately — a silent failure of exactly
+the kind Golden Rule 29 forbids.
+
+**Still to be planned before building** (mechanics, not product choices): the migration
+adding `parent_id` to `topics` and the human-set flag; the analysis contract change and the
+test D16 requires; how the option to categorise older clips is presented; and whether
+re-summarising a clip may change a topic the user has not touched.
