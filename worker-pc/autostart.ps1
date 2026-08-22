@@ -47,12 +47,35 @@ if (-not (Test-Path (Join-Path $Here ".env"))) {
 # unbuffered so that anything written while debugging appears immediately.
 $Action = New-ScheduledTaskAction -Execute $Python -Argument "-u `"$Script`"" -WorkingDirectory $Here
 
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# TWO triggers, and both are needed. Each was arrived at by watching this fail.
+#
+#   1. At logon  -- starts it the moment you sign in, with no waiting.
+#   2. Every five minutes, for ever -- this is what brings it back when it dies.
+#
+# Two things that look like they would do job 2 and do not:
+#
+#   "Restart on failure" (RestartCount/RestartInterval below). Tested 2026-08-22: the
+#   worker was killed, the task recorded a failure result of 0xFFFFFFFF, and Windows did
+#   not restart it. It is left set because it costs nothing, but nothing relies on it.
+#
+#   A repetition attached to the LOGON trigger. A trigger's repetition only starts running
+#   once that trigger fires, and a logon trigger does not fire again while you are already
+#   logged in -- so it sat there with no next run time at all, and the worker stayed dead.
+#   Tested the same day. The repeat has to be its own trigger.
+#
+# MultipleInstances IgnoreNew is what makes a five-minute retry safe: when the worker is
+# already running the attempt is quietly dropped, so a healthy worker is never disturbed
+# and a dead one is back within five minutes.
+$AtLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$KeepAlive = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+$Trigger = @($AtLogon, $KeepAlive)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
     -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -64,6 +87,12 @@ Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
     -Settings $Settings -Description "ClipToAction: downloads and transcribes saved reels." `
     -Force | Out-Null
 
-Write-Output "Done. The worker starts when you log in, and restarts itself if it stops."
+$next = (Get-ScheduledTaskInfo -TaskName $TaskName).NextRunTime
+if (-not $next) {
+    throw "Registered, but the scheduler has no next run planned -- the keep-alive is not armed. Do not trust this; report it."
+}
+
+Write-Output "Done. The worker starts when you log in, and is back within five minutes if it stops."
+Write-Output "Next automatic check: $next"
 Write-Output "Start it now without logging out:  Start-ScheduledTask $TaskName"
 Write-Output "The app shows you when it has gone quiet -- you should not need to look here."

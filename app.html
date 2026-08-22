@@ -576,25 +576,35 @@ function agoText(timestamp) {
 }
 
 /**
- * Whether the machine that downloads and transcribes is running.
+ * Whether the machine that downloads and transcribes is running — shown either way, on
+ * every visit, without being asked for.
  *
- * This exists because a stopped worker is otherwise completely silent: reels sit waiting,
- * every clip says the same thing it says while it is genuinely working, and nothing on
- * screen tells you the difference (Golden Rule 29). Nobody is going to remember there is a
- * program on a PC somewhere that has to be on.
- *
- * Nothing is shown while it is working normally. A line that is always there stops being
- * read, and the only moment this matters is the moment it stops.
+ * A stopped worker is otherwise completely silent: reels sit waiting, every clip says the
+ * same thing it says while genuinely working, and nothing tells you the difference
+ * (Golden Rule 29). And "off" is only half the answer — seeing that it IS on is what
+ * makes a slow clip readable as patience rather than a fault.
  */
 function workerNotice() {
   const state = store.worker;
-  if (!state || state.running) return null;
-
   const notice = document.createElement("div");
+
+  if (!state) {
+    notice.className = "notice";
+    notice.textContent = "Checking whether the PC that handles your reels is running…";
+    return notice;
+  }
+
+  if (state.running) {
+    notice.className = "notice ok";
+    notice.textContent = "The PC that downloads and writes up your reels is running"
+      + ` — last checked ${agoText(state.last_seen_at)}. New reels will be picked up within a minute.`;
+    return notice;
+  }
+
   notice.className = "notice warn";
   notice.textContent = state.last_seen_at
-    ? `The PC that downloads and writes up your reels was last running ${agoText(state.last_seen_at)}.`
-      + " Anything you save is safe and will be picked up when it is next switched on."
+    ? `The PC that downloads and writes up your reels is off — last running ${agoText(state.last_seen_at)}.`
+      + " Anything you save is safe and waiting; switch that PC on and it will catch up on its own."
     : "The PC that downloads and writes up your reels has not run yet."
       + " Anything you save is safe and waits until it does.";
   return notice;
@@ -1184,6 +1194,40 @@ function renderClip(clipId) {
   $("clipView").append(panel);
 }
 
+// ---------------------------------------------------------------- keeping it current
+/**
+ * The status has to be right when you open the app, not right when you last reloaded it.
+ *
+ * Two triggers, because they cover different things: coming back to the app is when a
+ * stale screen is most likely and most annoying, and the timer covers sitting and watching
+ * a reel being worked on.
+ *
+ * Only ever refreshes the notebook list. Redrawing a clip's page underneath somebody would
+ * wipe a half-typed note, and redrawing Settings would clear the key box — so a background
+ * refresh stops at the one screen where nothing can be lost.
+ */
+const REFRESH_MS = 45 * 1000;
+let refreshTimer = null;
+
+async function refreshQuietly() {
+  if (!signedIn || document.hidden || location.hash) return;
+  try {
+    await sync();
+    renderList();
+  } catch {
+    // Offline. The device copy stands and the next pass will pick it up — a background
+    // refresh must never put an error where the user did not ask for anything.
+  }
+}
+
+function startRefreshing() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refreshQuietly, REFRESH_MS);
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshQuietly(); });
+window.addEventListener("focus", refreshQuietly);
+
 // ---------------------------------------------------------------- routing
 /**
  * The guide has to be readable before signing in — somebody deciding whether to hand over
@@ -1467,7 +1511,11 @@ onAuthStateChanged(auth, async (account) => {
   user = account;
   signedIn = Boolean(account);
   applyChrome();
-  if (!account) { store = structuredClone(EMPTY); return; }
+  if (!account) {
+    store = structuredClone(EMPTY);
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    return;
+  }
 
   $("whoEmail").textContent = account.email || "";
   loadCache();
@@ -1484,6 +1532,7 @@ onAuthStateChanged(auth, async (account) => {
     say("syncMsg", `Showing your saved copy — ${error.message}`, "warn");
   }
   render();
+  startRefreshing();
   if (shared) saveLink(shared);
 });
 </script>
