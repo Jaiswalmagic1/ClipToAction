@@ -13,7 +13,19 @@
 
 import { verifyFirebaseToken, encryptSecret, tokensMatch, AuthError } from "./auth.js";
 import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "./canonical.js";
-import { ANALYSIS_PROMPT, analyzeSource, parseAnalysis, AnalysisError } from "./analyze.js";
+import {
+  ANALYSIS_PROMPT,
+  analyzeSource,
+  parseAnalysis,
+  proposeTopic,
+  AnalysisError
+} from "./analyze.js";
+import {
+  cleanTopicName,
+  fileClipIntoTopic,
+  fileSourceForAllSavers,
+  setClipTopicByHand
+} from "./topics.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
@@ -22,6 +34,11 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_SAVES_PER_DAY = 200;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
+// How many old clips one press of "sort my old clips" may name. Each one is a call out
+// to a provider, and a Worker request has a hard ceiling on how many of those it may
+// make. The app presses again while `remaining` is above zero, so the cap costs nothing
+// but keeps a notebook of any size inside one request's budget.
+const MAX_SORT_PER_REQUEST = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const LIMITS = {
@@ -161,6 +178,22 @@ async function saveClip(request, env, userId) {
   const clip = await env.DB.prepare(`SELECT * FROM clips WHERE user_id = ?1 AND source_id = ?2`)
     .bind(userId, sourceId)
     .first();
+
+  // Saving a reel somebody else already had summarised: the topic was named long before
+  // this user existed, so file it now rather than leaving their clip looking unsorted for
+  // no reason. Same guard as everywhere else — never over a topic they set by hand.
+  try {
+    const shared = await env.DB.prepare(
+      `SELECT topic, sub_topic FROM analyses WHERE source_id = ?1 AND user_id = ?2`
+    )
+      .bind(sourceId, SHARED)
+      .first();
+    if (shared?.topic) {
+      await fileClipIntoTopic(env, userId, clip?.id, shared, timestamp, newId);
+    }
+  } catch {
+    // Unfiled, and the app offers to sort it. Never a reason to fail the save itself.
+  }
 
   return json(env, { clip, reused: Boolean(existing) }, 201);
 }
@@ -457,6 +490,16 @@ export function validateAnalysis(payload) {
     }
   }
 
+  // Optional, like suggested_task. A missing topic is not a broken analysis — it leaves
+  // the clip unfiled, which the app shows and offers to sort, rather than throwing away a
+  // good summary over a field the model happened to skip. A topic of the wrong *type*
+  // does mean the reply is malformed, so that is still reported.
+  for (const field of ["topic", "sub_topic"]) {
+    const value = payload?.[field];
+    if (value === null || value === undefined) continue;
+    if (typeof value !== "string") problems.push(field);
+  }
+
   return problems;
 }
 
@@ -474,11 +517,11 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
     env.DB.prepare(
       `INSERT INTO analyses
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
-          suggested_task, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          suggested_task, topic, sub_topic, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
-         claims = ?8, suggested_task = ?9, created_at = ?10`
+         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, created_at = ?12`
     ).bind(
       sourceId,
       ownerId,
@@ -489,6 +532,8 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
       JSON.stringify(payload.learn_more),
       JSON.stringify(payload.claims),
       payload.suggested_task || null,
+      cleanTopicName(payload.topic) || null,
+      cleanTopicName(payload.sub_topic) || null,
       timestamp
     )
   ];
@@ -505,6 +550,30 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
   }
 
   await env.DB.batch(statements);
+
+  // Filing happens after the analysis is safely stored, and can never undo it. A filing
+  // failure leaves the clip with no topic, which the app shows as unfiled and offers to
+  // sort — a visible home for the failure (Golden Rule 29). Letting it throw instead would
+  // reach storeTranscript's catch and mark a reel that analysed perfectly well as failed,
+  // for everyone who saved it.
+  const proposed = { topic: payload.topic, sub_topic: payload.sub_topic };
+  try {
+    if (ownerId === SHARED) {
+      await fileSourceForAllSavers(env, sourceId, proposed, timestamp, newId);
+    } else {
+      // A user's own pasted analysis files only their own clip. Nobody else can see it,
+      // so nobody else's notebook may move because of it (D18).
+      const own = await env.DB.prepare(
+        `SELECT id FROM clips WHERE user_id = ?1 AND source_id = ?2 AND deleted_at IS NULL`
+      )
+        .bind(ownerId, sourceId)
+        .first();
+      if (own) await fileClipIntoTopic(env, ownerId, own.id, proposed, timestamp, newId);
+    }
+  } catch {
+    // Left unfiled on purpose — see above.
+  }
+
   return [];
 }
 
@@ -636,6 +705,118 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   return json(env, { ok: true });
 }
 
+/**
+ * "Sort my old clips" (D27) — for the clips summarised before topics existed.
+ *
+ * Two kinds get sorted. One is a reel somebody else has since had named, where the name
+ * is already sitting in the shared analysis and filing it costs nothing. The other has no
+ * name yet, and is named from the summary already stored — not the transcript, and never
+ * by re-summarising, because the summary itself is finished work.
+ *
+ * A clip whose topic the user set by hand is never included: fileClipIntoTopic refuses it,
+ * and it is filtered out here too so it cannot even cost a call.
+ */
+async function sortOldClips(request, env, userId) {
+  const timestamp = now();
+
+  // `topic_set_by IS NULL` is what makes this queue shrink. A clip that has been through
+  // here once is marked even when nothing could be named for it, so the app pressing
+  // "sort" until `remaining` reaches zero always terminates. Filtering on topic_id alone
+  // would leave an unnameable clip in the queue for ever, and the app would loop.
+  const pending = await env.DB.prepare(
+    `SELECT c.id, a.summary, a.topic, a.sub_topic, c.source_id
+     FROM clips c
+     JOIN analyses a ON a.source_id = c.source_id AND a.user_id = ?2
+     WHERE c.user_id = ?1
+       AND c.deleted_at IS NULL
+       AND c.topic_id IS NULL
+       AND c.topic_set_by IS NULL
+     ORDER BY c.created_at DESC`
+  )
+    .bind(userId, SHARED)
+    .all();
+
+  const queue = pending.results;
+  let attempted = 0;
+  let sorted = 0;
+  let failure = null;
+
+  for (const row of queue.slice(0, MAX_SORT_PER_REQUEST)) {
+    try {
+      let names = { topic: row.topic, sub_topic: row.sub_topic };
+
+      if (!cleanTopicName(names.topic)) {
+        const proposed = await proposeTopic(env, userId, row.summary);
+        if (!proposed) {
+          // Nothing has been spent and nothing can be. Say so outright when the run
+          // achieved nothing at all; if some clips were already sorted from names that
+          // cost nothing, keep that work and report the reason alongside it.
+          if (!sorted) return fail(env, "Connect an AI account in Settings first.", 400);
+          failure = "no AI account is connected";
+          break;
+        }
+        names = proposed;
+
+        if (cleanTopicName(names.topic)) {
+          // Stored on the shared analysis, so the next person to save this reel gets the
+          // name for free (D10). Only the Worker writes this row (D18).
+          await env.DB.prepare(
+            `UPDATE analyses SET topic = ?1, sub_topic = ?2
+             WHERE source_id = ?3 AND user_id = ?4`
+          )
+            .bind(
+              cleanTopicName(names.topic),
+              cleanTopicName(names.sub_topic) || null,
+              row.source_id,
+              SHARED
+            )
+            .run();
+        }
+      }
+
+      if (await fileClipIntoTopic(env, userId, row.id, names, timestamp, newId)) {
+        sorted += 1;
+      } else {
+        // Looked at, and there was no name to give it. Marked so it leaves the queue
+        // instead of being asked about again on every press, and so the app can show it
+        // as one the AI could not place rather than one still waiting.
+        await env.DB.prepare(
+          `UPDATE clips SET topic_set_by = 'ai', updated_at = ?1 WHERE id = ?2`
+        )
+          .bind(timestamp, row.id)
+          .run();
+      }
+      attempted += 1;
+    } catch (error) {
+      // One clip's failure stops the run rather than burning the rest of the allowance on
+      // what is almost certainly the same failure ten more times. What was already sorted
+      // stays sorted, and the reason goes back to the person watching — never onto the
+      // shared source row, which is not a fact about the reel.
+      failure = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+      break;
+    }
+  }
+
+  return json(env, { sorted, remaining: Math.max(queue.length - attempted, 0), error: failure });
+}
+
+/** Sets a clip's topic by hand. The user's choice is final (D27). */
+async function setTopic(request, env, userId, clipId) {
+  const body = await readJson(request);
+
+  const clip = await env.DB.prepare(
+    `SELECT id FROM clips WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  // Someone else's clip and a clip that does not exist answer the same way, so this
+  // cannot be used to find out whether a given clip id belongs to anybody.
+  if (!clip) return fail(env, "No such clip.", 404);
+
+  const topicId = await setClipTopicByHand(env, userId, clipId, body, now(), newId);
+  return json(env, { ok: true, topic_id: topicId });
+}
+
 // ---------------------------------------------------------------- router
 
 export default {
@@ -705,6 +886,12 @@ export default {
         if (segments[3] === "analysis" && request.method === "POST") {
           return await acceptPastedAnalysis(request, env, userId, segments[2]);
         }
+        if (segments[3] === "topic" && request.method === "PUT") {
+          return await setTopic(request, env, userId, segments[2]);
+        }
+      }
+      if (segments[1] === "topics" && segments[2] === "sort" && request.method === "POST") {
+        return await sortOldClips(request, env, userId);
       }
 
       return fail(env, "Not found.", 404);

@@ -532,7 +532,28 @@ was set by a person or proposed by the AI. Without that flag, the next time anyt
 the AI quietly overwrites a decision someone made deliberately — a silent failure of exactly
 the kind Golden Rule 29 forbids.
 
-**Still to be planned before building** (mechanics, not product choices): the migration
-adding `parent_id` to `topics` and the human-set flag; the analysis contract change and the
-test D16 requires; how the option to categorise older clips is presented; and whether
-re-summarising a clip may change a topic the user has not touched.
+**The remaining questions, answered 2026-08-22, and built the same day.**
+
+| Question | Answer |
+|---|---|
+| May re-summarising change a topic the user never touched? | The question does not arise. A clip is summarised once and nothing re-runs it; Jaiswal's words — *"it will have the topic and subtopics all of that"*. A topic is worked out once and never rewritten. The only clips without one are those summarised before topics existed |
+| How is the option to categorise older clips presented? | **One button** — "Sort my old clips". The AI names each from the summary already stored, not the transcript, and never re-summarises. The user can change any of them afterwards |
+
+**Where the link lives: on `clips`, not in `clip_topics`.** One topic per clip makes a link
+table a table with nothing to hold. More decisively, `clip_topics` carries neither
+`user_id` nor `updated_at`, so it cannot be delta-synced (D6) without being rebuilt, while
+`clips` already carries both and syncs for free. `clips` gains `topic_id` — pointing at the
+sub-topic where there is one, so a clip is filed in exactly one place — and `topic_set_by`,
+which is `'user'` once a person has chosen and is what makes their choice final.
+
+**Two things the build had to get right that the decision did not anticipate:**
+
+*The sort queue has to shrink.* The app presses "sort" while clips remain, so a clip the AI
+cannot name must leave the queue rather than be asked about on every press — otherwise the
+loop never ends and each pass spends another call on the same hopeless clip. Any clip that
+has been looked at is marked, named or not.
+
+*Filing on a shared analysis is bounded.* A reel that sat un-analysed while many people
+saved it would otherwise mean one database round trip per saver inside the single request
+the PC worker is waiting on. Fifty are filed at once; everyone after that is filed by the
+sort button, which costs nothing because the name is already on the shared analysis.

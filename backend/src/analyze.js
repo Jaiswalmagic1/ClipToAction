@@ -34,11 +34,49 @@ Reply with ONE fenced json code block and nothing else — no preamble, no expla
   "key_points": ["the specific facts, numbers, tactics or steps mentioned"],
   "learn_more": ["tools, terms, people or concepts named that are worth studying further"],
   "claims": [{"claim": "a claim made", "confidence": "high|medium|low", "why": "why you rated it that way"}],
-  "suggested_task": "one concrete action worth taking, or null"
+  "suggested_task": "one concrete action worth taking, or null",
+  "topic": "the broad subject this belongs under",
+  "sub_topic": "the narrower subject inside that topic, or null"
 }
 \`\`\`
 
+Rules for "topic" and "sub_topic":
+- Name them from this video alone. You have not been shown anyone's existing topics.
+- Use the plainest, most ordinary name for the subject, so that other videos about the
+  same subject would be given the same name. "Amazon listings", not "Amazon listing
+  optimisation secrets".
+- "topic" is the broad subject, one to three words. "sub_topic" is the narrower subject
+  inside it, or null if the video is not about anything narrower.
+- Never name them after this specific video, its speaker, or its title.
+
 TRANSCRIPT:
+`;
+
+// For clips summarised before topics existed (D27). It works from the summary already
+// stored rather than the transcript — there is nothing to re-summarise, only a name to
+// put on it, and the summary is a fraction of the length. The rules are word for word the
+// ones above, so a clip named this way is indistinguishable from one named at the time.
+export const TOPIC_PROMPT = `Below is a summary of a short social-media video.
+
+Reply with ONE fenced json code block and nothing else — no preamble, no explanation.
+
+\`\`\`json
+{
+  "topic": "the broad subject this belongs under",
+  "sub_topic": "the narrower subject inside that topic, or null"
+}
+\`\`\`
+
+Rules:
+- Name them from this video alone. You have not been shown anyone's existing topics.
+- Use the plainest, most ordinary name for the subject, so that other videos about the
+  same subject would be given the same name. "Amazon listings", not "Amazon listing
+  optimisation secrets".
+- "topic" is the broad subject, one to three words. "sub_topic" is the narrower subject
+  inside it, or null if the video is not about anything narrower.
+- Never name them after this specific video, its speaker, or its title.
+
+SUMMARY:
 `;
 
 // Providers that speak the OpenAI /chat/completions shape. Endpoints and model IDs
@@ -125,6 +163,43 @@ async function callAnthropic(prompt, apiKey) {
   return { text, model: ANTHROPIC_MODEL };
 }
 
+/** Sends one prompt to whichever provider this key belongs to. */
+async function callProvider(prompt, apiKey, provider) {
+  if (provider === "gemini") return callGemini(prompt, apiKey);
+  if (provider === "anthropic") return callAnthropic(prompt, apiKey);
+  if (OPENAI_COMPATIBLE[provider]) return callOpenAICompatible(prompt, apiKey, provider);
+  throw new AnalysisError("that AI provider is not supported");
+}
+
+/**
+ * Names a topic for a summary that already exists, using this user's own key — they
+ * pressed the button, so it is their allowance being spent, never an earlier saver's.
+ * Returns null when they have no key connected.
+ */
+export async function proposeTopic(env, userId, summary) {
+  const owner = await env.DB.prepare(
+    `SELECT ai_provider, ai_key_cipher
+     FROM users
+     WHERE id = ?1
+       AND ai_key_cipher IS NOT NULL
+       AND ai_provider IS NOT NULL
+       AND ai_provider != 'manual'`
+  )
+    .bind(userId)
+    .first();
+  if (!owner) return null;
+
+  const apiKey = await decryptSecret(owner.ai_key_cipher, env.KEY_ENCRYPTION_SECRET);
+  const result = await callProvider(TOPIC_PROMPT + summary, apiKey, owner.ai_provider);
+
+  try {
+    const payload = parseAnalysis(result.text);
+    return { topic: payload?.topic, sub_topic: payload?.sub_topic };
+  } catch {
+    throw new AnalysisError("the AI's reply was not in the expected format");
+  }
+}
+
 /**
  * Analyses a transcript using a connected key belonging to any user who saved this reel.
  * Returns null when nobody who saved it has a key — that is the normal copy-paste path,
@@ -166,18 +241,7 @@ export async function analyzeSource(env, sourceId, transcript, payerId = null) {
   if (!owner) return null;
 
   const apiKey = await decryptSecret(owner.ai_key_cipher, env.KEY_ENCRYPTION_SECRET);
-  const prompt = ANALYSIS_PROMPT + transcript;
-
-  let result;
-  if (owner.ai_provider === "gemini") {
-    result = await callGemini(prompt, apiKey);
-  } else if (owner.ai_provider === "anthropic") {
-    result = await callAnthropic(prompt, apiKey);
-  } else if (OPENAI_COMPATIBLE[owner.ai_provider]) {
-    result = await callOpenAICompatible(prompt, apiKey, owner.ai_provider);
-  } else {
-    throw new AnalysisError("that AI provider is not supported");
-  }
+  const result = await callProvider(ANALYSIS_PROMPT + transcript, apiKey, owner.ai_provider);
 
   let payload;
   try {

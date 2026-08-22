@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS analyses (
   learn_more    TEXT NOT NULL,             -- JSON array — tools/terms/people to dig into
   claims        TEXT NOT NULL,             -- JSON array [{claim, confidence, why}]
   suggested_task TEXT,
+  topic         TEXT,                      -- D27: proposed by the AI from the reel alone,
+  sub_topic     TEXT,                      -- so one analysis still serves everyone (D10)
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (source_id, user_id)
 );
@@ -71,6 +73,12 @@ CREATE TABLE IF NOT EXISTS clips (
   user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   source_id  TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
   status     TEXT NOT NULL DEFAULT 'inbox', -- inbox | keep | done | archived
+  -- D27. Points at the SUB-topic where there is one; the parent is reached through
+  -- topics.parent_id, so a clip is filed in exactly one place. It lives here rather than
+  -- in clip_topics because clips already carries user_id and updated_at, so delta sync
+  -- (D6) carries it for free.
+  topic_id     TEXT REFERENCES topics (id) ON DELETE SET NULL,
+  topic_set_by TEXT,                        -- 'ai' | 'user'. 'user' is final (D27)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted_at INTEGER,                       -- soft delete, so delta sync can propagate it
@@ -78,6 +86,7 @@ CREATE TABLE IF NOT EXISTS clips (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clips_sync ON clips (user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_clips_topic ON clips (user_id, topic_id);
 
 CREATE TABLE IF NOT EXISTS notes (
   id         TEXT PRIMARY KEY,
@@ -108,6 +117,13 @@ CREATE TABLE IF NOT EXISTS topics (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   name       TEXT NOT NULL,
+  -- '' means top-level. NULL would defeat the unique index below: SQLite treats NULLs as
+  -- distinct, so the same top-level name could be created twice over.
+  parent_id  TEXT NOT NULL DEFAULT '',
+  -- `name` with case, punctuation and plurals flattened, so "Amazon listing" and
+  -- "Amazon Listings" meet on one row. Written by normaliseTopicName in src/topics.js —
+  -- the rules are past what SQL can express, so SQLite must never compute it separately.
+  name_key   TEXT NOT NULL DEFAULT '',
   summary    TEXT,                          -- merged across every clip in the topic
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -115,6 +131,11 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_topics_sync ON topics (user_id, updated_at);
+
+-- The database itself refuses a duplicate, not just the code: two requests arriving at
+-- once would otherwise both look up, both miss, and both insert.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_topics_unique_name
+  ON topics (user_id, parent_id, name_key);
 
 CREATE TABLE IF NOT EXISTS clip_topics (
   clip_id    TEXT NOT NULL REFERENCES clips (id) ON DELETE CASCADE,

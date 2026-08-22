@@ -4,7 +4,7 @@ Running list of what is settled and what is still open. Updated every session.
 **Why each decision was made — options considered, factors weighed — is in
 [DECISION_LOG.md](DECISION_LOG.md).** That file is binding; this one is its index.
 
-Last updated: 2026-08-21
+Last updated: 2026-08-22
 
 ---
 
@@ -46,7 +46,7 @@ The reel is a seed, not the destination.
 | D24 | Build order | A layer is not built until the layer beneath it has been proven end to end, with a throwaway if needed. |
 | D25 | Secret scan | Allows exactly one literal — the Firebase web key, which must ship in the app and is restricted to Firebase services. Nothing else. |
 | D26 | Staging hosting | The staging Worker also serves the app, so it can be opened on a phone at all. Production keeps the app on GitHub Pages. |
-| D27 | Topics | The AI proposes topics, two levels deep. The topic rows stay per-user even though the analysis that suggested them is shared. Five questions still open. |
+| D27 | Topics | The AI proposes topics, two levels deep. The topic rows stay per-user even though the analysis that suggested them is shared. All questions answered; backend built 2026-08-22. |
 
 ---
 
@@ -72,7 +72,7 @@ The reel is a seed, not the destination.
 | 1 | D1 schema + Worker API (auth, dedupe, delta sync, copy-paste tier) | Built and **deployed to staging** 2026-08-21 |
 | 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | **Proven end to end on staging** 2026-08-21 — save → claim → download → transcribe → post back → Gemini analysis → read back |
 | 3 | App rewrite — Google sign-in, delta sync, notebook view | **In progress** — decided in D21–D23, being built on a branch |
-| 4 | The six value features (below) | Not started |
+| 4 | The six value features (below) | **Topics built on the backend** 2026-08-22 (D27) — migration, contract, filing and the sort button, with 26 tests. Not yet on staging, and the app half is not built |
 | 5 | Compliance + launch gates | Not started |
 
 The six agreed value features: merge clips into one topic · "you already know this" ·
@@ -88,7 +88,7 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | 52 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, and the auth surface end to end |
+| Test suite | 97 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, and topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |
