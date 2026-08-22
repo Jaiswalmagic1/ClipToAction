@@ -37,6 +37,34 @@ python worker.py
 
 First run downloads the whisper model (~150 MB for `base`). After that it is offline.
 
+## Letting it run itself
+
+Started by hand, this only runs while somebody remembers to start it — and nobody
+remembers a program on a PC for long. One command fixes that:
+
+```bash
+powershell -ExecutionPolicy Bypass -File autostart.ps1
+```
+
+It registers a scheduled task that starts the worker when you log in, restarts it if it
+crashes, and runs it with no window in the way. No administrator rights: it runs as you.
+
+To start it straight away without logging out again:
+
+```bash
+powershell -Command "Start-ScheduledTask ClipToActionWorker"
+```
+
+To stop it running on its own:
+
+```bash
+powershell -ExecutionPolicy Bypass -File autostart.ps1 -Remove
+```
+
+**You should never need to check on it.** The app shows a warning in the notebook when the
+worker has gone quiet, and says when it was last running. That is the only place worth
+looking, and it stays out of the way while everything is working.
+
 ## Behaviour
 
 | Situation | What happens |
@@ -44,7 +72,9 @@ First run downloads the whisper model (~150 MB for `base`). After that it is off
 | Video longer than `MAX_DURATION_SEC` (default 30 min) | Skipped with a visible error, not silently dropped |
 | Download or transcription fails | Error is posted back and shown in the app; retried up to 3 times, then marked `failed` |
 | No speech in the video | Recorded as an error rather than saving an empty transcript |
-| PC is off | Nothing is lost — sources stay `pending` and are picked up on the next run |
+| PC is off | Nothing is lost — sources stay `pending` and are picked up on the next run, oldest first |
+| Worker dies mid-reel | That reel is handed back out after 15 minutes rather than being stuck |
+| Worker stops altogether | Every queue call is a heartbeat, so the app notices the silence and says so |
 
 ## Moving off the PC later
 

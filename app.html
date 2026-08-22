@@ -354,7 +354,7 @@ if ("serviceWorker" in navigator) {
 // D6 requires delta sync: the whole notebook is kept on the device and only what changed
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
 const EMPTY = {
-  since: 0, settings: null, clips: [], notes: [], questions: [], topics: [],
+  since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
   tasks: [], sources: [], transcripts: [], analyses: []
 };
 let store = structuredClone(EMPTY);
@@ -404,6 +404,7 @@ function applyDelta(delta) {
     store.analyses, delta.analyses || [], (row) => `${row.source_id}|${row.user_id}`
   );
   if (delta.settings) store.settings = delta.settings;
+  if (delta.worker) store.worker = delta.worker;
   store.since = delta.now || store.since;
   saveCache();
 }
@@ -564,6 +565,41 @@ function show(view) {
   $("saveView").hidden = view !== "listView";
 }
 
+/** "3 days", "2 hours", "a few minutes" — how long since something happened. */
+function agoText(timestamp) {
+  const minutes = Math.floor((Date.now() - timestamp) / 60000);
+  if (minutes < 60) return minutes <= 1 ? "a minute ago" : `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+/**
+ * Whether the machine that downloads and transcribes is running.
+ *
+ * This exists because a stopped worker is otherwise completely silent: reels sit waiting,
+ * every clip says the same thing it says while it is genuinely working, and nothing on
+ * screen tells you the difference (Golden Rule 29). Nobody is going to remember there is a
+ * program on a PC somewhere that has to be on.
+ *
+ * Nothing is shown while it is working normally. A line that is always there stops being
+ * read, and the only moment this matters is the moment it stops.
+ */
+function workerNotice() {
+  const state = store.worker;
+  if (!state || state.running) return null;
+
+  const notice = document.createElement("div");
+  notice.className = "notice warn";
+  notice.textContent = state.last_seen_at
+    ? `The PC that downloads and writes up your reels was last running ${agoText(state.last_seen_at)}.`
+      + " Anything you save is safe and will be picked up when it is next switched on."
+    : "The PC that downloads and writes up your reels has not run yet."
+      + " Anything you save is safe and waits until it does.";
+  return notice;
+}
+
 // ---------------------------------------------------------------- the notebook list
 function renderList() {
   const wanted = store.clips
@@ -573,6 +609,9 @@ function renderList() {
     .sort((a, b) => b.created_at - a.created_at);
 
   $("clipList").innerHTML = "";
+
+  const health = workerNotice();
+  if (health) $("clipList").append(health);
 
   // Nothing anywhere told a new person that saving reels does not, on its own, produce
   // anything. They sign in, share a reel, see it accepted, and quietly get no summary.

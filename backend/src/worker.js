@@ -29,6 +29,12 @@ import {
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
+const THE_WORKER = ""; // workers.id value meaning "the one PC worker"
+
+// How long after its last check-in the PC worker is still called working. It asks for work
+// every 30 seconds even when there is none, so a few minutes of silence is already well
+// past normal — but not so tight that one slow request reads as an outage.
+const WORKER_QUIET_AFTER_MS = 5 * 60 * 1000;
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_SAVES_PER_DAY = 200;
@@ -256,11 +262,25 @@ async function deltaSync(request, env, userId) {
     .bind(userId)
     .first();
 
+  // Whether the machine that downloads and transcribes is running. Not per-user, and
+  // deliberately shown to everybody: when it is off, nobody's reels are moving, and the
+  // reason a clip is stuck belongs on screen rather than nowhere (Golden Rule 29).
+  //
+  // `last_seen_at` and a plain verdict, never a hostname or an address — the worker is
+  // somebody's home PC.
+  const worker = await env.DB.prepare(`SELECT last_seen_at FROM workers WHERE id = ?1`)
+    .bind(THE_WORKER)
+    .first();
+
   return json(env, {
     now: timestamp,
     settings: {
       ai_provider: user?.ai_provider || null,
       has_key: Boolean(user?.ai_key_cipher)
+    },
+    worker: {
+      last_seen_at: worker?.last_seen_at || null,
+      running: Boolean(worker && timestamp - worker.last_seen_at < WORKER_QUIET_AFTER_MS)
     },
     clips: clips.results,
     notes: notes.results,
@@ -372,6 +392,17 @@ async function claimQueue(request, env) {
   const requested = Number(new URL(request.url).searchParams.get("limit"));
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 3, 1), 10);
   const timestamp = now();
+
+  // The worker asks for work every 30 seconds whether there is any or not, so this call is
+  // its heartbeat and no new request had to be invented for it. Recorded before the claim
+  // rather than after: a worker that checks in and then fails to claim is still alive, and
+  // the app should say so.
+  await env.DB.prepare(
+    `INSERT INTO workers (id, last_seen_at) VALUES (?1, ?2)
+     ON CONFLICT (id) DO UPDATE SET last_seen_at = ?2`
+  )
+    .bind(THE_WORKER, timestamp)
+    .run();
 
   // Anything that used up its attempts and then went quiet is retired here rather than
   // sitting in 'downloading' forever with no error — a clip stuck on "pending" and nothing

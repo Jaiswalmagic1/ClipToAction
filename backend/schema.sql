@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS analyses (
   PRIMARY KEY (source_id, user_id)
 );
 
+-- The PC worker's own heartbeat. Belongs to neither a user nor a reel, so it gets its own
+-- table. '' is "the one worker"; keyed by id so a second machine needs no rewrite (D5).
+-- Without this a dead worker is invisible and reels just sit in 'pending' (Golden Rule 29).
+CREATE TABLE IF NOT EXISTS workers (
+  id           TEXT PRIMARY KEY,
+  last_seen_at INTEGER NOT NULL
+);
+
 -- ---------------------------------------------------------------- per-user layer
 
 CREATE TABLE IF NOT EXISTS clips (
