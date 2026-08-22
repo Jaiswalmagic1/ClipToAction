@@ -100,10 +100,13 @@
       font-size: 12px;
       margin-right: 6px;
     }
+    .pill.topic { background: #e0e7ff; color: #3730a3; }
     .pill.wait { background: #fef3c7; color: #92400e; }
     .pill.good { background: #d1fae5; color: #065f46; }
     .pill.bad  { background: #fee2e2; color: #991b1b; }
     .muted { color: var(--muted); font-size: 13px; }
+    .group { margin: 18px 0 8px; font-size: 15px; color: #243b53; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+    .subgroup { margin: 12px 0 6px 2px; font-size: 13px; color: var(--muted); font-weight: 700; }
     .notice { border-radius: 6px; padding: 10px 12px; margin: 10px 0; font-size: 14px; }
     .notice.err { background: #fee2e2; color: #7f1d1d; }
     .notice.ok  { background: #d1fae5; color: #065f46; }
@@ -171,6 +174,12 @@
           <button data-status="keep">Keeping</button>
           <button data-status="done">Done</button>
           <button data-status="archived">Archived</button>
+        </div>
+        <!-- D22: grouping is a view OVER the list, never instead of it. The list is what
+             opens by default and stays one press away. -->
+        <div class="filters" id="views">
+          <button data-view="list" class="active">List</button>
+          <button data-view="topics">By topic</button>
         </div>
         <div id="syncMsg"></div>
         <div id="clipList"></div>
@@ -353,6 +362,7 @@ let user = null;
 let signedIn = false;
 let filter = "all";
 let query = "";
+let grouping = "list";   // "list" | "topics" — D22: a view over the list, never instead of it
 
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
@@ -465,6 +475,31 @@ const notesOf = (clip) =>
   store.notes.filter((n) => n.clip_id === clip.id && !n.deleted_at)
     .sort((a, b) => a.created_at - b.created_at);
 
+const topicById = (id) => (id ? store.topics.find((t) => t.id === id && !t.deleted_at) : undefined);
+
+/**
+ * Where a clip is filed, as the two names a person would say: the topic and, under it,
+ * the sub-topic. `clip.topic_id` points at the deepest level named, so a clip filed
+ * straight under a topic has no sub-topic and that is not a gap.
+ */
+function topicPathOf(clip) {
+  const topic = topicById(clip.topic_id);
+  if (!topic) return null;
+  const parent = topic.parent_id ? topicById(topic.parent_id) : null;
+  return parent
+    ? { topic: parent.name, subTopic: topic.name, id: topic.id, parentId: parent.id }
+    : { topic: topic.name, subTopic: "", id: topic.id, parentId: topic.id };
+}
+
+/**
+ * The clips that were summarised before topics existed. `topic_set_by` is what keeps this
+ * honest: a clip the AI has already looked at and could not place is marked, so it stops
+ * counting as waiting and the offer to sort goes away instead of nagging for ever.
+ */
+const unsortedClips = () =>
+  store.clips.filter((clip) =>
+    !clip.deleted_at && !clip.topic_id && !clip.topic_set_by && analysisOf(clip)?.summary);
+
 /** What the user should see about a clip while it is still being worked on (GR29). */
 function progressOf(clip) {
   const source = sourceOf(clip);
@@ -556,6 +591,26 @@ function renderList() {
     $("clipList").append(prompt);
   }
 
+  // The clips summarised before topics existed. Offered here rather than in Settings
+  // because this is where a person notices some cards have a topic and some do not.
+  const unsorted = unsortedClips();
+  if (unsorted.length) {
+    const offer = document.createElement("div");
+    offer.className = "notice";
+    offer.style.background = "#e0e7ff";
+    offer.style.color = "#3730a3";
+    offer.append(document.createTextNode(
+      `${unsorted.length} ${unsorted.length === 1 ? "clip was" : "clips were"} saved before `
+      + "topics existed, so they are not filed anywhere yet. "
+    ));
+    const button = document.createElement("button");
+    button.textContent = "Sort my old clips";
+    button.style.marginTop = "8px";
+    button.onclick = () => sortOldClips(button);
+    offer.append(document.createElement("br"), button);
+    $("clipList").append(offer);
+  }
+
   if (!wanted.length) {
     const empty = document.createElement("p");
     empty.className = "muted";
@@ -566,37 +621,204 @@ function renderList() {
     return;
   }
 
+  if (grouping === "topics") renderByTopic(wanted);
+  else for (const clip of wanted) $("clipList").append(clipCard(clip));
+}
+
+/** One clip's card. Both views draw this same one, so they can never drift apart. */
+function clipCard(clip, { showTopic = true } = {}) {
+  const progress = progressOf(clip);
+  const analysis = analysisOf(clip);
+  const card = document.createElement("article");
+  card.className = "card";
+
+  const heading = document.createElement("h4");
+  heading.textContent = titleOf(clip);
+
+  const pills = document.createElement("div");
+  const platform = document.createElement("span");
+  platform.className = "pill";
+  platform.textContent = sourceOf(clip)?.platform || "Clip";
+  const state = document.createElement("span");
+  state.className = `pill ${progress.kind}`;
+  state.textContent = progress.text;
+  pills.append(platform, state);
+
+  // Where it is filed, visible without leaving the list. Left off inside the grouped view,
+  // where the heading above the card already says it.
+  const path = showTopic ? topicPathOf(clip) : null;
+  if (path) {
+    const topic = document.createElement("span");
+    topic.className = "pill topic";
+    topic.textContent = path.subTopic ? `${path.topic} › ${path.subTopic}` : path.topic;
+    pills.append(topic);
+  }
+
+  card.append(heading, pills);
+
+  if (analysis?.summary) {
+    const summary = document.createElement("p");
+    summary.textContent = analysis.summary.length > 220
+      ? `${analysis.summary.slice(0, 220)}…`
+      : analysis.summary;
+    card.append(summary);
+  }
+
+  card.onclick = () => { location.hash = `#/clip/${clip.id}`; };
+  return card;
+}
+
+/**
+ * The same clips, gathered under their topic and sub-topic. Anything not filed yet goes
+ * last under its own heading rather than being hidden — a clip that has fallen out of
+ * every group would simply look lost (Golden Rule 29).
+ */
+function renderByTopic(wanted) {
+  const host = $("clipList");
+  const groups = new Map();   // parent topic id -> Map(sub-topic name -> clips)
+  const unfiled = [];
+
   for (const clip of wanted) {
-    const progress = progressOf(clip);
-    const analysis = analysisOf(clip);
-    const card = document.createElement("article");
-    card.className = "card";
+    const path = topicPathOf(clip);
+    if (!path) { unfiled.push(clip); continue; }
+    if (!groups.has(path.parentId)) groups.set(path.parentId, { name: path.topic, subs: new Map() });
+    const subs = groups.get(path.parentId).subs;
+    if (!subs.has(path.subTopic)) subs.set(path.subTopic, []);
+    subs.get(path.subTopic).push(clip);
+  }
 
-    const heading = document.createElement("h4");
-    heading.textContent = titleOf(clip);
+  const ordered = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
 
-    const pills = document.createElement("div");
-    const platform = document.createElement("span");
-    platform.className = "pill";
-    platform.textContent = sourceOf(clip)?.platform || "Clip";
-    const state = document.createElement("span");
-    state.className = `pill ${progress.kind}`;
-    state.textContent = progress.text;
-    pills.append(platform, state);
+  for (const group of ordered) {
+    const heading = document.createElement("h3");
+    heading.className = "group";
+    heading.textContent = group.name;
+    host.append(heading);
 
-    card.append(heading, pills);
+    // The clips filed straight under the topic come first, then each sub-topic.
+    const subNames = [...group.subs.keys()].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    for (const name of subNames) {
+      if (name) {
+        const sub = document.createElement("div");
+        sub.className = "subgroup";
+        sub.textContent = name;
+        host.append(sub);
+      }
+      for (const clip of group.subs.get(name)) host.append(clipCard(clip, { showTopic: false }));
+    }
+  }
 
-    if (analysis?.summary) {
-      const summary = document.createElement("p");
-      summary.textContent = analysis.summary.length > 220
-        ? `${analysis.summary.slice(0, 220)}…`
-        : analysis.summary;
-      card.append(summary);
+  if (unfiled.length) {
+    const heading = document.createElement("h3");
+    heading.className = "group";
+    heading.textContent = "Not filed yet";
+    host.append(heading);
+    for (const clip of unfiled) host.append(clipCard(clip, { showTopic: false }));
+  }
+}
+
+/**
+ * Presses on until the server says nothing is left. The server names a few at a time, so
+ * one press here is several requests — but from the outside it is one button that finishes
+ * the job rather than one the user has to keep hitting.
+ *
+ * The loop is bounded by `remaining` falling, not by trust: the server marks every clip it
+ * has looked at, named or not, so a clip it cannot place leaves the queue instead of being
+ * asked about for ever.
+ */
+async function sortOldClips(button) {
+  button.disabled = true;
+  button.textContent = "Sorting…";
+  let sorted = 0;
+
+  try {
+    for (let pass = 0; pass < 40; pass += 1) {
+      const result = await api("/v1/topics/sort", { method: "POST" });
+      sorted += result.sorted || 0;
+      if (result.error) {
+        await sync();
+        render();
+        say("syncMsg", `Sorted ${sorted}, then stopped: ${result.error}`, "warn");
+        return;
+      }
+      if (!result.remaining) break;
     }
 
-    card.onclick = () => { location.hash = `#/clip/${clip.id}`; };
-    $("clipList").append(card);
+    await sync();
+    render();
+    say("syncMsg", sorted
+      ? `Filed ${sorted} ${sorted === 1 ? "clip" : "clips"}.`
+      : "Nothing could be filed — there was not enough in those summaries to name a topic.",
+      sorted ? "ok" : "warn");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Sort my old clips";
+    say("syncMsg", error.message);
   }
+}
+
+/**
+ * Where this clip is filed, and the way to change it. The user's choice is final (D27) —
+ * the server marks anything set here as theirs and never moves it again, so the note
+ * saying so is a promise the code keeps.
+ */
+function topicSection(clip) {
+  const section = document.createElement("div");
+  const path = topicPathOf(clip);
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Filed under";
+  section.append(heading);
+
+  const where = document.createElement("p");
+  if (path) {
+    where.textContent = path.subTopic ? `${path.topic} › ${path.subTopic}` : path.topic;
+  } else {
+    where.className = "muted";
+    where.textContent = clip.topic_set_by
+      ? "Not filed anywhere. There was not enough in this one to name a topic."
+      : "Not filed anywhere yet.";
+  }
+  section.append(where);
+
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = path ? "Change where this is filed" : "File this one yourself";
+  details.append(summary);
+
+  const topicBox = document.createElement("input");
+  topicBox.placeholder = "Topic — the broad subject";
+  topicBox.value = path ? path.topic : "";
+  const subBox = document.createElement("input");
+  subBox.placeholder = "Sub-topic — optional";
+  subBox.value = path ? path.subTopic : "";
+  subBox.style.marginTop = "8px";
+
+  const save = document.createElement("button");
+  save.textContent = "Save";
+  save.style.marginTop = "8px";
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      await api(`/v1/clips/${clip.id}/topic`, {
+        method: "PUT",
+        body: JSON.stringify({ topic: topicBox.value.trim(), sub_topic: subBox.value.trim() })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("clipMsg", error.message);
+      save.disabled = false;
+    }
+  };
+
+  const promise = document.createElement("p");
+  promise.className = "muted";
+  promise.textContent = "Once you set this yourself it stays put — nothing automatic will move it again.";
+
+  details.append(topicBox, subBox, save, promise);
+  section.append(details);
+  return section;
 }
 
 // ---------------------------------------------------------------- doing it by hand (D9)
@@ -808,6 +1030,8 @@ function renderClip(clipId) {
   const clipMsg = document.createElement("div");
   clipMsg.id = "clipMsg";
   panel.append(clipMsg);
+
+  panel.append(topicSection(clip));
 
   if (analysis) {
     const summaryHeading = document.createElement("h3");
@@ -1170,6 +1394,14 @@ $("filters").onclick = (event) => {
   if (!button) return;
   filter = button.dataset.status;
   for (const other of $("filters").children) other.classList.toggle("active", other === button);
+  renderList();
+};
+
+$("views").onclick = (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  grouping = button.dataset.view;
+  for (const other of $("views").children) other.classList.toggle("active", other === button);
   renderList();
 };
 

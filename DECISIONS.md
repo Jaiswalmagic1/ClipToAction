@@ -72,7 +72,7 @@ The reel is a seed, not the destination.
 | 1 | D1 schema + Worker API (auth, dedupe, delta sync, copy-paste tier) | Built and **deployed to staging** 2026-08-21 |
 | 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | **Proven end to end on staging** 2026-08-21 — save → claim → download → transcribe → post back → Gemini analysis → read back |
 | 3 | App rewrite — Google sign-in, delta sync, notebook view | **In progress** — decided in D21–D23, being built on a branch |
-| 4 | The six value features (below) | **Topics built on the backend** 2026-08-22 (D27) — migration, contract, filing and the sort button, with 26 tests. Not yet on staging, and the app half is not built |
+| 4 | The six value features (below) | **Topics built and proven end to end** 2026-08-22 (D27) — migration, contract, filing, the sort button and the app's topic view. A real reel came back named and filed on staging |
 | 5 | Compliance + launch gates | Not started |
 
 The six agreed value features: merge clips into one topic · "you already know this" ·
@@ -95,4 +95,4 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | Cloudflare / Firebase accounts | **Created** 2026-08-21 under `cliptoaction@gmail.com`. Cloudflare account `06b97f8f…`, subdomain `cliptoaction.workers.dev`, Firebase project `cliptoaction-ff144` (Google sign-in on, Analytics off), web app `ClipToAction Web` registered. **Gemini API key created** and connected to staging. |
 | Staging | **Live** — `https://cliptoaction-api-staging.cliptoaction.workers.dev`, database `cliptoaction-staging`, both secrets set |
 | Production | Nothing created. No database, no secrets, not deployed (D20) |
-| Anything running end to end | **Yes** — two real reels (Instagram and Facebook) went the whole way through staging on 2026-08-21, analysis included |
+| Anything running end to end | **Yes** — two real reels went the whole way through staging on 2026-08-21, analysis included, and a third on 2026-08-22 came back with a topic and sub-topic and was filed under them |
