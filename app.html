@@ -1,0 +1,1912 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102a43">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <title>ClipToAction</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #65758b;
+      --line: #dde5ef;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --warn: #a16207;
+      --danger: #b91c1c;
+      --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      background: #102a43;
+      color: white;
+      padding: 16px 20px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 22px; cursor: pointer; }
+    header .who { color: #d9e2ec; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+    main { max-width: 860px; margin: 0 auto; padding: 18px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 18px 0 8px; font-size: 15px; color: #243b53; }
+    label { display: block; margin: 12px 0 6px; font-size: 13px; color: var(--muted); font-weight: 700; }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      font: inherit;
+      color: var(--text);
+      background: white;
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+    }
+    button:hover { background: var(--accent-dark); }
+    button:disabled { opacity: .55; cursor: default; }
+    button.secondary { background: #e5edf5; color: #243b53; }
+    button.link { background: none; color: #d9e2ec; padding: 4px 6px; font-weight: 400; text-decoration: underline; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .row > input { flex: 1 1 220px; width: auto; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+    .filters button { background: #e5edf5; color: #243b53; padding: 7px 11px; font-size: 13px; }
+    .filters button.active { background: var(--accent); color: white; }
+    .card {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card h4 { margin: 0 0 6px; font-size: 15px; }
+    .card p { margin: 6px 0; color: #334e68; font-size: 14px; }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 9px;
+      background: #edf2f7;
+      color: #334e68;
+      font-size: 12px;
+      margin-right: 6px;
+    }
+    .pill.topic { background: #e0e7ff; color: #3730a3; }
+    .pill.wait { background: #fef3c7; color: #92400e; }
+    .pill.good { background: #d1fae5; color: #065f46; }
+    .pill.bad  { background: #fee2e2; color: #991b1b; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .group { margin: 18px 0 8px; font-size: 15px; color: #243b53; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+    .subgroup { margin: 12px 0 6px 2px; font-size: 13px; color: var(--muted); font-weight: 700; }
+    .notice { border-radius: 6px; padding: 10px 12px; margin: 10px 0; font-size: 14px; }
+    .notice.err { background: #fee2e2; color: #7f1d1d; }
+    .notice.ok  { background: #d1fae5; color: #065f46; }
+    .notice.warn { background: #fef3c7; color: #78350f; }
+    ul.plain { margin: 6px 0; padding-left: 20px; }
+    ul.plain li { margin: 5px 0; font-size: 14px; }
+    details { margin: 10px 0; }
+    summary { cursor: pointer; font-weight: 700; font-size: 14px; }
+    .transcript { white-space: pre-wrap; font-size: 14px; color: #334e68; margin-top: 8px; }
+    .claim { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; font-size: 14px; }
+    .claim.low { border-left-color: var(--danger); }
+    .claim.medium { border-left-color: var(--warn); }
+    .claim.high { border-left-color: var(--accent); }
+    /* A verdict you reached yourself, drawn like a claim so the two read as one thread. */
+    .claim.verdict-true { border-left-color: var(--accent); }
+    .claim.verdict-false { border-left-color: var(--danger); }
+    .claim.verdict-unsure { border-left-color: var(--warn); }
+    .learning { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 10px 0; }
+    .learning h4 { margin: 0 0 2px; font-size: 14px; }
+    .signin { max-width: 460px; margin: 60px auto; text-align: center; }
+    .signin p { color: var(--muted); }
+    a { color: var(--accent); }
+    @media (max-width: 600px) {
+      main { padding: 12px; }
+      header h1 { font-size: 19px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1 id="home">ClipToAction</h1>
+  <div class="who" id="who" hidden>
+    <span id="whoEmail"></span>
+    <button class="link" id="navGuide">How it works</button>
+    <button class="link" id="navSettings">Settings</button>
+    <button class="link" id="signOut">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <div class="signin panel" id="signInView" hidden>
+    <h2>Your reels, turned into a notebook</h2>
+    <p>Share a reel link. It gets watched, written down and filed, so you can find it again
+       and keep learning from it.</p>
+    <button id="signIn">Sign in with Google</button>
+    <p class="muted" style="margin-top:14px">
+      New here? <a href="#/guide" id="guideFromSignIn">Read how it works</a> first — it takes a minute.
+    </p>
+    <div id="signInError"></div>
+  </div>
+
+  <div id="appView" hidden>
+    <div class="panel" id="saveView">
+      <h2>Save a link</h2>
+      <form class="row" id="saveForm">
+        <input type="url" id="saveUrl" placeholder="Paste a reel link" required>
+        <button type="submit" id="saveBtn">Save</button>
+      </form>
+      <p class="muted">A link is all it needs. Everything else is worked out for you.</p>
+      <div id="saveMsg"></div>
+    </div>
+
+    <div id="listView">
+      <div class="panel">
+        <h2>Notebook</h2>
+        <input type="search" id="search" placeholder="Search your notebook">
+        <div class="filters" id="filters">
+          <button data-status="all" class="active">All</button>
+          <button data-status="inbox">New</button>
+          <button data-status="keep">Keeping</button>
+          <button data-status="done">Done</button>
+          <button data-status="archived">Archived</button>
+        </div>
+        <!-- D22: grouping is a view OVER the list, never instead of it. The list is what
+             opens by default and stays one press away. -->
+        <div class="filters" id="views">
+          <button data-view="list" class="active">List</button>
+          <button data-view="topics">By topic</button>
+        </div>
+        <div id="syncMsg"></div>
+        <div id="clipList"></div>
+      </div>
+    </div>
+
+    <div id="clipView" hidden></div>
+
+    <div id="settingsView" hidden>
+      <div class="panel">
+        <h2>Connect an AI account</h2>
+        <p class="muted">The summaries run on your own AI account, so it is your data and
+          your quota — not somebody else's.</p>
+        <div class="notice warn">
+          Only <strong>Gemini</strong> and <strong>Groq</strong> give away genuinely free
+          keys. OpenAI, Anthropic and xAI charge for this separately — and a ChatGPT Plus or
+          Claude Pro subscription does <strong>not</strong> include it. If you would rather
+          not connect anything, pick <strong>Copy and paste</strong> and the app will hand
+          you the text to paste into whatever AI you already use.
+        </div>
+        <label for="provider">Which AI</label>
+        <select id="provider">
+          <option value="gemini">Google Gemini — free key</option>
+          <option value="groq">Groq — free key</option>
+          <option value="openai">OpenAI — paid</option>
+          <option value="anthropic">Anthropic — paid</option>
+          <option value="xai">xAI — paid</option>
+          <option value="manual">Copy and paste — no key needed</option>
+        </select>
+        <div id="providerHelp"></div>
+        <label for="apiKey">Your key</label>
+        <input type="password" id="apiKey" placeholder="Paste your key" autocomplete="off">
+        <p class="muted">Stored locked up on the server and never shown again, not even to
+          you. Leave this box empty to keep the key you saved before — you only need to
+          paste one when you are setting it up or changing it. Choosing
+          <strong>Copy and paste</strong> removes it, since none is being used.</p>
+        <div id="settingsMsg"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="saveSettings">Save</button>
+          <button class="secondary" id="settingsBack">Back to notebook</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Talk to your notebook from your AI app</h2>
+        <p class="muted">Make an address, paste it into your AI app once, and after that
+          you can just ask it — "what did I save about Amazon titles?" — without opening
+          this app at all. It can search your notebook, read any reel in full, and save
+          what you worked out back here.</p>
+        <div class="notice warn">
+          <strong>Works today in Claude, on the free plan</strong> — Customize, then
+          Connectors. <strong>ChatGPT</strong> needs Plus or Pro (Settings, then Security
+          and login, turn on Developer mode). <strong>The Gemini app cannot do this yet</strong>
+          — Google only allows it inside the US.
+        </div>
+        <div class="notice">
+          Anyone holding this address can read your whole notebook, so treat it like a
+          password: paste it into the app and nowhere else. Once connected, what that AI
+          reads goes to that company under their terms, not ours. You can turn an address
+          off here at any time.
+        </div>
+        <div id="connectorList"></div>
+        <label for="connectorLabel">Which app is this for</label>
+        <input type="text" id="connectorLabel" placeholder="Claude" autocomplete="off">
+        <div id="connectorMsg"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="makeConnector">Make an address</button>
+        </div>
+      </div>
+    </div>
+  </div>
+    <div id="guideView" hidden>
+      <div class="panel">
+        <h2>How ClipToAction works</h2>
+
+        <p>You see a good reel, save it, and never look at it again. This turns those reels
+           into a notebook you can actually search and learn from.</p>
+
+        <h3>1. Send it a link</h3>
+        <p>That is the whole of what you do. On a phone, tap <strong>Share</strong> on the
+           reel and pick ClipToAction — the same way you would share to WhatsApp. On a
+           computer, paste the link into the box at the top.</p>
+        <p class="muted">You never type a title, a note or a category. Everything else is
+           worked out for you.</p>
+
+        <h3>2. It listens to the video for you</h3>
+        <p>The reel is fetched, the speech is written down word for word, and then an AI
+           reads that and pulls out what was actually said. While that happens the clip
+           shows where it has got to:</p>
+        <ul class="plain">
+          <li><strong>Waiting to be picked up</strong> — saved, nothing has started yet.</li>
+          <li><strong>Being watched now</strong> — it is fetching and listening.</li>
+          <li><strong>Written down — no summary yet</strong> — the words are in, the
+              summary is not. See step 3.</li>
+          <li><strong>Ready</strong> — done, open it.</li>
+          <li><strong>Could not be read</strong> — something went wrong, and it says so
+              rather than pretending.</li>
+        </ul>
+        <p class="muted">A reel someone else already saved is not fetched twice — you get
+           their result straight away.</p>
+
+        <h3>3. Choose who does the summarising — one setup step</h3>
+        <p>The summaries are not done on our account. They run on yours, so it is your
+           information and nobody else is paying for it. There are two ways, and one of
+           them costs nothing and needs no account:</p>
+        <ul class="plain">
+          <li><strong>Connect an AI account.</strong> Google Gemini and Groq both give
+              these away free. Open <strong>Settings</strong>, pick one, and it shows you
+              exactly where to get it and what the catch is. After that every new clip is
+              summarised on its own.</li>
+          <li><strong>Do it yourself — no account needed.</strong> Open a clip and press
+              <strong>Copy the question</strong>. Paste that into whatever AI you already
+              use — ChatGPT, Gemini, Claude, anything. Copy its whole reply, paste it back
+              into the box, and save. Same result.</li>
+        </ul>
+        <p class="muted">Until you pick one of those, reels are saved and written down but
+           nothing gets summarised.</p>
+        <p>Reels you saved <em>before</em> connecting an AI are not summarised on their own
+           — open one and press <strong>Summarise it now</strong>. It is one at a time on
+           purpose, so a free daily allowance is never used up without you asking.</p>
+
+        <h3>4. What you get on each clip</h3>
+        <ul class="plain">
+          <li><strong>What it said</strong> — a few sentences, so you can tell in seconds
+              whether it is what you were looking for.</li>
+          <li><strong>The main points</strong> — the actual steps, numbers and tactics.</li>
+          <li><strong>Worth checking before you act on it</strong> — the claims the video
+              makes, each marked by how much to trust it. Red means treat it with caution.
+              Reels are full of confident nonsense; this is there to catch it.</li>
+          <li><strong>Things to look into</strong> — the tools and terms it named, for when
+              you want to go deeper.</li>
+          <li><strong>Everything that was said</strong> — the full words, if you want them.</li>
+          <li><strong>Your notes</strong> — what you thought. This is what turns a saved
+              reel into something of your own.</li>
+        </ul>
+
+        <h3>5. Finding it again</h3>
+        <p>The search box looks inside everything — the summary, the full words of the
+           video, and your own notes. So you can search for something you half-remember
+           hearing, not just a title.</p>
+        <p>Mark clips <strong>Keeping</strong>, <strong>Done</strong> or
+           <strong>Archived</strong> to keep the list under control. Archived ones stay
+           searchable but drop out of the main list.</p>
+
+        <h3>6. Put it on your phone</h3>
+        <p>Open this page in your phone's browser, then use the browser menu and choose
+           <strong>Add to Home screen</strong>. That is what puts ClipToAction in the share
+           menu, so you can send reels to it straight from Instagram or Facebook.</p>
+
+        <h3>Worth knowing</h3>
+        <ul class="plain">
+          <li>Your notebook is kept on your device as well, so it still opens and reads
+              when you have no signal.</li>
+          <li>Signing out clears that copy from the device.</li>
+          <li>Free AI accounts usually allow the provider to read and learn from what is
+              sent to them. Settings says which ones do.</li>
+        </ul>
+
+        <div class="row" style="margin-top:16px">
+          <button class="secondary" id="guideBack">Back to notebook</button>
+        </div>
+      </div>
+    </div>
+
+</main>
+
+<script type="module">
+// ---------------------------------------------------------------- configuration
+// Staging while the app is being built (D20). The production URL replaces this in the
+// same commit that promotes this file to index.html (D21).
+const API_BASE = "https://cliptoaction-api-staging.cliptoaction.workers.dev";
+
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCFkOgIiDpWSbikd_QICx--z_MhQhtditY",
+  authDomain: "cliptoaction-ff144.firebaseapp.com",
+  projectId: "cliptoaction-ff144",
+  storageBucket: "cliptoaction-ff144.firebasestorage.app",
+  messagingSenderId: "129665318602",
+  appId: "1:129665318602:web:b4e29194e978350be23e33"
+};
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+import {
+  getAuth, signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider
+} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+
+const auth = getAuth(initializeApp(FIREBASE_CONFIG));
+const provider = new GoogleAuthProvider();
+
+// Android will not offer to install the app — and so will not put it in the share sheet,
+// which is the only way in (D17) — without a registered service worker. A failure here
+// must not stop the app loading: it only costs installability, and it is expected on any
+// address that is not HTTPS.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("service-worker.js").catch(() => {});
+}
+
+// ---------------------------------------------------------------- local notebook
+// D6 requires delta sync: the whole notebook is kept on the device and only what changed
+// is asked for. `since` is the server's own clock from the last sync, never this device's.
+const EMPTY = {
+  since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
+  tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: []
+};
+let store = structuredClone(EMPTY);
+let user = null;
+let signedIn = false;
+let filter = "all";
+let query = "";
+let grouping = "list";   // "list" | "topics" — D22: a view over the list, never instead of it
+
+const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
+
+function loadCache() {
+  try {
+    const raw = localStorage.getItem(cacheKey());
+    store = raw ? { ...structuredClone(EMPTY), ...JSON.parse(raw) } : structuredClone(EMPTY);
+  } catch {
+    store = structuredClone(EMPTY);
+  }
+}
+
+function saveCache() {
+  try {
+    localStorage.setItem(cacheKey(), JSON.stringify(store));
+  } catch {
+    // A full storage box must not take the app down — the next sync just fetches more.
+  }
+}
+
+/** Merge one delta batch in by primary key, newest wins. */
+function mergeRows(existing, incoming, keyOf) {
+  const byKey = new Map(existing.map((row) => [keyOf(row), row]));
+  for (const row of incoming) byKey.set(keyOf(row), row);
+  return [...byKey.values()];
+}
+
+function applyDelta(delta) {
+  const byId = (row) => row.id;
+  const bySource = (row) => row.source_id;
+  store.clips = mergeRows(store.clips, delta.clips || [], byId);
+  store.notes = mergeRows(store.notes, delta.notes || [], byId);
+  store.questions = mergeRows(store.questions, delta.questions || [], byId);
+  store.topics = mergeRows(store.topics, delta.topics || [], byId);
+  store.tasks = mergeRows(store.tasks, delta.tasks || [], byId);
+  store.learnings = mergeRows(store.learnings, delta.learnings || [], byId);
+  store.sources = mergeRows(store.sources, delta.sources || [], byId);
+  store.transcripts = mergeRows(store.transcripts, delta.transcripts || [], bySource);
+  store.analyses = mergeRows(
+    store.analyses, delta.analyses || [], (row) => `${row.source_id}|${row.user_id}`
+  );
+  // Not merged by key like the rest: this is the whole current list every time, so a
+  // connector turned off elsewhere disappears here instead of lingering for ever.
+  if (delta.connectors) store.connectors = delta.connectors;
+  if (delta.settings) store.settings = delta.settings;
+  if (delta.worker) store.worker = delta.worker;
+  store.since = delta.now || store.since;
+  saveCache();
+}
+
+// ---------------------------------------------------------------- talking to the API
+async function api(path, options = {}) {
+  if (!user) throw new Error("Sign in first.");
+  const token = await user.getIdToken();
+
+  let response;
+  try {
+    response = await fetch(API_BASE + path, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(options.headers || {})
+      }
+    });
+  } catch {
+    // fetch only throws when the request never got there. The browser's own words for
+    // that are "Failed to fetch", which means nothing to anyone reading the screen.
+    throw new Error("you appear to be offline.");
+  }
+
+  let body = {};
+  try { body = await response.json(); } catch { /* an empty or non-JSON body */ }
+  if (!response.ok) throw new Error(body.error || `Something went wrong (${response.status}).`);
+  return body;
+}
+
+async function sync() {
+  const delta = await api(`/v1/sync?since=${store.since}`);
+  applyDelta(delta);
+}
+
+// ---------------------------------------------------------------- small helpers
+const $ = (id) => document.getElementById(id);
+
+function say(target, text, kind = "err") {
+  const host = $(target);
+  host.innerHTML = "";
+  if (!text) return;
+  const notice = document.createElement("div");
+  notice.className = `notice ${kind}`;
+  notice.textContent = text;
+  host.append(notice);
+
+  // A confirmation nobody can see is the same as no confirmation. On a phone, or once a
+  // panel grows, the message can sit below the fold and the button looks like it did
+  // nothing — which is exactly how this was reported.
+  notice.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function jsonList(value) {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+const sourceOf = (clip) => store.sources.find((s) => s.id === clip.source_id);
+const transcriptOf = (clip) => store.transcripts.find((t) => t.source_id === clip.source_id);
+const analysisOf = (clip) => store.analyses.find((a) => a.source_id === clip.source_id);
+const notesOf = (clip) =>
+  store.notes.filter((n) => n.clip_id === clip.id && !n.deleted_at)
+    .sort((a, b) => a.created_at - b.created_at);
+
+// D29 — what the user worked out about this reel elsewhere, oldest first so the page
+// reads in the order it happened.
+const learningsOf = (clip) =>
+  store.learnings.filter((row) => row.clip_id === clip.id && !row.deleted_at)
+    .sort((a, b) => a.created_at - b.created_at);
+
+const topicById = (id) => (id ? store.topics.find((t) => t.id === id && !t.deleted_at) : undefined);
+
+/**
+ * Where a clip is filed, as the two names a person would say: the topic and, under it,
+ * the sub-topic. `clip.topic_id` points at the deepest level named, so a clip filed
+ * straight under a topic has no sub-topic and that is not a gap.
+ */
+function topicPathOf(clip) {
+  const topic = topicById(clip.topic_id);
+  if (!topic) return null;
+  const parent = topic.parent_id ? topicById(topic.parent_id) : null;
+  return parent
+    ? { topic: parent.name, subTopic: topic.name, id: topic.id, parentId: parent.id }
+    : { topic: topic.name, subTopic: "", id: topic.id, parentId: topic.id };
+}
+
+/**
+ * The clips that were summarised before topics existed. `topic_set_by` is what keeps this
+ * honest: a clip the AI has already looked at and could not place is marked, so it stops
+ * counting as waiting and the offer to sort goes away instead of nagging for ever.
+ */
+const unsortedClips = () =>
+  store.clips.filter((clip) =>
+    !clip.deleted_at && !clip.topic_id && !clip.topic_set_by && analysisOf(clip)?.summary);
+
+/** What the user should see about a clip while it is still being worked on (GR29). */
+function progressOf(clip) {
+  const source = sourceOf(clip);
+  if (!source) return { text: "Just saved", kind: "wait" };
+  if (source.error) return { text: source.error, kind: "bad" };
+  switch (source.state) {
+    case "pending": return { text: "Waiting to be picked up", kind: "wait" };
+    case "downloading": return { text: "Being watched now", kind: "wait" };
+    case "transcribed": return { text: "Written down — no summary yet", kind: "wait" };
+    case "analyzed": return { text: "Ready", kind: "good" };
+    case "failed": return { text: "Could not be read", kind: "bad" };
+    default: return { text: source.state, kind: "wait" };
+  }
+}
+
+/**
+ * Platforms hand back very different titles. Instagram gives `Video by <handle>`, which is
+ * already the whole title. Facebook gives the entire caption, pipe-separated, and the first
+ * segment is the view count — so taking segment one blindly names every Facebook clip
+ * "113K views · 532 reactions". Pick the first segment that is actually about the video,
+ * then strip the keyword blocks and hashtags creators pad captions with.
+ */
+function titleOf(clip) {
+  const source = sourceOf(clip);
+  const raw = (source && source.title) || "";
+
+  const isCounts = (part) => /^[\d.,]+\s*[KkMm]?\s*(views?|reactions?|likes?|comments?|shares?)/.test(part);
+  const clean = (part) =>
+    part
+      .replace(/\{[^}]*\}/g, " ")   // {keyword, keyword} blocks
+      .replace(/#\S+/g, " ")        // hashtags
+      .replace(/[·.\s]{2,}/g, " ")  // the " . . " padding creators separate blocks with
+      .trim();
+
+  const parts = raw.split("|").map((part) => part.trim()).filter(Boolean);
+  const chosen = parts.filter((part) => !isCounts(part)).map(clean).find(Boolean)
+    || parts.map(clean).find(Boolean)
+    || "";
+
+  if (chosen) return chosen.length > 90 ? `${chosen.slice(0, 90)}…` : chosen;
+  return source ? `${source.platform} clip` : "Saved clip";
+}
+
+function searchText(clip) {
+  const analysis = analysisOf(clip);
+  return [
+    titleOf(clip),
+    sourceOf(clip)?.url_original,
+    transcriptOf(clip)?.text,
+    analysis?.summary,
+    jsonList(analysis?.key_points).join(" "),
+    jsonList(analysis?.learn_more).join(" "),
+    // What the reel claimed, and why it was doubted. Already stored and already drawn on
+    // the page, but never findable — so "that reel that said X" missed it.
+    jsonList(analysis?.claims).map((c) => `${c?.claim || ""} ${c?.why || ""}`).join(" "),
+    notesOf(clip).map((n) => n.body).join(" "),
+    // D29, and the reason the feature is worth building: with 200 reels you cannot scroll
+    // to find what you learned from the fiftieth. Every field of every learning goes in,
+    // so searching for what you concluded finds the reel it came from.
+    learningsOf(clip).map(learningText).join(" ")
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+/**
+ * A stored moment as a person would say it. Needed here because "which app, and when" is
+ * one of the seven things a learning holds (D29) — a learning with no date is exactly the
+ * gap this product already has everywhere else, repeated.
+ */
+function whenText(milliseconds) {
+  if (!milliseconds) return "";
+  const then = new Date(milliseconds);
+  const days = Math.floor((Date.now() - milliseconds) / 86400000);
+  if (days <= 0) return `Today, ${then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  if (days === 1) return `Yesterday, ${then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  return then.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
+/**
+ * When a reel was saved, as it reads on a card. Relative on purpose: "yesterday" is how
+ * you actually look for a reel — "I saw something yesterday and saved it" — and an
+ * absolute date makes you work that out for yourself.
+ */
+function savedText(milliseconds) {
+  const text = whenText(milliseconds);
+  return text ? `Saved ${text.charAt(0).toLowerCase()}${text.slice(1)}` : "";
+}
+
+/** The same moment spelled out in full, for the reel's own page, where there is room. */
+function exactWhen(milliseconds) {
+  if (!milliseconds) return "";
+  const then = new Date(milliseconds);
+  const date = then.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
+  const time = then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `Saved on ${date} at ${time}`;
+}
+
+/** Every word of one learning, flattened, for the search box. */
+function learningText(learning) {
+  const lists = ["learned", "actions", "still_open", "corrections", "look_into"]
+    .map((field) => jsonList(learning[field]).join(" "));
+  const verdicts = jsonList(learning.verdicts)
+    .map((entry) => `${entry?.claim || ""} ${entry?.verdict || ""} ${entry?.why || ""}`);
+  return [...lists, ...verdicts, learning.learned_with || ""].join(" ");
+}
+
+function show(view) {
+  for (const name of ["listView", "clipView", "settingsView"]) {
+    $(name).hidden = name !== view;
+  }
+  // A clip has its own page (D22) — the save box belongs to the notebook, not on top of it.
+  $("saveView").hidden = view !== "listView";
+}
+
+/** "3 days", "2 hours", "a few minutes" — how long since something happened. */
+function agoText(timestamp) {
+  const minutes = Math.floor((Date.now() - timestamp) / 60000);
+  if (minutes < 60) return minutes <= 1 ? "a minute ago" : `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+/**
+ * Whether the machine that downloads and transcribes is running — shown either way, on
+ * every visit, without being asked for.
+ *
+ * A stopped worker is otherwise completely silent: reels sit waiting, every clip says the
+ * same thing it says while genuinely working, and nothing tells you the difference
+ * (Golden Rule 29). And "off" is only half the answer — seeing that it IS on is what
+ * makes a slow clip readable as patience rather than a fault.
+ */
+function workerNotice() {
+  const state = store.worker;
+  const notice = document.createElement("div");
+
+  if (!state) {
+    notice.className = "notice";
+    notice.textContent = "Checking whether the PC that handles your reels is running…";
+    return notice;
+  }
+
+  if (state.running) {
+    notice.className = "notice ok";
+    notice.textContent = "The PC that downloads and writes up your reels is running"
+      + ` — last checked ${agoText(state.last_seen_at)}. New reels will be picked up within a minute.`;
+    return notice;
+  }
+
+  notice.className = "notice warn";
+  notice.textContent = state.last_seen_at
+    ? `The PC that downloads and writes up your reels is off — last running ${agoText(state.last_seen_at)}.`
+      + " Anything you save is safe and waiting; switch that PC on and it will catch up on its own."
+    : "The PC that downloads and writes up your reels has not run yet."
+      + " Anything you save is safe and waits until it does.";
+  return notice;
+}
+
+// ---------------------------------------------------------------- the notebook list
+function renderList() {
+  const wanted = store.clips
+    .filter((clip) => !clip.deleted_at)
+    .filter((clip) => filter === "all" ? clip.status !== "archived" : clip.status === filter)
+    .filter((clip) => !query || searchText(clip).includes(query))
+    .sort((a, b) => b.created_at - a.created_at);
+
+  $("clipList").innerHTML = "";
+
+  const health = workerNotice();
+  if (health) $("clipList").append(health);
+
+  // Nothing anywhere told a new person that saving reels does not, on its own, produce
+  // anything. They sign in, share a reel, see it accepted, and quietly get no summary.
+  // `ai_provider` is null only until they choose for the first time.
+  if (store.settings && !store.settings.ai_provider) {
+    const prompt = document.createElement("div");
+    prompt.className = "notice warn";
+    prompt.append(document.createTextNode(
+      "Your reels are being saved, but nothing is being summarised yet — that needs one "
+      + "setup step. It takes a minute, and there is a free way that needs no account. "
+    ));
+    const link = document.createElement("a");
+    link.href = "#/settings";
+    link.textContent = "Set it up";
+    prompt.append(link);
+    $("clipList").append(prompt);
+  }
+
+  // The clips summarised before topics existed. Offered here rather than in Settings
+  // because this is where a person notices some cards have a topic and some do not.
+  const unsorted = unsortedClips();
+  if (unsorted.length) {
+    const offer = document.createElement("div");
+    offer.className = "notice";
+    offer.style.background = "#e0e7ff";
+    offer.style.color = "#3730a3";
+    offer.append(document.createTextNode(
+      `${unsorted.length} ${unsorted.length === 1 ? "clip was" : "clips were"} saved before `
+      + "topics existed, so they are not filed anywhere yet. "
+    ));
+    const button = document.createElement("button");
+    button.textContent = "Sort my old clips";
+    button.style.marginTop = "8px";
+    button.onclick = () => sortOldClips(button);
+    offer.append(document.createElement("br"), button);
+    $("clipList").append(offer);
+  }
+
+  if (!wanted.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = store.clips.length
+      ? "Nothing here matches."
+      : "Nothing saved yet. Paste a reel link above and it will start working on it.";
+    $("clipList").append(empty);
+    return;
+  }
+
+  if (grouping === "topics") renderByTopic(wanted);
+  else for (const clip of wanted) $("clipList").append(clipCard(clip));
+}
+
+/** One clip's card. Both views draw this same one, so they can never drift apart. */
+function clipCard(clip, { showTopic = true } = {}) {
+  const progress = progressOf(clip);
+  const analysis = analysisOf(clip);
+  const card = document.createElement("article");
+  card.className = "card";
+
+  const heading = document.createElement("h4");
+  heading.textContent = titleOf(clip);
+
+  const pills = document.createElement("div");
+  const platform = document.createElement("span");
+  platform.className = "pill";
+  platform.textContent = sourceOf(clip)?.platform || "Clip";
+  const state = document.createElement("span");
+  state.className = `pill ${progress.kind}`;
+  state.textContent = progress.text;
+  pills.append(platform, state);
+
+  // Where it is filed, visible without leaving the list. Left off inside the grouped view,
+  // where the heading above the card already says it.
+  const path = showTopic ? topicPathOf(clip) : null;
+  if (path) {
+    const topic = document.createElement("span");
+    topic.className = "pill topic";
+    topic.textContent = path.subTopic ? `${path.topic} › ${path.subTopic}` : path.topic;
+    pills.append(topic);
+  }
+
+  card.append(heading, pills);
+
+  // When it was saved. Without this a notebook is a wall of cards with no sense of time
+  // in it, and there is no way to find "the one I saved yesterday" short of reading
+  // every card.
+  const saved = document.createElement("p");
+  saved.className = "muted";
+  saved.textContent = savedText(clip.created_at);
+  card.append(saved);
+
+  if (analysis?.summary) {
+    const summary = document.createElement("p");
+    summary.textContent = analysis.summary.length > 220
+      ? `${analysis.summary.slice(0, 220)}…`
+      : analysis.summary;
+    card.append(summary);
+  }
+
+  card.onclick = () => { location.hash = `#/clip/${clip.id}`; };
+  return card;
+}
+
+/**
+ * The same clips, gathered under their topic and sub-topic. Anything not filed yet goes
+ * last under its own heading rather than being hidden — a clip that has fallen out of
+ * every group would simply look lost (Golden Rule 29).
+ */
+function renderByTopic(wanted) {
+  const host = $("clipList");
+  const groups = new Map();   // parent topic id -> Map(sub-topic name -> clips)
+  const unfiled = [];
+
+  for (const clip of wanted) {
+    const path = topicPathOf(clip);
+    if (!path) { unfiled.push(clip); continue; }
+    if (!groups.has(path.parentId)) groups.set(path.parentId, { name: path.topic, subs: new Map() });
+    const subs = groups.get(path.parentId).subs;
+    if (!subs.has(path.subTopic)) subs.set(path.subTopic, []);
+    subs.get(path.subTopic).push(clip);
+  }
+
+  const ordered = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const group of ordered) {
+    const heading = document.createElement("h3");
+    heading.className = "group";
+    heading.textContent = group.name;
+    host.append(heading);
+
+    // The clips filed straight under the topic come first, then each sub-topic.
+    const subNames = [...group.subs.keys()].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    for (const name of subNames) {
+      if (name) {
+        const sub = document.createElement("div");
+        sub.className = "subgroup";
+        sub.textContent = name;
+        host.append(sub);
+      }
+      for (const clip of group.subs.get(name)) host.append(clipCard(clip, { showTopic: false }));
+    }
+  }
+
+  if (unfiled.length) {
+    const heading = document.createElement("h3");
+    heading.className = "group";
+    heading.textContent = "Not filed yet";
+    host.append(heading);
+    for (const clip of unfiled) host.append(clipCard(clip, { showTopic: false }));
+  }
+}
+
+/**
+ * Presses on until the server says nothing is left. The server names a few at a time, so
+ * one press here is several requests — but from the outside it is one button that finishes
+ * the job rather than one the user has to keep hitting.
+ *
+ * The loop is bounded by `remaining` falling, not by trust: the server marks every clip it
+ * has looked at, named or not, so a clip it cannot place leaves the queue instead of being
+ * asked about for ever.
+ */
+async function sortOldClips(button) {
+  button.disabled = true;
+  button.textContent = "Sorting…";
+  let sorted = 0;
+
+  try {
+    for (let pass = 0; pass < 40; pass += 1) {
+      const result = await api("/v1/topics/sort", { method: "POST" });
+      sorted += result.sorted || 0;
+      if (result.error) {
+        await sync();
+        render();
+        say("syncMsg", `Sorted ${sorted}, then stopped: ${result.error}`, "warn");
+        return;
+      }
+      if (!result.remaining) break;
+    }
+
+    await sync();
+    render();
+    say("syncMsg", sorted
+      ? `Filed ${sorted} ${sorted === 1 ? "clip" : "clips"}.`
+      : "Nothing could be filed — there was not enough in those summaries to name a topic.",
+      sorted ? "ok" : "warn");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Sort my old clips";
+    say("syncMsg", error.message);
+  }
+}
+
+/**
+ * Where this clip is filed, and the way to change it. The user's choice is final (D27) —
+ * the server marks anything set here as theirs and never moves it again, so the note
+ * saying so is a promise the code keeps.
+ */
+function topicSection(clip) {
+  const section = document.createElement("div");
+  const path = topicPathOf(clip);
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Filed under";
+  section.append(heading);
+
+  const where = document.createElement("p");
+  if (path) {
+    where.textContent = path.subTopic ? `${path.topic} › ${path.subTopic}` : path.topic;
+  } else {
+    where.className = "muted";
+    where.textContent = clip.topic_set_by
+      ? "Not filed anywhere. There was not enough in this one to name a topic."
+      : "Not filed anywhere yet.";
+  }
+  section.append(where);
+
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = path ? "Change where this is filed" : "File this one yourself";
+  details.append(summary);
+
+  const topicBox = document.createElement("input");
+  topicBox.placeholder = "Topic — the broad subject";
+  topicBox.value = path ? path.topic : "";
+  const subBox = document.createElement("input");
+  subBox.placeholder = "Sub-topic — optional";
+  subBox.value = path ? path.subTopic : "";
+  subBox.style.marginTop = "8px";
+
+  const save = document.createElement("button");
+  save.textContent = "Save";
+  save.style.marginTop = "8px";
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      await api(`/v1/clips/${clip.id}/topic`, {
+        method: "PUT",
+        body: JSON.stringify({ topic: topicBox.value.trim(), sub_topic: subBox.value.trim() })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("clipMsg", error.message);
+      save.disabled = false;
+    }
+  };
+
+  const promise = document.createElement("p");
+  promise.className = "muted";
+  promise.textContent = "Once you set this yourself it stays put — nothing automatic will move it again.";
+
+  details.append(topicBox, subBox, save, promise);
+  section.append(details);
+  return section;
+}
+
+// ---------------------------------------------------------------- doing it by hand (D9)
+/**
+ * The copy-and-paste tier, which is what lets someone use this without ever connecting an
+ * AI account. It was offered in Settings and did nothing, because only the server half
+ * existed: the app never asked for the question or offered anywhere to paste the answer.
+ *
+ * Shown whenever a clip has been written down but has no summary — which covers both
+ * "never connected an AI" and "connected one, but this clip did not get summarised".
+ */
+function byHandSection(clip) {
+  const section = document.createElement("div");
+
+  const heading = document.createElement("div");
+  heading.className = "notice warn";
+  heading.textContent = store.settings?.has_key
+    ? "This one has not been summarised yet."
+    : "This one has been written down but not summarised. Either connect an AI in "
+      + "Settings, or do it yourself below — no account needed.";
+  section.append(heading);
+
+  // A summary is otherwise only ever made the moment a reel finishes being written down.
+  // Somebody who saves ten reels and connects an AI afterwards would get summaries on the
+  // eleventh and nothing at all for the ten already sitting there. One press, one clip:
+  // sweeping the whole backlog unasked could burn a free daily allowance in one go and
+  // look, from the outside, exactly like the app breaking.
+  if (store.settings?.has_key) {
+    const now = document.createElement("button");
+    now.textContent = "Summarise it now";
+    now.style.marginBottom = "6px";
+    now.onclick = async () => {
+      now.disabled = true;
+      say("byHandMsg", "Asking your AI — this takes a few seconds.", "ok");
+      try {
+        await api(`/v1/clips/${clip.id}/summarise`, { method: "POST" });
+        await sync();
+        render();
+      } catch (error) {
+        say("byHandMsg", error.message);
+        now.disabled = false;
+      }
+    };
+    section.append(now);
+
+    const or = document.createElement("p");
+    or.className = "muted";
+    or.textContent = "Or do it yourself, without using your AI account:";
+    section.append(or);
+  }
+
+  const steps = document.createElement("ol");
+  steps.className = "plain";
+  for (const step of [
+    "Press the button below. It copies the reel's words and the question to ask about them.",
+    "Paste that into any AI you already use — ChatGPT, Gemini, Claude, whichever.",
+    "Copy its whole reply and paste it in the box underneath, then save."
+  ]) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    steps.append(item);
+  }
+  section.append(steps);
+
+  const copyButton = document.createElement("button");
+  copyButton.textContent = "Copy the question";
+
+  const fallback = document.createElement("textarea");
+  fallback.readOnly = true;
+  fallback.hidden = true;
+  fallback.style.marginTop = "8px";
+
+  const status = document.createElement("div");
+  status.id = "byHandMsg";
+
+  copyButton.onclick = async () => {
+    copyButton.disabled = true;
+    say("byHandMsg", "");
+    try {
+      const { prompt } = await api(`/v1/clips/${clip.id}/prompt`);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        say("byHandMsg", "Copied. Now paste it into your AI.", "ok");
+      } catch {
+        // Copying can be refused outright — an insecure address, or a browser that only
+        // allows it straight after a tap. Showing the text is not a nice extra here; it
+        // is the difference between the feature working and not.
+        fallback.value = prompt;
+        fallback.hidden = false;
+        fallback.select();
+        say("byHandMsg", "Your browser would not let the app copy it. "
+          + "The text is below — select it all and copy it yourself.", "warn");
+      }
+    } catch (error) {
+      say("byHandMsg", error.message);
+    } finally {
+      copyButton.disabled = false;
+    }
+  };
+
+  const answer = document.createElement("textarea");
+  answer.placeholder = "Paste the AI's whole reply here";
+  answer.style.marginTop = "10px";
+
+  const saveButton = document.createElement("button");
+  saveButton.textContent = "Save the answer";
+  saveButton.style.marginTop = "8px";
+  saveButton.onclick = async () => {
+    const pasted = answer.value.trim();
+    if (!pasted) {
+      say("byHandMsg", "Paste the AI's reply first.");
+      return;
+    }
+    saveButton.disabled = true;
+    say("byHandMsg", "");
+    try {
+      await api(`/v1/clips/${clip.id}/analysis`, {
+        method: "POST",
+        body: JSON.stringify({ pasted })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("byHandMsg", error.message);
+      saveButton.disabled = false;
+    }
+  };
+
+  section.append(copyButton, fallback, answer, saveButton, status);
+  return section;
+}
+
+// ---------------------------------------------------------------- what you worked out (D29)
+
+/** One saved learning, drawn as the seven things it holds. Empty parts are left out. */
+function learningBlock(learning) {
+  const block = document.createElement("div");
+  block.className = "learning";
+
+  const when = document.createElement("div");
+  when.className = "muted";
+  when.textContent = learning.learned_with
+    ? `${whenText(learning.created_at)} · with ${learning.learned_with}`
+    : whenText(learning.created_at);
+  block.append(when);
+
+  const listPart = (field, heading) => {
+    const items = jsonList(learning[field]);
+    if (!items.length) return;
+    const title = document.createElement("h4");
+    title.textContent = heading;
+    const list = document.createElement("ul");
+    list.className = "plain";
+    for (const item of items) {
+      const entry = document.createElement("li");
+      entry.textContent = String(item);
+      list.append(entry);
+    }
+    block.append(title, list);
+  };
+
+  listPart("learned", "What you learned");
+
+  const verdicts = jsonList(learning.verdicts);
+  if (verdicts.length) {
+    const title = document.createElement("h4");
+    title.textContent = "True or not";
+    block.append(title);
+    for (const entry of verdicts) {
+      const verdict = String(entry?.verdict || "").toLowerCase();
+      const row = document.createElement("div");
+      row.className = `claim verdict-${verdict}`;
+      const what = document.createElement("strong");
+      what.textContent = String(entry?.claim || "");
+      const why = document.createElement("div");
+      why.className = "muted";
+      why.textContent = `${verdict || "unsure"} — ${entry?.why || ""}`;
+      row.append(what, why);
+      block.append(row);
+    }
+  }
+
+  listPart("actions", "What you said you would do");
+  listPart("corrections", "Where the reel was wrong");
+  listPart("still_open", "Still open");
+  listPart("look_into", "Worth looking into next");
+  return block;
+}
+
+/**
+ * Take the reel to an AI, talk it through, bring the answer back (D29).
+ *
+ * Deliberately the same three-step shape as the copy-paste summary above it: the person
+ * who has no AI key is the person this is for, and they have already used that flow once.
+ */
+function learnSection(clip) {
+  const section = document.createElement("div");
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Learn from this one";
+  section.append(heading);
+
+  const steps = document.createElement("ol");
+  steps.className = "plain";
+  for (const step of [
+    "Press the button. It copies the reel and asks the AI to teach you, not to summarise.",
+    "Paste it into whichever AI you use, and talk it through properly — argue with it.",
+    "When you are done, ask it to finish. Paste its last reply below and save it here."
+  ]) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    steps.append(item);
+  }
+  section.append(steps);
+
+  const copyButton = document.createElement("button");
+  copyButton.textContent = "Copy it for your AI";
+
+  const fallback = document.createElement("textarea");
+  fallback.readOnly = true;
+  fallback.hidden = true;
+  fallback.style.marginTop = "8px";
+
+  const status = document.createElement("div");
+  status.id = "learnMsg";
+
+  copyButton.onclick = async () => {
+    copyButton.disabled = true;
+    say("learnMsg", "");
+    try {
+      const { prompt } = await api(`/v1/clips/${clip.id}/learn-prompt`);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        say("learnMsg", "Copied. Now paste it into your AI and get into it.", "ok");
+      } catch {
+        // Copying can be refused outright — an insecure address, or a browser that only
+        // allows it straight after a tap. Showing the text is the difference between the
+        // feature working and not.
+        fallback.value = prompt;
+        fallback.hidden = false;
+        fallback.select();
+        say("learnMsg", "Your browser would not let the app copy it. "
+          + "The text is below — select it all and copy it yourself.", "warn");
+      }
+    } catch (error) {
+      say("learnMsg", error.message);
+    } finally {
+      copyButton.disabled = false;
+    }
+  };
+
+  const answer = document.createElement("textarea");
+  answer.placeholder = "Paste the AI's last reply here";
+  answer.style.marginTop = "10px";
+
+  const saveButton = document.createElement("button");
+  saveButton.textContent = "Save what you learned";
+  saveButton.style.marginTop = "8px";
+  saveButton.onclick = async () => {
+    const pasted = answer.value.trim();
+    if (!pasted) {
+      say("learnMsg", "Paste the AI's reply first.");
+      return;
+    }
+    saveButton.disabled = true;
+    say("learnMsg", "");
+    try {
+      await api(`/v1/clips/${clip.id}/learning`, {
+        method: "POST",
+        body: JSON.stringify({ pasted })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("learnMsg", error.message);
+      saveButton.disabled = false;
+    }
+  };
+
+  section.append(copyButton, fallback, answer, saveButton, status);
+  return section;
+}
+
+// ---------------------------------------------------------------- one clip's own page
+function renderClip(clipId) {
+  const clip = store.clips.find((c) => c.id === clipId);
+  if (!clip) { location.hash = ""; return; }
+
+  const source = sourceOf(clip);
+  const analysis = analysisOf(clip);
+  const transcript = transcriptOf(clip);
+  const progress = progressOf(clip);
+
+  const panel = document.createElement("div");
+  panel.className = "panel";
+
+  const back = document.createElement("button");
+  back.className = "secondary";
+  back.textContent = "Back to notebook";
+  back.onclick = () => { location.hash = ""; };
+  panel.append(back);
+
+  const heading = document.createElement("h2");
+  heading.style.marginTop = "14px";
+  heading.textContent = titleOf(clip);
+  panel.append(heading);
+
+  const pills = document.createElement("div");
+  const platform = document.createElement("span");
+  platform.className = "pill";
+  platform.textContent = source?.platform || "Clip";
+  const state = document.createElement("span");
+  state.className = `pill ${progress.kind}`;
+  state.textContent = progress.text;
+  pills.append(platform, state);
+  panel.append(pills);
+
+  const saved = document.createElement("p");
+  saved.className = "muted";
+  saved.textContent = exactWhen(clip.created_at);
+  panel.append(saved);
+
+  if (source?.url_original) {
+    const link = document.createElement("p");
+    const anchor = document.createElement("a");
+    anchor.href = source.url_original;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.textContent = "Open the original";
+    link.append(anchor);
+    panel.append(link);
+  }
+
+  if (source?.duration_sec) {
+    const length = document.createElement("p");
+    length.className = "muted";
+    length.textContent = `${source.duration_sec} seconds long`;
+    panel.append(length);
+  }
+
+  const statusRow = document.createElement("div");
+  statusRow.className = "filters";
+  for (const [value, label] of [
+    ["inbox", "New"], ["keep", "Keeping"], ["done", "Done"], ["archived", "Archived"]
+  ]) {
+    const button = document.createElement("button");
+    button.textContent = label;
+    if (clip.status === value) button.classList.add("active");
+    button.onclick = async () => {
+      try {
+        await api(`/v1/clips/${clip.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: value })
+        });
+        await sync();
+        render();
+      } catch (error) {
+        say("clipMsg", error.message);
+      }
+    };
+    statusRow.append(button);
+  }
+  panel.append(statusRow);
+
+  const clipMsg = document.createElement("div");
+  clipMsg.id = "clipMsg";
+  panel.append(clipMsg);
+
+  panel.append(topicSection(clip));
+
+  if (analysis) {
+    const summaryHeading = document.createElement("h3");
+    summaryHeading.textContent = "What it said";
+    const summary = document.createElement("p");
+    summary.textContent = analysis.summary;
+    panel.append(summaryHeading, summary);
+
+    const points = jsonList(analysis.key_points);
+    if (points.length) {
+      const pointsHeading = document.createElement("h3");
+      pointsHeading.textContent = "The main points";
+      const list = document.createElement("ul");
+      list.className = "plain";
+      for (const point of points) {
+        const item = document.createElement("li");
+        item.textContent = String(point);
+        list.append(item);
+      }
+      panel.append(pointsHeading, list);
+    }
+
+    const claims = jsonList(analysis.claims);
+    if (claims.length) {
+      const claimsHeading = document.createElement("h3");
+      claimsHeading.textContent = "Worth checking before you act on it";
+      panel.append(claimsHeading);
+      for (const entry of claims) {
+        const confidence = String(entry.confidence || "").toLowerCase();
+        const block = document.createElement("div");
+        block.className = `claim ${confidence}`;
+        const what = document.createElement("strong");
+        what.textContent = String(entry.claim || "");
+        const why = document.createElement("div");
+        why.className = "muted";
+        why.textContent = `${confidence || "unrated"} — ${entry.why || ""}`;
+        block.append(what, why);
+        panel.append(block);
+      }
+    }
+
+    const learn = jsonList(analysis.learn_more);
+    if (learn.length) {
+      const learnHeading = document.createElement("h3");
+      learnHeading.textContent = "Things to look into";
+      const list = document.createElement("ul");
+      list.className = "plain";
+      for (const topic of learn) {
+        const item = document.createElement("li");
+        item.textContent = String(topic);
+        list.append(item);
+      }
+      panel.append(learnHeading, list);
+    }
+
+    const credit = document.createElement("p");
+    credit.className = "muted";
+    credit.textContent =
+      `Summarised by ${analysis.provider}${analysis.model ? ` (${analysis.model})` : ""}.`;
+    panel.append(credit);
+  } else if (transcript) {
+    panel.append(byHandSection(clip));
+  }
+
+  if (transcript) {
+    const details = document.createElement("details");
+    const summaryLine = document.createElement("summary");
+    summaryLine.textContent = "Everything that was said";
+    const body = document.createElement("div");
+    body.className = "transcript";
+    body.textContent = transcript.text;
+    details.append(summaryLine, body);
+    panel.append(details);
+  }
+
+  // What was worked out elsewhere and brought back (D29). This sits above the notes
+  // because it is the part that took effort, and below the reel because it came second.
+  const learnings = learningsOf(clip);
+  if (learnings.length) {
+    const learnedHeading = document.createElement("h3");
+    learnedHeading.textContent = "What you worked out";
+    panel.append(learnedHeading);
+    for (const learning of learnings) panel.append(learningBlock(learning));
+  }
+
+  // Needs the words to be worth taking anywhere, same as the summarise-by-hand flow.
+  if (transcript) panel.append(learnSection(clip));
+
+  // The user's own notes — this is how an entry grows past the reel that seeded it.
+  const notesHeading = document.createElement("h3");
+  notesHeading.textContent = "Your notes";
+  panel.append(notesHeading);
+
+  for (const note of notesOf(clip)) {
+    const block = document.createElement("p");
+    block.textContent = note.body;
+    panel.append(block);
+  }
+
+  const noteBox = document.createElement("textarea");
+  noteBox.placeholder = "Write what you want to remember about this one";
+  const noteButton = document.createElement("button");
+  noteButton.textContent = "Add note";
+  noteButton.style.marginTop = "8px";
+  noteButton.onclick = async () => {
+    const text = noteBox.value.trim();
+    if (!text) return;
+    noteButton.disabled = true;
+    try {
+      await api("/v1/notes", {
+        method: "POST",
+        body: JSON.stringify({ clip_id: clip.id, body: text })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("clipMsg", error.message);
+      noteButton.disabled = false;
+    }
+  };
+  panel.append(noteBox, noteButton);
+
+  $("clipView").innerHTML = "";
+  $("clipView").append(panel);
+}
+
+// ---------------------------------------------------------------- keeping it current
+/**
+ * The status has to be right when you open the app, not right when you last reloaded it.
+ *
+ * Two triggers, because they cover different things: coming back to the app is when a
+ * stale screen is most likely and most annoying, and the timer covers sitting and watching
+ * a reel being worked on.
+ *
+ * Only ever refreshes the notebook list. Redrawing a clip's page underneath somebody would
+ * wipe a half-typed note, and redrawing Settings would clear the key box — so a background
+ * refresh stops at the one screen where nothing can be lost.
+ */
+const REFRESH_MS = 45 * 1000;
+let refreshTimer = null;
+
+async function refreshQuietly() {
+  if (!signedIn || document.hidden || location.hash) return;
+  try {
+    await sync();
+    renderList();
+  } catch {
+    // Offline. The device copy stands and the next pass will pick it up — a background
+    // refresh must never put an error where the user did not ask for anything.
+  }
+}
+
+function startRefreshing() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refreshQuietly, REFRESH_MS);
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshQuietly(); });
+window.addEventListener("focus", refreshQuietly);
+
+// ---------------------------------------------------------------- routing
+/**
+ * The guide has to be readable before signing in — somebody deciding whether to hand over
+ * their Google account should be able to find out what this thing does first. So it lives
+ * outside the signed-in area and this decides, in one place, which of the three shells is
+ * on screen.
+ */
+function applyChrome() {
+  const onGuide = location.hash === "#/guide";
+  $("guideView").hidden = !onGuide;
+  $("signInView").hidden = signedIn || onGuide;
+  $("appView").hidden = !signedIn || onGuide;
+  $("who").hidden = !signedIn;
+}
+
+function render() {
+  applyChrome();
+  if (location.hash === "#/guide") return;
+  if (!signedIn) return;
+
+  const match = location.hash.match(/^#\/clip\/(.+)$/);
+  if (match) {
+    show("clipView");
+    renderClip(match[1]);
+    return;
+  }
+  if (location.hash === "#/settings") {
+    show("settingsView");
+    renderSettings();
+    return;
+  }
+  show("listView");
+  renderList();
+}
+
+window.addEventListener("hashchange", render);
+
+// ---------------------------------------------------------------- saving a link
+async function saveLink(url) {
+  say("saveMsg", "");
+  $("saveBtn").disabled = true;
+  try {
+    await api("/v1/clips", { method: "POST", body: JSON.stringify({ url }) });
+    $("saveUrl").value = "";
+    say("saveMsg", "Saved. It will start working on it shortly.", "ok");
+    await sync();
+    render();
+  } catch (error) {
+    say("saveMsg", error.message);
+  } finally {
+    $("saveBtn").disabled = false;
+  }
+}
+
+$("saveForm").onsubmit = (event) => {
+  event.preventDefault();
+  const url = $("saveUrl").value.trim();
+  if (url) saveLink(url);
+};
+
+/** A link handed over by the Android share sheet (D17). */
+function pendingShare() {
+  const raw = localStorage.getItem("cliptoaction-pending-share");
+  if (!raw) return "";
+  localStorage.removeItem("cliptoaction-pending-share");
+  try {
+    const share = JSON.parse(raw);
+    const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
+    return found ? found[0] : "";
+  } catch {
+    return "";
+  }
+}
+
+// ---------------------------------------------------------------- settings
+$("saveSettings").onclick = async () => {
+  const body = { provider: $("provider").value };
+  const key = $("apiKey").value.trim();
+  if (key) body.api_key = key;
+  $("saveSettings").disabled = true;
+  try {
+    const result = await api("/v1/settings", { method: "PUT", body: JSON.stringify(body) });
+
+    // Keep the device copy in step with what was just saved, so the screen is right
+    // immediately rather than only after the next sync. The key is wiped from the box
+    // because it is never shown back, and on its own an empty box reads as "it did not
+    // save" — renderSettings puts the reassurance in the placeholder instead.
+    store.settings = { ai_provider: result.provider, has_key: Boolean(result.key_stored) };
+    saveCache();
+    renderSettings();
+
+    // Three different things, and they used to share two messages between them: no key
+    // because none is wanted, no key because none has been pasted yet, and a key in place.
+    // Telling someone who picked Groq that they will be handed text to paste is simply
+    // wrong, and it reads as though the app ignored what they chose.
+    let message;
+    if (result.provider === "manual") {
+      message = "Saved. You will be given the text to paste into your own AI.";
+    } else if (result.key_stored) {
+      message = "Saved. New clips will be summarised with it.";
+    } else {
+      message = "Saved — but there is no key yet, so nothing will be summarised. "
+        + "Paste your key above and save again.";
+    }
+    say("settingsMsg", message, result.key_stored || result.provider === "manual" ? "ok" : "warn");
+  } catch (error) {
+    say("settingsMsg", error.message);
+  } finally {
+    $("saveSettings").disabled = false;
+  }
+};
+
+$("makeConnector").onclick = async () => {
+  const button = $("makeConnector");
+  button.disabled = true;
+  say("connectorMsg", "");
+  try {
+    const made = await api("/v1/connector", {
+      method: "POST",
+      body: JSON.stringify({ label: $("connectorLabel").value.trim() })
+    });
+
+    await sync();
+    renderConnectors();
+    $("connectorLabel").value = "";
+
+    // Shown in a box rather than only copied to the clipboard. This is the one and only
+    // time this address exists in readable form — a silent copy that quietly failed, on a
+    // phone or an insecure address, would lose it for good.
+    const box = document.createElement("textarea");
+    box.readOnly = true;
+    box.value = made.url;
+    box.style.marginTop = "8px";
+    box.rows = 3;
+
+    const copy = document.createElement("button");
+    copy.textContent = "Copy the address";
+    copy.style.marginTop = "8px";
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(made.url);
+        copy.textContent = "Copied";
+      } catch {
+        box.select();
+        copy.textContent = "Select it above and copy it yourself";
+      }
+    };
+
+    say("connectorMsg", "Here it is — this is the only time it will be shown. Paste it "
+      + "into your AI app now, and keep it as private as a password.", "warn");
+    $("connectorMsg").append(box, copy);
+    box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  } catch (error) {
+    say("connectorMsg", error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
+// Where a key actually comes from. Telling someone they need a key and then leaving them
+// to find it is the friction D9's copy-paste tier exists to avoid — and it is worse than
+// no instruction at all, because they cannot even tell whether it will cost them money.
+//
+// Addresses checked on 2026-08-21. Google's, Groq's and Anthropic's answered. OpenAI's and
+// xAI's refuse automated requests, so those two could NOT be confirmed from here and are
+// the ones to re-check first if anyone reports a dead link (D13).
+const PROVIDER_HELP = {
+  gemini: {
+    where: "Google AI Studio",
+    url: "https://aistudio.google.com/apikey",
+    cost: "Free",
+    steps: [
+      "Sign in with the Google account you want to use.",
+      "Click Create API key, give it any name, and create it.",
+      "Copy it and paste it above."
+    ],
+    // Read off Google's own consent screen on 2026-08-21.
+    warning: "On the free tier Google may read what is sent and use it to improve their AI."
+  },
+  groq: {
+    where: "the Groq console",
+    url: "https://console.groq.com/keys",
+    cost: "Free",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."]
+  },
+  openai: {
+    where: "the OpenAI platform",
+    url: "https://platform.openai.com/api-keys",
+    cost: "Paid",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    warning: "This is charged separately. A ChatGPT Plus subscription does not include it."
+  },
+  anthropic: {
+    where: "the Anthropic console",
+    url: "https://console.anthropic.com/settings/keys",
+    cost: "Paid",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    warning: "This is charged separately. A Claude Pro subscription does not include it."
+  },
+  xai: {
+    where: "the xAI console",
+    url: "https://console.x.ai/",
+    cost: "Paid",
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    warning: "This is charged separately."
+  },
+  manual: {
+    none: true,
+    note: "Nothing to set up. Each clip gives you some text to copy into whatever AI you "
+      + "already use, and you paste the answer back."
+  }
+};
+
+/**
+ * Put the person's own choices on the settings screen. Without this it opened on the first
+ * provider in the list with an empty key box every time, so someone who had connected Groq
+ * months ago was shown "Gemini" and no key — indistinguishable from never having set it up.
+ */
+/**
+ * The addresses handed out to AI apps (D29). The list carries no secret in it — the
+ * address is readable exactly once, in the moment it is made, and after that only "which
+ * app, made when, last used when" is left. Saying so on screen is what stops someone
+ * hunting for it later and concluding the app has lost it.
+ */
+function renderConnectors() {
+  const host = $("connectorList");
+  host.innerHTML = "";
+
+  const live = store.connectors || [];
+  if (!live.length) {
+    const none = document.createElement("p");
+    none.className = "muted";
+    none.textContent = "No AI app is connected yet.";
+    host.append(none);
+    return;
+  }
+
+  for (const connector of live) {
+    const row = document.createElement("div");
+    row.className = "learning";
+
+    const name = document.createElement("h4");
+    name.textContent = connector.label || "Unnamed app";
+
+    const detail = document.createElement("div");
+    detail.className = "muted";
+    detail.textContent = connector.last_used_at
+      ? `Made ${whenText(connector.created_at)} · last used ${whenText(connector.last_used_at)}`
+      : `Made ${whenText(connector.created_at)} · never used yet`;
+
+    const off = document.createElement("button");
+    off.className = "secondary";
+    off.textContent = "Turn it off";
+    off.style.marginTop = "8px";
+    off.onclick = async () => {
+      off.disabled = true;
+      say("connectorMsg", "");
+      try {
+        await api(`/v1/connector/${connector.id}`, { method: "DELETE" });
+        await sync();
+        renderConnectors();
+        say("connectorMsg", "Turned off. That address stops working straight away.", "ok");
+      } catch (error) {
+        say("connectorMsg", error.message);
+        off.disabled = false;
+      }
+    };
+
+    row.append(name, detail, off);
+    host.append(row);
+  }
+}
+
+function renderSettings() {
+  renderConnectors();
+  const settings = store.settings;
+  if (settings?.ai_provider) $("provider").value = settings.ai_provider;
+  $("apiKey").value = "";
+  $("apiKey").placeholder = settings?.has_key
+    ? "A key is saved — leave this empty to keep it"
+    : "Paste your key";
+  renderProviderHelp();
+}
+
+function renderProviderHelp() {
+  const help = PROVIDER_HELP[$("provider").value];
+  const host = $("providerHelp");
+  host.innerHTML = "";
+  if (!help) return;
+
+  if (help.none) {
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.textContent = help.note;
+    host.append(line);
+    $("apiKey").disabled = true;
+    return;
+  }
+  $("apiKey").disabled = false;
+
+  const box = document.createElement("div");
+  box.className = "notice";
+
+  const heading = document.createElement("p");
+  heading.style.margin = "0 0 6px";
+  const cost = document.createElement("strong");
+  cost.textContent = `${help.cost}. `;
+  heading.append(cost, document.createTextNode(`Get your key from ${help.where}:`));
+
+  const link = document.createElement("a");
+  link.href = help.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = help.url.replace(/^https:\/\//, "");
+
+  const list = document.createElement("ol");
+  list.className = "plain";
+  for (const step of help.steps) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    list.append(item);
+  }
+
+  box.append(heading, link, list);
+
+  if (help.warning) {
+    const warning = document.createElement("p");
+    warning.className = "muted";
+    warning.style.margin = "6px 0 0";
+    warning.textContent = help.warning;
+    box.append(warning);
+  }
+
+  host.append(box);
+}
+
+$("provider").onchange = renderProviderHelp;
+
+$("settingsBack").onclick = () => { location.hash = ""; };
+$("navSettings").onclick = () => { location.hash = "#/settings"; };
+$("navGuide").onclick = () => { location.hash = "#/guide"; };
+$("guideBack").onclick = () => { location.hash = ""; };
+$("home").onclick = () => { location.hash = ""; };
+
+// ---------------------------------------------------------------- search and filters
+$("search").oninput = () => { query = $("search").value.trim().toLowerCase(); renderList(); };
+
+$("filters").onclick = (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  filter = button.dataset.status;
+  for (const other of $("filters").children) other.classList.toggle("active", other === button);
+  renderList();
+};
+
+$("views").onclick = (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  grouping = button.dataset.view;
+  for (const other of $("views").children) other.classList.toggle("active", other === button);
+  renderList();
+};
+
+// ---------------------------------------------------------------- signing in
+$("signIn").onclick = async () => {
+  say("signInError", "");
+  try {
+    await signInWithPopup(auth, provider);
+  } catch (error) {
+    say("signInError", error.code === "auth/popup-closed-by-user"
+      ? "Sign-in was closed before it finished."
+      : "Could not sign in. Please try again.");
+  }
+};
+
+$("signOut").onclick = () => {
+  // The device copy is the whole notebook in clear text. Signing out on a shared or
+  // borrowed machine has to take it with you, so the next sync starts from nothing.
+  try { localStorage.removeItem(cacheKey()); } catch { /* nothing to remove */ }
+  signOut(auth);
+};
+
+onAuthStateChanged(auth, async (account) => {
+  user = account;
+  signedIn = Boolean(account);
+  applyChrome();
+  if (!account) {
+    store = structuredClone(EMPTY);
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    return;
+  }
+
+  $("whoEmail").textContent = account.email || "";
+  loadCache();
+  render();
+
+  const shared = pendingShare();
+  if (shared) $("saveUrl").value = shared;
+
+  try {
+    await sync();
+    say("syncMsg", "");
+  } catch (error) {
+    // An offline or failing sync must never blank the notebook — the device copy stands.
+    say("syncMsg", `Showing your saved copy — ${error.message}`, "warn");
+  }
+  render();
+  startRefreshing();
+  if (shared) saveLink(shared);
+});
+</script>
+</body>
+</html>

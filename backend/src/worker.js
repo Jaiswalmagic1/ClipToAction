@@ -13,15 +13,47 @@
 
 import { verifyFirebaseToken, encryptSecret, tokensMatch, AuthError } from "./auth.js";
 import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "./canonical.js";
-import { ANALYSIS_PROMPT, analyzeSource, parseAnalysis, AnalysisError } from "./analyze.js";
+import {
+  ANALYSIS_PROMPT,
+  analyzeSource,
+  parseAnalysis,
+  proposeTopic,
+  AnalysisError
+} from "./analyze.js";
+import {
+  cleanTopicName,
+  fileClipIntoTopic,
+  fileSourceForAllSavers,
+  setClipTopicByHand
+} from "./topics.js";
+import {
+  buildLearningPrompt,
+  learningColumns,
+  validateLearning
+} from "./learnings.js";
+import { handleMcp, hashSecret, newConnectorSecret } from "./mcp.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
+const THE_WORKER = ""; // workers.id value meaning "the one PC worker"
+
+// How long after its last check-in the PC worker is still called working. It asks for work
+// every 30 seconds even when there is none, so a few minutes of silence is already well
+// past normal — but not so tight that one slow request reads as an outage.
+const WORKER_QUIET_AFTER_MS = 5 * 60 * 1000;
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_SAVES_PER_DAY = 200;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
+// How many old clips one press of "sort my old clips" may name. Each one is a call out
+// to a provider, and a Worker request has a hard ceiling on how many of those it may
+// make. The app presses again while `remaining` is above zero, so the cap costs nothing
+// but keeps a notebook of any size inside one request's budget.
+const MAX_SORT_PER_REQUEST = 10;
+// How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
+// and a spare; low enough that a leaked one is noticed rather than lost in a list.
+const MAX_CONNECTORS = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const LIMITS = {
@@ -162,6 +194,22 @@ async function saveClip(request, env, userId) {
     .bind(userId, sourceId)
     .first();
 
+  // Saving a reel somebody else already had summarised: the topic was named long before
+  // this user existed, so file it now rather than leaving their clip looking unsorted for
+  // no reason. Same guard as everywhere else — never over a topic they set by hand.
+  try {
+    const shared = await env.DB.prepare(
+      `SELECT topic, sub_topic FROM analyses WHERE source_id = ?1 AND user_id = ?2`
+    )
+      .bind(sourceId, SHARED)
+      .first();
+    if (shared?.topic) {
+      await fileClipIntoTopic(env, userId, clip?.id, shared, timestamp, newId);
+    }
+  } catch {
+    // Unfiled, and the app offers to sort it. Never a reason to fail the save itself.
+  }
+
   return json(env, { clip, reused: Boolean(existing) }, 201);
 }
 
@@ -174,12 +222,13 @@ async function deltaSync(request, env, userId) {
       .bind(userId, since)
       .all();
 
-  const [clips, notes, questions, topics, tasks] = await Promise.all([
+  const [clips, notes, questions, topics, tasks, learnings] = await Promise.all([
     scoped("clips"),
     scoped("notes"),
     scoped("questions"),
     scoped("topics"),
-    scoped("tasks")
+    scoped("tasks"),
+    scoped("learnings")
   ]);
 
   // Shared rows are pivoted on the joining clip, not on their own timestamp. A reel
@@ -212,13 +261,55 @@ async function deltaSync(request, env, userId) {
     .bind(userId, since, SHARED, userId)
     .all();
 
+  // The user's own settings, so the settings screen can show what they actually chose
+  // instead of opening on a default and an empty key box every time. Sent on every sync
+  // rather than gated on `since`: it is a single row, and `last_seen_at` moves on every
+  // request anyway, so gating it would return it every time regardless.
+  //
+  // `has_key` and never the key. The stored value is only ever decrypted inside the Worker
+  // to call a provider (D11), and there is a test that it cannot come back through here.
+  const user = await env.DB.prepare(`SELECT ai_provider, ai_key_cipher FROM users WHERE id = ?1`)
+    .bind(userId)
+    .first();
+
+  // Whether the machine that downloads and transcribes is running. Not per-user, and
+  // deliberately shown to everybody: when it is off, nobody's reels are moving, and the
+  // reason a clip is stuck belongs on screen rather than nowhere (Golden Rule 29).
+  //
+  // `last_seen_at` and a plain verdict, never a hostname or an address — the worker is
+  // somebody's home PC.
+  const worker = await env.DB.prepare(`SELECT last_seen_at FROM workers WHERE id = ?1`)
+    .bind(THE_WORKER)
+    .first();
+
+  // The addresses this user has handed to an AI app (D29). Metadata only — the secret
+  // itself is shown once, when it is made, and is not recoverable from anywhere. Sent on
+  // every sync like `settings`, because it is a handful of rows with no `updated_at` to
+  // gate on and the settings screen needs it to say what is connected.
+  const connectors = await env.DB.prepare(
+    `SELECT id, label, created_at, last_used_at FROM connector_tokens
+     WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY created_at`
+  )
+    .bind(userId)
+    .all();
+
   return json(env, {
     now: timestamp,
+    connectors: connectors.results,
+    settings: {
+      ai_provider: user?.ai_provider || null,
+      has_key: Boolean(user?.ai_key_cipher)
+    },
+    worker: {
+      last_seen_at: worker?.last_seen_at || null,
+      running: Boolean(worker && timestamp - worker.last_seen_at < WORKER_QUIET_AFTER_MS)
+    },
     clips: clips.results,
     notes: notes.results,
     questions: questions.results,
     topics: topics.results,
     tasks: tasks.results,
+    learnings: learnings.results,
     sources: sources.results,
     transcripts: transcripts.results,
     analyses: analyses.results
@@ -274,17 +365,48 @@ async function saveSettings(request, env, userId) {
     return fail(env, "That does not look like an API key.");
   }
 
-  // 'manual' is the copy-paste tier — it has no key to store.
-  const cipher =
-    body.provider === "manual" || !body.api_key
-      ? null
-      : await encryptSecret(String(body.api_key), env.KEY_ENCRYPTION_SECRET);
+  const timestamp = now();
+  const suppliedKey = String(body.api_key || "").trim();
 
-  await env.DB.prepare(`UPDATE users SET ai_provider = ?1, ai_key_cipher = ?2 WHERE id = ?3`)
-    .bind(body.provider, cipher, userId)
+  // 'manual' is the copy-paste tier. Choosing it is a statement that no key is in use, so
+  // the stored one goes rather than sitting encrypted for nothing.
+  if (body.provider === "manual") {
+    await env.DB.prepare(
+      `UPDATE users SET ai_provider = ?1, ai_key_cipher = NULL, last_seen_at = ?2 WHERE id = ?3`
+    )
+      .bind(body.provider, timestamp, userId)
+      .run();
+    return json(env, { ok: true, provider: body.provider, key_stored: false });
+  }
+
+  if (suppliedKey) {
+    const cipher = await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET);
+    await env.DB.prepare(
+      `UPDATE users SET ai_provider = ?1, ai_key_cipher = ?2, last_seen_at = ?3 WHERE id = ?4`
+    )
+      .bind(body.provider, cipher, timestamp, userId)
+      .run();
+    return json(env, { ok: true, provider: body.provider, key_stored: true });
+  }
+
+  // No key was sent, so the stored one is left alone. This screen is also how someone
+  // changes which AI they use, and the key is never shown back to them — so if saving
+  // without retyping it wiped it, they would have no way of noticing. Their clips would
+  // simply stop being summarised with nothing on screen to explain why, which is the
+  // silent failure Golden Rule 29 forbids.
+  await env.DB.prepare(`UPDATE users SET ai_provider = ?1, last_seen_at = ?2 WHERE id = ?3`)
+    .bind(body.provider, timestamp, userId)
     .run();
 
-  return json(env, { ok: true, provider: body.provider, key_stored: Boolean(cipher) });
+  const existing = await env.DB.prepare(`SELECT ai_key_cipher FROM users WHERE id = ?1`)
+    .bind(userId)
+    .first();
+
+  return json(env, {
+    ok: true,
+    provider: body.provider,
+    key_stored: Boolean(existing?.ai_key_cipher)
+  });
 }
 
 // ---------------------------------------------------------------- service routes
@@ -293,6 +415,17 @@ async function claimQueue(request, env) {
   const requested = Number(new URL(request.url).searchParams.get("limit"));
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 3, 1), 10);
   const timestamp = now();
+
+  // The worker asks for work every 30 seconds whether there is any or not, so this call is
+  // its heartbeat and no new request had to be invented for it. Recorded before the claim
+  // rather than after: a worker that checks in and then fails to claim is still alive, and
+  // the app should say so.
+  await env.DB.prepare(
+    `INSERT INTO workers (id, last_seen_at) VALUES (?1, ?2)
+     ON CONFLICT (id) DO UPDATE SET last_seen_at = ?2`
+  )
+    .bind(THE_WORKER, timestamp)
+    .run();
 
   // Anything that used up its attempts and then went quiet is retired here rather than
   // sitting in 'downloading' forever with no error — a clip stuck on "pending" and nothing
@@ -411,6 +544,16 @@ export function validateAnalysis(payload) {
     }
   }
 
+  // Optional, like suggested_task. A missing topic is not a broken analysis — it leaves
+  // the clip unfiled, which the app shows and offers to sort, rather than throwing away a
+  // good summary over a field the model happened to skip. A topic of the wrong *type*
+  // does mean the reply is malformed, so that is still reported.
+  for (const field of ["topic", "sub_topic"]) {
+    const value = payload?.[field];
+    if (value === null || value === undefined) continue;
+    if (typeof value !== "string") problems.push(field);
+  }
+
   return problems;
 }
 
@@ -428,11 +571,11 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
     env.DB.prepare(
       `INSERT INTO analyses
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
-          suggested_task, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          suggested_task, topic, sub_topic, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
-         claims = ?8, suggested_task = ?9, created_at = ?10`
+         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, created_at = ?12`
     ).bind(
       sourceId,
       ownerId,
@@ -443,6 +586,8 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
       JSON.stringify(payload.learn_more),
       JSON.stringify(payload.claims),
       payload.suggested_task || null,
+      cleanTopicName(payload.topic) || null,
+      cleanTopicName(payload.sub_topic) || null,
       timestamp
     )
   ];
@@ -459,6 +604,30 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
   }
 
   await env.DB.batch(statements);
+
+  // Filing happens after the analysis is safely stored, and can never undo it. A filing
+  // failure leaves the clip with no topic, which the app shows as unfiled and offers to
+  // sort — a visible home for the failure (Golden Rule 29). Letting it throw instead would
+  // reach storeTranscript's catch and mark a reel that analysed perfectly well as failed,
+  // for everyone who saved it.
+  const proposed = { topic: payload.topic, sub_topic: payload.sub_topic };
+  try {
+    if (ownerId === SHARED) {
+      await fileSourceForAllSavers(env, sourceId, proposed, timestamp, newId);
+    } else {
+      // A user's own pasted analysis files only their own clip. Nobody else can see it,
+      // so nobody else's notebook may move because of it (D18).
+      const own = await env.DB.prepare(
+        `SELECT id FROM clips WHERE user_id = ?1 AND source_id = ?2 AND deleted_at IS NULL`
+      )
+        .bind(ownerId, sourceId)
+        .first();
+      if (own) await fileClipIntoTopic(env, ownerId, own.id, proposed, timestamp, newId);
+    }
+  } catch {
+    // Left unfiled on purpose — see above.
+  }
+
   return [];
 }
 
@@ -495,6 +664,61 @@ async function buildPrompt(env, userId, clipId) {
 
   if (!row) return fail(env, "No transcript yet for this clip.", 404);
   return json(env, { prompt: ANALYSIS_PROMPT + row.text });
+}
+
+/**
+ * Summarise one clip the user already has, on their own key, because they asked.
+ *
+ * A summary is otherwise only ever made at the moment a transcript lands. Someone who
+ * saves ten reels and connects an AI afterwards would get summaries on the eleventh and
+ * nothing at all for the ten already sitting there — a dead end with no way out of it
+ * inside the app.
+ *
+ * Deliberately one clip per press rather than sweeping the backlog the moment a key is
+ * connected: these run on free allowances, and quietly spending someone's daily limit
+ * without being asked would look like the app breaking for no reason.
+ */
+async function summariseOnDemand(request, env, userId, clipId) {
+  const row = await env.DB.prepare(
+    `SELECT c.source_id, t.text FROM clips c
+     JOIN transcripts t ON t.source_id = c.source_id
+     WHERE c.id = ?1 AND c.user_id = ?2`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!row) return fail(env, "No transcript yet for this clip.", 404);
+
+  const already = await env.DB.prepare(
+    `SELECT 1 AS found FROM analyses WHERE source_id = ?1 AND user_id = ?2`
+  )
+    .bind(row.source_id, SHARED)
+    .first();
+  if (already) return json(env, { ok: true, already: true });
+
+  try {
+    const analysis = await analyzeSource(env, row.source_id, row.text, userId);
+    if (!analysis) {
+      return fail(env, "Connect an AI account in Settings first, or use copy and paste.");
+    }
+
+    const problems = await storeAnalysis(
+      env,
+      row.source_id,
+      SHARED,
+      analysis.payload,
+      analysis.provider,
+      analysis.model
+    );
+    if (problems.length) throw new AnalysisError("the AI's reply was malformed");
+    return json(env, { ok: true });
+  } catch (error) {
+    // Unlike the automatic run, nothing is written to `sources.error` here. That column is
+    // read by everyone who saved the reel, and one person's key failing is not a fact
+    // about the reel. The person who pressed the button is watching, so the reason goes
+    // back to them and nowhere else.
+    const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+    return fail(env, `Could not summarise it: ${reason}`);
+  }
 }
 
 async function acceptPastedAnalysis(request, env, userId, clipId) {
@@ -535,6 +759,286 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   return json(env, { ok: true });
 }
 
+// ---------------------------------------------------------------- the connector (D29)
+
+/**
+ * Mints the address the user pastes into their AI app.
+ *
+ * The secret is returned HERE AND NOWHERE ELSE. Only its hash is stored, so this response
+ * is the single moment it exists in readable form — which is why the app shows it with a
+ * copy button and says plainly that it will not be shown again.
+ */
+async function createConnector(request, env, userId) {
+  const body = await readJson(request);
+  const label = String(body.label || "").trim().slice(0, 80) || null;
+
+  const existing = await env.DB.prepare(
+    `SELECT COUNT(*) AS held FROM connector_tokens WHERE user_id = ?1 AND revoked_at IS NULL`
+  )
+    .bind(userId)
+    .first();
+  if ((existing?.held || 0) >= MAX_CONNECTORS) {
+    return fail(env, "That is as many connectors as one notebook may have. Turn one off first.");
+  }
+
+  const secret = newConnectorSecret();
+  const timestamp = now();
+  const id = newId();
+
+  await env.DB.prepare(
+    `INSERT INTO connector_tokens (id, user_id, token_hash, label, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5)`
+  )
+    .bind(id, userId, await hashSecret(secret), label, timestamp)
+    .run();
+
+  // Built from the address this very request arrived on, so it is by definition one the
+  // AI app can reach — staging and production each produce their own without config.
+  const url = `${new URL(request.url).origin}/mcp/${secret}`;
+  return json(env, { id, url, label, created_at: timestamp }, 201);
+}
+
+/** Turns one off. Kept as a row, so "I turned that off on the 3rd" stays answerable. */
+async function revokeConnector(env, userId, connectorId) {
+  const result = await env.DB.prepare(
+    `UPDATE connector_tokens SET revoked_at = ?1
+     WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL`
+  )
+    .bind(now(), connectorId, userId)
+    .run();
+
+  if (!result.meta.changes) return fail(env, "No such connector.", 404);
+  return json(env, { ok: true });
+}
+
+// ---------------------------------------------------------------- the learning loop (D29)
+
+/**
+ * The text to take to an AI app. Everything known about the reel — what it said, what it
+ * claimed and how much that was trusted, and the words themselves — wrapped in the
+ * instruction to teach first and hand the learning back at the end.
+ *
+ * A transcript is required and an analysis is not. Someone with no AI key has no summary
+ * and no claims, and the words alone are still worth discussing; refusing them here would
+ * put the one feature that needs no key of your own behind having one.
+ */
+async function buildLearnPrompt(env, userId, clipId) {
+  const row = await env.DB.prepare(
+    `SELECT t.text AS transcript, a.summary, a.key_points, a.claims
+     FROM clips c
+     JOIN transcripts t ON t.source_id = c.source_id
+     LEFT JOIN analyses a ON a.source_id = c.source_id AND a.user_id IN (?2, ?3)
+     WHERE c.id = ?1 AND c.user_id = ?2
+     ORDER BY CASE WHEN a.user_id = ?2 THEN 0 ELSE 1 END`
+  )
+    .bind(clipId, userId, SHARED)
+    .first();
+
+  if (!row) return fail(env, "No transcript yet for this clip.", 404);
+
+  const list = (value) => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  return json(env, {
+    prompt: buildLearningPrompt({
+      summary: row.summary || "",
+      keyPoints: list(row.key_points),
+      claims: list(row.claims),
+      transcript: row.transcript
+    })
+  });
+}
+
+/**
+ * Stores what came back. Two ways in, on purpose:
+ *
+ *   * `pasted` — the AI's whole reply, json block and all, for the apps that cannot
+ *     connect to us. Gemini is in this group and will be for as long as Google keeps
+ *     custom apps inside the US (D29).
+ *   * `learning` — the object itself, which is what a connector will send in Stage 3.
+ *
+ * Both land on the same validation and the same row, so the connector never becomes a
+ * second, laxer door into the same table.
+ */
+async function saveLearning(request, env, userId, clipId) {
+  const owned = await env.DB.prepare(`SELECT id FROM clips WHERE id = ?1 AND user_id = ?2`)
+    .bind(clipId, userId)
+    .first();
+  if (!owned) return fail(env, "Clip not found.", 404);
+
+  const body = await readJson(request);
+
+  let payload;
+  if (body.pasted !== undefined) {
+    try {
+      payload = parseAnalysis(String(body.pasted));
+    } catch {
+      return fail(
+        env,
+        "That does not look like the AI's answer. Copy the whole reply, including the json block."
+      );
+    }
+  } else {
+    payload = body.learning;
+  }
+
+  const problems = validateLearning(payload);
+  if (problems.length) {
+    return fail(env, `That learning is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);
+  }
+
+  const columns = learningColumns(payload);
+  const timestamp = now();
+  const id = newId();
+
+  await env.DB.prepare(
+    `INSERT INTO learnings
+       (id, user_id, clip_id, learned, verdicts, actions, still_open, corrections,
+        look_into, learned_with, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
+  )
+    .bind(
+      id,
+      userId,
+      clipId,
+      columns.learned,
+      columns.verdicts,
+      columns.actions,
+      columns.still_open,
+      columns.corrections,
+      columns.look_into,
+      columns.learned_with,
+      timestamp
+    )
+    .run();
+
+  // The clip moves too, so a reel that has been learned from is not still sitting in the
+  // list looking untouched — and so delta sync carries the change to every device.
+  await env.DB.prepare(`UPDATE clips SET updated_at = ?1 WHERE id = ?2 AND user_id = ?3`)
+    .bind(timestamp, clipId, userId)
+    .run();
+
+  return json(env, { id }, 201);
+}
+
+/**
+ * "Sort my old clips" (D27) — for the clips summarised before topics existed.
+ *
+ * Two kinds get sorted. One is a reel somebody else has since had named, where the name
+ * is already sitting in the shared analysis and filing it costs nothing. The other has no
+ * name yet, and is named from the summary already stored — not the transcript, and never
+ * by re-summarising, because the summary itself is finished work.
+ *
+ * A clip whose topic the user set by hand is never included: fileClipIntoTopic refuses it,
+ * and it is filtered out here too so it cannot even cost a call.
+ */
+async function sortOldClips(request, env, userId) {
+  const timestamp = now();
+
+  // `topic_set_by IS NULL` is what makes this queue shrink. A clip that has been through
+  // here once is marked even when nothing could be named for it, so the app pressing
+  // "sort" until `remaining` reaches zero always terminates. Filtering on topic_id alone
+  // would leave an unnameable clip in the queue for ever, and the app would loop.
+  const pending = await env.DB.prepare(
+    `SELECT c.id, a.summary, a.topic, a.sub_topic, c.source_id
+     FROM clips c
+     JOIN analyses a ON a.source_id = c.source_id AND a.user_id = ?2
+     WHERE c.user_id = ?1
+       AND c.deleted_at IS NULL
+       AND c.topic_id IS NULL
+       AND c.topic_set_by IS NULL
+     ORDER BY c.created_at DESC`
+  )
+    .bind(userId, SHARED)
+    .all();
+
+  const queue = pending.results;
+  let attempted = 0;
+  let sorted = 0;
+  let failure = null;
+
+  for (const row of queue.slice(0, MAX_SORT_PER_REQUEST)) {
+    try {
+      let names = { topic: row.topic, sub_topic: row.sub_topic };
+
+      if (!cleanTopicName(names.topic)) {
+        const proposed = await proposeTopic(env, userId, row.summary);
+        if (!proposed) {
+          // Nothing has been spent and nothing can be. Say so outright when the run
+          // achieved nothing at all; if some clips were already sorted from names that
+          // cost nothing, keep that work and report the reason alongside it.
+          if (!sorted) return fail(env, "Connect an AI account in Settings first.", 400);
+          failure = "no AI account is connected";
+          break;
+        }
+        names = proposed;
+
+        if (cleanTopicName(names.topic)) {
+          // Stored on the shared analysis, so the next person to save this reel gets the
+          // name for free (D10). Only the Worker writes this row (D18).
+          await env.DB.prepare(
+            `UPDATE analyses SET topic = ?1, sub_topic = ?2
+             WHERE source_id = ?3 AND user_id = ?4`
+          )
+            .bind(
+              cleanTopicName(names.topic),
+              cleanTopicName(names.sub_topic) || null,
+              row.source_id,
+              SHARED
+            )
+            .run();
+        }
+      }
+
+      if (await fileClipIntoTopic(env, userId, row.id, names, timestamp, newId)) {
+        sorted += 1;
+      } else {
+        // Looked at, and there was no name to give it. Marked so it leaves the queue
+        // instead of being asked about again on every press, and so the app can show it
+        // as one the AI could not place rather than one still waiting.
+        await env.DB.prepare(
+          `UPDATE clips SET topic_set_by = 'ai', updated_at = ?1 WHERE id = ?2`
+        )
+          .bind(timestamp, row.id)
+          .run();
+      }
+      attempted += 1;
+    } catch (error) {
+      // One clip's failure stops the run rather than burning the rest of the allowance on
+      // what is almost certainly the same failure ten more times. What was already sorted
+      // stays sorted, and the reason goes back to the person watching — never onto the
+      // shared source row, which is not a fact about the reel.
+      failure = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+      break;
+    }
+  }
+
+  return json(env, { sorted, remaining: Math.max(queue.length - attempted, 0), error: failure });
+}
+
+/** Sets a clip's topic by hand. The user's choice is final (D27). */
+async function setTopic(request, env, userId, clipId) {
+  const body = await readJson(request);
+
+  const clip = await env.DB.prepare(
+    `SELECT id FROM clips WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  // Someone else's clip and a clip that does not exist answer the same way, so this
+  // cannot be used to find out whether a given clip id belongs to anybody.
+  if (!clip) return fail(env, "No such clip.", 404);
+
+  const topicId = await setClipTopicByHand(env, userId, clipId, body, now(), newId);
+  return json(env, { ok: true, topic_id: topicId });
+}
+
 // ---------------------------------------------------------------- router
 
 export default {
@@ -544,7 +1048,23 @@ export default {
     const { pathname } = new URL(request.url);
     const segments = pathname.split("/").filter(Boolean);
 
+    // Staging serves the app from static assets alongside this API (D26). Assets are
+    // matched by filename, and `html_handling = "none"` keeps /app.html literal — but that
+    // also means the bare address matches no file and would fall through to the 404 below.
+    // Somebody typing the address on a phone must land on the app, not on a JSON error.
+    // Guarded on the binding: production has no assets and is unaffected.
+    if (env.ASSETS && (pathname === "/" || pathname === "")) {
+      return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
+    }
+
     try {
+      // The connector (D29). Outside /v1 and before the check below, because this is not
+      // our app calling: it is the user's AI app, speaking MCP, authenticated by the
+      // secret in the address itself rather than by a Firebase token.
+      if (segments[0] === "mcp" && segments[1]) {
+        return await handleMcp(request, env, segments[1]);
+      }
+
       if (segments[0] !== "v1") return fail(env, "Not found.", 404);
 
       // Every handler call below is `return await`, not `return`. A bare `return` hands
@@ -589,9 +1109,30 @@ export default {
         if (segments[3] === "prompt" && request.method === "GET") {
           return await buildPrompt(env, userId, segments[2]);
         }
+        if (segments[3] === "summarise" && request.method === "POST") {
+          return await summariseOnDemand(request, env, userId, segments[2]);
+        }
         if (segments[3] === "analysis" && request.method === "POST") {
           return await acceptPastedAnalysis(request, env, userId, segments[2]);
         }
+        if (segments[3] === "topic" && request.method === "PUT") {
+          return await setTopic(request, env, userId, segments[2]);
+        }
+        if (segments[3] === "learn-prompt" && request.method === "GET") {
+          return await buildLearnPrompt(env, userId, segments[2]);
+        }
+        if (segments[3] === "learning" && request.method === "POST") {
+          return await saveLearning(request, env, userId, segments[2]);
+        }
+      }
+      if (segments[1] === "connector" && !segments[2] && request.method === "POST") {
+        return await createConnector(request, env, userId);
+      }
+      if (segments[1] === "connector" && segments[2] && request.method === "DELETE") {
+        return await revokeConnector(env, userId, segments[2]);
+      }
+      if (segments[1] === "topics" && segments[2] === "sort" && request.method === "POST") {
+        return await sortOldClips(request, env, userId);
       }
 
       return fail(env, "Not found.", 404);

@@ -193,6 +193,50 @@ out of his personal account keeps ownership, billing and any future transfer cle
 
 ---
 
+## The app
+
+### D21 — The new app is built beside the live page, never on top of it
+**Date:** 2026-08-21
+**Options considered:** rewrite `index.html` in place; build the new app at a new path and
+swap when it works.
+**Decided:** build it as a separate page on a branch. `index.html` keeps serving the old
+app, untouched, until the new one is proven — then one commit swaps it.
+**Why:** GitHub Pages serves `index.html` straight from `main` (D16), so a half-finished
+rewrite of that file is a half-finished public website. There is no safe intermediate state
+when the file being edited *is* the release.
+**Rules out:** any commit to `main` that leaves `index.html` in a partly-migrated state.
+The swap is a single change that either works or is not made.
+**Consequence:** for the length of the app work there are two apps in the repo. That is the
+intended cost, and the old one is deleted by the same commit that promotes the new one.
+
+### D22 — The notebook is a list of clips; each clip opens its own page that grows
+**Date:** 2026-08-21
+**Options considered:** one long page that everything is appended to; a list of clips, each
+opening its own entry; clips grouped under topics.
+**Decided:** a list, newest first, with search. Tapping a clip opens that clip's own page,
+and that page is what grows as the user asks questions and writes notes.
+**Why:** the product's core claim is that the reel is a seed, not the destination — the
+entry has to be a place that grows. One long page cannot be that past a few dozen clips,
+and topic grouping is a real feature (one of the six) that does not exist yet, so it cannot
+be the only way in. Grouping is added later as a view over the list, not instead of it.
+**Rules out:** a design where a clip has no page of its own.
+**Consequence:** the list must be cheap to render from local storage and only ask the
+server for what changed (D6). Search runs over what is already on the device.
+
+### D23 — The GitHub-token sync is removed in the same change that adds Google sign-in
+**Date:** 2026-08-21
+**Completes:** D3, which was superseded by D6 and whose sync was left running.
+**Options considered:** leave the old sync in place as a fallback until the new one settles;
+remove it in the same change.
+**Decided:** remove it in the same change.
+**Why:** it stores a GitHub token with write access to the repository in browser storage on
+a public `*.github.io` origin. That is not a fallback, it is a live exposure, and the only
+reason to keep it would be distrust of the new path — which is what staging is for. It has
+already been preserved once on the `github-sync-wip` branch, so nothing is lost.
+**Rules out:** any build where both sync paths are live at once.
+
+---
+
 ## How this project is built
 
 ### D14 — gstack workflow and PM Discipline are adopted and enforced in this repo
@@ -322,3 +366,421 @@ matched credential *prefixes* and failed on the clean repo — `index.html`'s to
 literally reads `ghp_... or github_pat_...`. A gate that cries wolf gets switched off, so
 it now matches credential shapes, and was verified both ways: silent on the clean repo,
 still catches a planted key.
+
+### D24 — A layer is not built until the layer beneath it has been proven end to end
+**Date:** 2026-08-21
+**Options considered:** build the app first and discover the backend's gaps through it;
+prove the backend by hand first, then build the app on something known to work.
+**Decided:** prove first. Before the app was written, one sign-in token was obtained by
+hand, one clip was saved with it, and the whole chain was watched through on staging —
+save, claim, download, transcribe, post back, analyse, read back.
+**Why:** the app was the only thing that could produce a sign-in token, which made it look
+like the app had to come first. It did not: a twenty-line throwaway page produced the same
+token. Building the app first would have stacked new untested code on an untested chain,
+and every failure would have had two possible homes.
+**What it actually caught, before a line of app code existed:** the service token goes in an
+`X-Service-Token` header and not a bearer token; analysis silently does nothing until some
+user has a key connected; Instagram reports no duration but Facebook does.
+**Rules out:** "we will find out when the app runs." If a layer cannot be exercised without
+the thing being built on top of it, exercise it with a throwaway.
+**Extends:** D20 — that rule says nothing ships untested; this one says nothing is *built
+on* untested.
+
+### D25 — The secret scan allows exactly one literal: the Firebase web key
+**Date:** 2026-08-21
+**Amends:** the secret scan established in D16. The scan itself, and the reason it matches
+shapes rather than prefixes, is unchanged.
+**The problem:** a Firebase web key and a Gemini key are the same shape — `AIzaSy` plus 33
+characters. No pattern can tell them apart. But the Firebase one *has* to be inside the
+app to work at all, so `app.html` (D21) makes the scan go red on a repo that is clean.
+**Options considered:**
+
+| | Why not |
+|---|---|
+| Exclude `app.html` from the scan | Blinds the gate on the file most likely to leak a real key |
+| Break the key into pieces so the pattern misses it | Defeating the gate rather than deciding about it — exactly what D14 exists to stop |
+| Serve the Firebase config from the Worker instead | The key still reaches the browser, so it protects nothing; it costs a request on every open and a new endpoint |
+| **Allow one exact literal value** | **chosen** |
+
+**Decided:** the scan deletes exactly one known value from each matching line and re-tests
+the line. Anything still matching fails.
+**Why this is safe to publish:** confirmed from `https://firebase.google.com/docs/projects/api-keys`
+— Firebase web keys identify a project, they do not authorise; Google documents them as
+fine to commit. That holds **only while the key is restricted**, because an unrestricted
+key can reach any API enabled on the project, and Google says explicitly never to allow the
+Gemini API on a public key. Checked in Google Cloud Console on 2026-08-21: the browser key
+is restricted to 25 Firebase services and the Gemini API is **not** among them. The Gemini
+key is a separate credential, scoped to the Gemini API alone.
+**Also done at the same time:** `Firebase AI Logic API` was removed from the browser key's
+list. It is a client-side route to the same Gemini models through a Firebase proxy, its
+App Check guard is not set up, and this project does not use it — analysis runs in the
+Worker (D11). It was access given away for no benefit.
+**Rules out:** widening this to a file exclusion, a pattern, or a second value without a
+new decision. One value, written in the workflow, with the reason next to it.
+**Build rule:** if the Firebase key is ever rotated, the value in `ci.yml` changes with it.
+**Proven both ways before it was committed** (Golden Rule 24): passes on the real repo;
+still fails on a different Google key planted in its own file; still fails on a real key
+planted on the *same line* as the allowed one.
+
+**Noted, not decided:** Firebase AI Logic would remove the bring-your-own-key step
+entirely — Firebase would hold Jaiswal's key and every user would run on his allowance.
+That is D8 reversed, and it moves the cost to him. Raised with him on 2026-08-21 and left
+switched off deliberately. If it is ever wanted, it is a decision to make on purpose.
+
+### D26 — The staging Worker also serves the app. Production still does not.
+**Date:** 2026-08-21
+**Narrows:** D16 and D21, which both assume GitHub Pages serves the app. Unchanged for
+production; this applies to staging alone.
+**The problem:** Firebase only permits Google sign-in from `localhost` and from domains on
+its authorised list. While the app existed only on a laptop's `localhost`, **it could not
+be opened on a phone at all** — so the small-screen layout and, far more seriously, the
+Android share sheet had never been run once. The share sheet is the only way anyone is
+meant to capture a reel (D17), which meant the product's entire everyday use was untested.
+**Options considered:**
+
+| | Why not |
+|---|---|
+| Put `app.html` on `main` so GitHub Pages serves it | Merging to `main` is a release (D16). Testing is not a reason to release. |
+| A new Cloudflare Pages project | Another service to create and keep in step, for a test |
+| Expose the laptop over the local network | Not HTTPS, so Firebase sign-in still refuses, and it proves nothing about the real thing |
+| **Serve it from the staging Worker** | **chosen** |
+
+**Decided:** the staging Worker serves the app from a static assets folder alongside its
+API. `wrangler.toml` gains `[env.staging.assets]` only — production is untouched.
+**Why it is safe:** assets are matched by filename and every API route begins with `/v1/`,
+so the two cannot collide; anything that matches no file falls through to the Worker
+exactly as before. Verified after deploying: `/app.html`, `/manifest.json`,
+`/share-target.html`, `/icon.svg` and `/` all serve, and `/v1/sync` with no sign-in still
+returns `401 {"error":"Sign in first."}`.
+**`html_handling = "none"`** so `/app.html` is served literally. Cloudflare otherwise
+redirects it to `/app`, and the address a phone is tested against should be the same one
+GitHub Pages will serve when the swap happens (D21).
+**No second copy of the app.** `app.html` at the repo root stays the single source.
+`backend/scripts/build-staging-assets.mjs` assembles the deploy folder and rewrites, on the
+way through, the two files that still point at the old app — `manifest.json`'s `start_url`
+and the share target's redirect. They are rewritten rather than edited, because D21 says
+the live page and its plumbing stay untouched until the swap. The folder is gitignored.
+**Also added to `app.html`:** a manifest link and a service worker registration. Android
+will not offer to install the app without them, and an app that cannot be installed never
+appears in the share sheet. The staging service worker caches nothing on purpose — a
+cached `app.html` during testing makes edits look like they did not happen, which had
+already cost time once.
+**Rules out:** serving the app from the production Worker. Production keeps the app on
+GitHub Pages and the API on Cloudflare, as D16 has it.
+**Consequence:** the staging address must be added to Firebase's authorised domains, and it
+is the one address where the app and the API share an origin — so a cross-site problem that
+only appears in production would not show up in a staging test. Worth remembering when the
+swap is made.
+
+### D27 — The AI proposes topics, two levels deep. The topics themselves stay per-user.
+**Date:** 2026-08-21
+**Status:** direction settled by Jaiswal; the questions listed at the end are **not** settled
+and must be answered before this is built.
+**Builds on:** D22, which said grouping arrives later as a view *over* the list rather than
+instead of it. That still holds — the list stays the way in.
+**Options considered:** the user files clips into topics by hand; the AI proposes them; both.
+**Decided:** the AI proposes. Jaiswal's words — *"ai decides topics with subcategory"*.
+**And two levels, not one:** a topic with sub-topics under it, not a flat list of tags.
+**Why the AI:** filing by hand is the effort the whole product exists to remove. D1 already
+rules out asking for a category at capture time, and asking for one afterwards is the same
+tax moved later. The analysis already returns `learn_more` — the tools, terms and concepts
+each reel names — which is the raw material.
+
+**The consequence that has to be got right first:** analyses are **shared** across everyone
+who saved a reel (D10), but topics are **per-user** (D10 again, and D18 — anything a user
+owns is stored against that user). So a proposed topic name may live in the shared analysis,
+and every user who saved that reel may be *offered* the same name — but the `topics` row and
+the `clip_topics` link are created per user, in their own notebook. One person renaming or
+deleting a topic must never touch anyone else's. Anything that puts a user's own topic into
+a shared row breaks D18.
+
+**Schema consequence:** `topics` is flat today — no `parent_id`. Two levels needs a
+migration, and `schema.sql` is all `CREATE TABLE IF NOT EXISTS`, so it goes in
+`backend/migrations/` and not by editing the schema file. There is already real data from
+three accounts.
+
+**Contract consequence:** having the AI name topics means changing the analysis contract,
+which under D16 ships with the test that proves it. Every analysis produced before that
+change has no topic, so there must be an answer for the ones already stored.
+
+**Answered by Jaiswal, same day:**
+
+| Question | Answer |
+|---|---|
+| Where does the AI name them? | **In the summary itself** — topic and sub-topic worked out in the same pass, no second call |
+| How many per clip? | **One topic and one sub-topic.** Not tags, not several |
+| Clips already summarised, with no topic? | **Give the user the option to categorise them** — they are not left stranded |
+| Can the user override the AI? | **Yes, and the user's choice is final.** Once someone sets a topic by hand the AI must never overwrite it again |
+| How are near-identical names stopped from splitting a subject? | **By checking** against what already exists before a new topic is made |
+
+**The last answer collides with D10, and the collision has to be resolved in its favour.**
+"Check what already exists" cannot mean showing the AI the user's topic list, because the
+analysis is **shared** — one analysis per reel, reused by everyone who saved it. An analysis
+shaped around one person's topics is no longer reusable by anyone else, and D10's dedupe is
+the entire cost model: without it, 1,000 users means paying to analyse the same viral reel a
+thousand times.
+
+**So the checking moves out of the AI call and into filing, per user.** The AI names a topic
+and sub-topic blind, from the reel alone, and that stays in the shared analysis. When the
+clip lands in a particular person's notebook, the Worker matches that proposed name against
+**that user's** existing topics — normalised, so "Amazon listing" and "Amazon Listings" meet
+— and reuses the existing one rather than making a second. Same outcome Jaiswal asked for,
+without making analyses per-user.
+
+**What follows from "the user's choice is final":** a clip needs to carry whether its topic
+was set by a person or proposed by the AI. Without that flag, the next time anything re-runs,
+the AI quietly overwrites a decision someone made deliberately — a silent failure of exactly
+the kind Golden Rule 29 forbids.
+
+**The remaining questions, answered 2026-08-22, and built the same day.**
+
+| Question | Answer |
+|---|---|
+| May re-summarising change a topic the user never touched? | The question does not arise. A clip is summarised once and nothing re-runs it; Jaiswal's words — *"it will have the topic and subtopics all of that"*. A topic is worked out once and never rewritten. The only clips without one are those summarised before topics existed |
+| How is the option to categorise older clips presented? | **One button** — "Sort my old clips". The AI names each from the summary already stored, not the transcript, and never re-summarises. The user can change any of them afterwards |
+
+**Where the link lives: on `clips`, not in `clip_topics`.** One topic per clip makes a link
+table a table with nothing to hold. More decisively, `clip_topics` carries neither
+`user_id` nor `updated_at`, so it cannot be delta-synced (D6) without being rebuilt, while
+`clips` already carries both and syncs for free. `clips` gains `topic_id` — pointing at the
+sub-topic where there is one, so a clip is filed in exactly one place — and `topic_set_by`,
+which is `'user'` once a person has chosen and is what makes their choice final.
+
+**Two things the build had to get right that the decision did not anticipate:**
+
+*The sort queue has to shrink.* The app presses "sort" while clips remain, so a clip the AI
+cannot name must leave the queue rather than be asked about on every press — otherwise the
+loop never ends and each pass spends another call on the same hopeless clip. Any clip that
+has been looked at is marked, named or not.
+
+*Filing on a shared analysis is bounded.* A reel that sat un-analysed while many people
+saved it would otherwise mean one database round trip per saver inside the single request
+the PC worker is waiting on. Fifty are filed at once; everyone after that is filed by the
+sort button, which costs nothing because the name is already on the shared analysis.
+
+---
+
+### D28 — The transcript is always English. Whisper translates; it never writes Hindi down.
+**Date:** 2026-08-22
+**Options considered:** (a) ask whisper to translate, always, whatever was spoken;
+(b) keep asking it to write the spoken language down, and use a bigger model; (c) run it
+twice per reel and keep both the English and the original; (d) detect the language first,
+then transcribe English and translate everything else.
+**Decided:** (a), plus `WHISPER_MODEL` moves from `base` to `small`.
+
+**Why — measured, not argued.** A real reel Jaiswal saved came back as 378 characters of
+broken Devanagari, and Gemini's summary of it opened *"The transcript appears to be heavily
+corrupted"*. The same audio (`669b7ff5-7e04-4e6e-877c-045558222acf`, 29 seconds) was pulled
+down again and run six ways on the same PC:
+
+| Model | Task | Result | Time |
+|---|---|---|---|
+| base | transcribe — what ran until today | garbage, 243 chars | 242s |
+| base | translate | clean English, 480 chars | 11s |
+| small | transcribe | readable Devanagari, still the wrong words | 90s |
+| **small** | **translate** | **503 chars, nothing dropped** | **16s** |
+| medium | translate | good, ending clipped | 46s |
+| medium | transcribe | the best Devanagari of the six, still misspelt | 145s |
+
+**The finding that decides it: this was never the model's size.** Every `transcribe` run
+is wrong and every `translate` run is right, at every size. Option (b) does not fix it —
+`medium` is eight times the weight of `base` and still cannot spell the Hinglish these
+reels are actually in. Whisper's transcribe mode has to pick one language and commit to
+writing it out; these creators switch between Hindi and English inside a sentence, so
+whichever it picks is wrong half the time. Translation has no such problem — it is
+producing English either way.
+
+Every `transcribe` run is also 6–15x slower than its `translate` twin. That is the same
+fault seen from the other side: a decode that fails its confidence checks is retried at
+rising temperatures before whisper gives up, so the broken answer costs the most.
+
+**Why `small` and not `base`, given base already worked:** `base` translated correctly but
+dropped words. `small` cost five more seconds on a 29-second clip and kept the lot.
+`medium` cost three times as much again and was worse — it clipped the ending. `small` is
+the floor here, not a preference.
+
+**Not turbo, ever, for this.** OpenAI's own Whisper README states `turbo` is not trained
+for translation. Since translation is now the only mode this product uses, `large-v3-turbo`
+is disqualified however fast it is — checked 2026-08-22 (Golden Rule 1).
+
+**Stated before Jaiswal chose, and chosen anyway:** the Hindi words are not kept anywhere.
+A Hindi reel is stored in English and the original phrasing is gone. He was offered (c) and
+(d) and took (a) — English is what every downstream feature reads anyway, so a second pass
+would double the time per reel to store something nothing looks at.
+
+**What follows, and must not be undone by a later tidy-up:**
+
+- `transcripts.lang` still records the language that was **spoken** — that is true and
+  worth keeping. But the text beside it is English, so `engine` now ends in `:translate`.
+  Without that, the row reads as a lie to anyone who finds it later.
+- Nothing may reintroduce `task="transcribe"` for non-English audio on the theory that a
+  larger model will cope. That was tested at three sizes and it does not.
+
+**Rules out:** any feature that quotes a clip back in the language it was spoken in, and
+any search that expects Hindi words to be findable in the transcript.
+
+---
+
+### D29 — The notebook is a place you learn from, not a place text sits. The learning comes back.
+**Date:** 2026-08-23
+**Options considered, for getting a saved topic in front of an AI he can talk to:**
+(a) a copy button that puts a topic on the clipboard; (b) a public read-only share page per
+topic; (c) a chat built inside ClipToAction, on his own key; (d) **publish an MCP server so
+his own AI app can search the notebook itself**; (e) write each topic out to a Google Doc so
+Gemini sees it through Drive.
+**Decided: (d), with (a) kept as the path for apps that cannot do (d)** — and the half that
+matters more than either: **whatever is learned is written back into the notebook.**
+
+**The problem being solved, in Jaiswal's words:** *"if it sits there as a text only, it
+doesn't help as much. It has to enable me to learn."* The reel was always the seed. Until
+now the product stopped at storing what the reel said.
+
+**What the official docs say — read 2026-08-23, not recalled (Golden Rule 1, D13):**
+
+| App | Available to him? | Source |
+|---|---|---|
+| **Claude** | **Yes, on Free** — one custom connector. Customize -> Connectors -> paste the server URL | `support.claude.com/en/articles/11175166`, `/14503689` |
+| **ChatGPT** | Yes, but **Plus or Pro only.** Developer mode, Settings -> Security and login. Auth may be OAuth, none, or mixed; SSE or streaming HTTP | `developers.openai.com/api/docs/guides/developer-mode`, `/api/docs/mcp` |
+| **Gemini app** | **No.** Custom apps need Gemini Spark, which requires being **18+ and in the US**, on a personal Google account, English only | `support.google.com/gemini/answer/17209137`, `/17171264` |
+
+**Free is a requirement, not a preference,** so **Claude Free is the target** and ChatGPT is
+built for at the same time and switched on the day it costs nothing. One server serves both —
+the work does not change. **Gemini is why (a) survives:** it is closed to India today, so the
+copy-out / paste-back route is not a fallback, it is the only route for a large AI app.
+
+**The loop, which is the actual feature:**
+
+1. The AI app searches the notebook itself, or a topic is copied into it.
+2. The conversation happens there — the learning, the argument, the checking.
+3. **The finished learning comes back** — written through the connector where there is one,
+   pasted back as JSON where there is not.
+
+**Rejected, and why.** (b) puts a user's notebook on a public URL — no. (c) is a second chat
+window competing with the app he already has open, for far more work. (e) needs the Doc under
+`rumeein@gmail.com` while the app lives under `cliptoaction@gmail.com` (D12), and only ever
+serves Google.
+
+**A learning attaches to the reel, and has a fixed shape.** Both were Jaiswal's calls, asked
+before anything was designed. Attached to the reel *"so that everything can be synced"*.
+Fixed shape *"but detailed to cover everything"* — seven fields: what I learned · the verdict
+on each claim the reel made (true / false / unsure, with the reason) · what I will do · what
+is still open · corrections · worth looking at next · which app, which model, and when.
+
+**Its own table, not `notes`.** `notes` holds prose the user typed. JSON in `notes.body` would
+be searched and rendered as raw text, and would mix his words with a machine's record.
+`learnings` carries `clip_id` and `updated_at`, so delta sync (D6) takes it for free.
+
+**Why "attached to the reel" is the answer to the question he actually asked.** With 200
+reels he cannot scroll to find what he learned from the fiftieth. **The app's search already
+covers the bodies of a clip's notes** (`searchText`, `app.html:547`) — so anything filed
+against a clip is findable the day it is written, with no search feature to build. Two gaps
+close with this work: `claims` is not currently searched, and no date is shown on anything.
+
+**This is a write, and it is designed as one.** Everything before this decision was read-only
+to the outside world. A connector that saves a learning writes to the database. It stays
+inside D18 — a learning is the user's own content, stored against that user, and nothing
+external ever touches a shared row. Write tools confirm before running; OpenAI's own doc
+warns *"Incorrect write actions can inadvertently destroy, alter, or share data"*.
+
+**Stated plainly, because it is a real trade:** connecting the notebook to Claude or ChatGPT
+means the user's own notebook content goes to that company under that company's terms. That
+is the user's own account and the user's own choice, which is what makes it acceptable — but
+the app must say so where the connector is set up, not bury it. Google's own doc gives the
+mirror-image warning about custom servers: it *"does not control, monitor, or secure"* them.
+
+**What follows:**
+
+- The connector URL carries a **per-user secret that can be revoked and reissued.** No-auth is
+  permitted by OpenAI and is not permitted here — a public URL with no secret is every
+  notebook readable by anyone who finds it (Golden Rules 3 and 8).
+- The paste-back leg must validate the fixed shape before storing, the way `parseAnalysis`
+  already does for the copy-paste tier (`backend/src/analyze.js:96`).
+- Read tools are `search` and `fetch`, the two OpenAI names, in OpenAI's documented result
+  shape. Claude does not require those names; matching them costs nothing and keeps one
+  server serving both.
+
+**Rules out:** any design where the AI app writes to a shared row, and any connector that
+works without a secret.
+
+**BUILT 2026-08-23 — the connector, Stage 3.** Three things were settled while building it
+that are binding from here, and none of them were obvious before the specification was read:
+
+1. **There are two incompatible eras of MCP, and this server answers both.** Revision
+   `2026-07-28` removed the `initialize` handshake and protocol-level sessions outright;
+   every request now carries its version in `_meta` and servers **MUST** implement
+   `server/discover`. Everything up to `2025-11-25` opens with `initialize` instead.
+   Neither Claude's nor ChatGPT's documentation states which era it speaks. Answering both
+   costs one extra branch and nothing else, because a Cloudflare Worker keeps no session
+   either way — so nothing here may be "simplified" by deleting one of them.
+   **AMENDED the same day — see D30. `server/discover` is now refused on purpose.**
+2. **An unknown method returns `200` with JSON-RPC `-32601`, not the `404` the spec
+   requires.** A handshake-era client reads a `404` as "no MCP endpoint at this address"
+   and falls back to a transport deprecated two revisions ago, so the connector looks
+   broken rather than merely missing one method. Deviation, logged, not hidden.
+3. **Only the hash of the connector secret is stored.** The secret is returned by
+   `POST /v1/connector` and never again — not by sync, not by any endpoint. It is the
+   entire authentication, it travels inside a URL pasted into someone else's app, and a
+   database holding it in the clear would hand over every notebook at once. Lookup is *by*
+   the hash, so there is no secret-dependent comparison to time and a revoked row cannot
+   match. Cap of five live addresses per notebook, so a leaked one is noticed rather than
+   lost in a list.
+
+**And one thing the product now has to live with, stated plainly:** a reel's transcript is
+somebody else's words off the internet, and the connector hands it to a model that can act.
+`fetch` labels the transcript as the video's own words, to be discussed and never followed.
+That is a mitigation, not a guarantee — anything built on top of this must assume reel text
+is untrusted input.
+
+---
+
+### D30 — The connector refuses the modern handshake, so Claude falls back to the one that works.
+**Date:** 2026-08-23
+**Amends D29.** Nothing about the product changes; this is about which half of the protocol
+is spoken to a real client.
+
+**What happened.** Jaiswal connected his own Claude to the staging connector. Claude showed
+**"This connector has no tools available"** — on the phone and on claude.ai — with a warning
+against the connector. Google Drive beside it showed 11 tools, so the UI was working.
+
+**What was measured, before anything was changed.** A `console.log` of every MCP request was
+added and `wrangler tail` caught the real client twice:
+
+| Time (UTC) | Agent | Method | Version | Answered |
+|---|---|---|---|---|
+| 11:19:01 | `Claude-User` | `server/discover` | 2026-07-28 | **200** |
+| 11:19:02 | `Claude-User` | `tools/list` | 2026-07-28 | **200**, all three tools |
+| 11:22:56/57 | `Claude-User` | the same pair again | 2026-07-28 | **200** |
+
+**Claude was handed the tools and recorded none.** No `initialize` was ever sent.
+
+**Then the gap in our own testing was found.** The official client library
+(`@modelcontextprotocol/sdk` 1.30.0) connects to this same server and lists all three tools
+— but the log shows it does so through `initialize` at `2025-11-25`. **So the handshake era
+was proven with a real client and the modern era was proven with nothing but our own curl
+and our own tests.** Two of our tests asserting `server/discover` were testing our own
+opinion of the spec, not interoperability.
+
+**Anthropic has open reports of this exact shape** — `modelcontextprotocol#1675`,
+`anthropics/claude-ai-mcp#552` and `#572` — where claude.ai fetches a valid non-empty tool
+list and never exposes it. None has a fix; #1675 and #552 are closed without one.
+
+**Decided:** `server/discover` answers **`400` with a plain `-32601`**, and nothing else
+changes. This is the specification's own mechanism, not a hack — a dual-era client
+"attempts a modern request and inspects the body of a `400 Bad Request` before falling
+back... If the body is empty or is **not** a recognized modern JSON-RPC error, fall back to
+`initialize`." A plain `-32601` is deliberately not one of the recognised modern errors
+(`-32022` unsupported version, `-32020` header mismatch), so the client drops to the
+handshake — the path that a real client demonstrably completes.
+
+**Rejected:** guessing at the tool definitions. Renaming `search`/`fetch` in case they
+collided with Claude's own tool names, or stripping `outputSchema` and `annotations`, were
+both plausible and both unprovable — each would have cost a round trip through Jaiswal's
+phone to test one hunch. The measurement said the modern era was the untested variable.
+
+**The cost, stated plainly:** a modern-**only** client cannot use this server at all. No such
+client is known to ship today. If one appears, or if Anthropic fixes the discovery path,
+this reverses in one line — and the modern code is all still there and still tested.
+
+**What must be true before it is put back:** a real client, not our own tests, completing
+`server/discover` → `tools/list` → `tools/call` and showing the tools to a person.
+

@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test",
     "dev": "wrangler dev --local --env staging",
-    "deploy:staging": "wrangler deploy --env staging",
-    "deploy:production": "wrangler deploy --env production"
+    "deploy:staging": "npm run build:staging-assets && wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "build:staging-assets": "node scripts/build-staging-assets.mjs"
   }
 }

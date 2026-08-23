@@ -29,7 +29,7 @@ load_dotenv()
 
 API_BASE = os.getenv("API_BASE", "").rstrip("/")
 SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "3"))
 MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "1800"))
@@ -134,7 +134,14 @@ def download_audio(source):
 
 
 def transcribe(audio_path):
-    segments, info = model.transcribe(str(audio_path), vad_filter=True)
+    """Always task="translate" -- the transcript comes back in English whatever was spoken.
+
+    Asked to write Hindi down in Hindi, whisper produces broken Devanagari on the
+    Hinglish these reels are actually in, and everything downstream inherits it (D28).
+    Same audio, same model, translate instead: clean English, and far quicker, because
+    a failing decode is retried at rising temperatures before it gives up.
+    """
+    segments, info = model.transcribe(str(audio_path), task="translate", vad_filter=True)
     text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text:
         raise ValueError("No speech found in this video.")
@@ -147,7 +154,9 @@ def post_transcript(source_id, text, lang, title, duration):
         json={
             "text": text,
             "lang": lang,
-            "engine": f"faster-whisper:{WHISPER_MODEL}",
+            # ":translate" matters. lang is the language that was *spoken*, while the
+            # text is always English (D28) -- without this the row reads as a lie.
+            "engine": f"faster-whisper:{WHISPER_MODEL}:translate",
             "title": title,
             "duration_sec": duration,
         },

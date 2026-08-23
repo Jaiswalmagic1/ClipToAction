@@ -60,8 +60,18 @@ CREATE TABLE IF NOT EXISTS analyses (
   learn_more    TEXT NOT NULL,             -- JSON array — tools/terms/people to dig into
   claims        TEXT NOT NULL,             -- JSON array [{claim, confidence, why}]
   suggested_task TEXT,
+  topic         TEXT,                      -- D27: proposed by the AI from the reel alone,
+  sub_topic     TEXT,                      -- so one analysis still serves everyone (D10)
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (source_id, user_id)
+);
+
+-- The PC worker's own heartbeat. Belongs to neither a user nor a reel, so it gets its own
+-- table. '' is "the one worker"; keyed by id so a second machine needs no rewrite (D5).
+-- Without this a dead worker is invisible and reels just sit in 'pending' (Golden Rule 29).
+CREATE TABLE IF NOT EXISTS workers (
+  id           TEXT PRIMARY KEY,
+  last_seen_at INTEGER NOT NULL
 );
 
 -- ---------------------------------------------------------------- per-user layer
@@ -71,6 +81,12 @@ CREATE TABLE IF NOT EXISTS clips (
   user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   source_id  TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
   status     TEXT NOT NULL DEFAULT 'inbox', -- inbox | keep | done | archived
+  -- D27. Points at the SUB-topic where there is one; the parent is reached through
+  -- topics.parent_id, so a clip is filed in exactly one place. It lives here rather than
+  -- in clip_topics because clips already carries user_id and updated_at, so delta sync
+  -- (D6) carries it for free.
+  topic_id     TEXT REFERENCES topics (id) ON DELETE SET NULL,
+  topic_set_by TEXT,                        -- 'ai' | 'user'. 'user' is final (D27)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted_at INTEGER,                       -- soft delete, so delta sync can propagate it
@@ -78,6 +94,7 @@ CREATE TABLE IF NOT EXISTS clips (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clips_sync ON clips (user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_clips_topic ON clips (user_id, topic_id);
 
 CREATE TABLE IF NOT EXISTS notes (
   id         TEXT PRIMARY KEY,
@@ -108,6 +125,13 @@ CREATE TABLE IF NOT EXISTS topics (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   name       TEXT NOT NULL,
+  -- '' means top-level. NULL would defeat the unique index below: SQLite treats NULLs as
+  -- distinct, so the same top-level name could be created twice over.
+  parent_id  TEXT NOT NULL DEFAULT '',
+  -- `name` with case, punctuation and plurals flattened, so "Amazon listing" and
+  -- "Amazon Listings" meet on one row. Written by normaliseTopicName in src/topics.js —
+  -- the rules are past what SQL can express, so SQLite must never compute it separately.
+  name_key   TEXT NOT NULL DEFAULT '',
   summary    TEXT,                          -- merged across every clip in the topic
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -115,6 +139,11 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_topics_sync ON topics (user_id, updated_at);
+
+-- The database itself refuses a duplicate, not just the code: two requests arriving at
+-- once would otherwise both look up, both miss, and both insert.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_topics_unique_name
+  ON topics (user_id, parent_id, name_key);
 
 CREATE TABLE IF NOT EXISTS clip_topics (
   clip_id    TEXT NOT NULL REFERENCES clips (id) ON DELETE CASCADE,
@@ -137,3 +166,49 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_sync ON tasks (user_id, updated_at);
+
+-- What the user LEARNED from a reel, brought back from the AI app they discussed it in
+-- (D29). The reel is the seed; this is the part that makes the notebook worth keeping.
+--
+-- Its own table rather than a row in `notes`: `notes` is prose the user typed, this is a
+-- fixed seven-field shape. Keyed to the clip, so it is one person's and delta sync (D6)
+-- carries it with everything else.
+CREATE TABLE IF NOT EXISTS learnings (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  clip_id        TEXT NOT NULL REFERENCES clips (id) ON DELETE CASCADE,
+  learned        TEXT NOT NULL,             -- JSON array — what I now understand
+  verdicts       TEXT NOT NULL,             -- JSON array [{claim, verdict, why}],
+                                            -- verdict is 'true' | 'false' | 'unsure'
+  actions        TEXT NOT NULL,             -- JSON array — what I will do about it
+  still_open     TEXT NOT NULL,             -- JSON array — what did not get resolved
+  corrections    TEXT NOT NULL,             -- JSON array — where the reel was wrong
+  look_into      TEXT NOT NULL,             -- JSON array — worth reading or trying next
+  learned_with   TEXT,                      -- which AI app, and the model if it said
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  deleted_at     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_learnings_sync ON learnings (user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_learnings_clip ON learnings (clip_id);
+
+-- The address a user gives their AI app so it can read their notebook itself (D29).
+--
+-- Only the HASH is stored. The secret is shown once, when it is made, and never again by
+-- any endpoint — this row recognises a secret that is presented, it cannot recover one.
+-- The secret is the whole of the authentication and it travels inside a URL pasted into
+-- someone else's app, so a database storing it in the clear would hand over every
+-- notebook at once.
+CREATE TABLE IF NOT EXISTS connector_tokens (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL,               -- SHA-256 of the secret, hex
+  label        TEXT,                        -- which app it was made for, in their words
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,                     -- so a forgotten connector is visible as one
+  revoked_at   INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_tokens_hash ON connector_tokens (token_hash);
+CREATE INDEX IF NOT EXISTS idx_connector_tokens_user ON connector_tokens (user_id);

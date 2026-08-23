@@ -15,3 +15,6 @@ venv/
 # Downloaded media is transient — transcribed, then deleted. Never committed.
 worker-pc/media/
 .wrangler/
+
+# Assembled at deploy time from app.html; never edited by hand.
+backend/.staging-assets/

@@ -32,6 +32,39 @@ address inside the operator's own network.
 | PUT | `/v1/settings` | Choose AI provider and store its key (encrypted, never returned). |
 | GET | `/v1/clips/:id/prompt` | Copy-paste tier: the ready-made prompt to paste into any chat AI. |
 | POST | `/v1/clips/:id/analysis` | Copy-paste tier: paste the AI's reply back in. |
+| GET | `/v1/clips/:id/learn-prompt` | D29: the text to take to an AI app — teach me, then hand the learning back. |
+| POST | `/v1/clips/:id/learning` | D29: store what was learned. Takes `{pasted}` (the AI's whole reply) or `{learning}` (the object). |
+| POST | `/v1/connector` | Mint a connector address. **The secret is in this response and nowhere else** — only its hash is stored. |
+| DELETE | `/v1/connector/:id` | Turn one off. The row is kept, marked revoked. |
+
+### The user's AI app (MCP — authenticated by the secret in the address)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/mcp/:secret` | The MCP endpoint (D29). Tools: `search`, `fetch`, `save_learning`. |
+
+**There are two incompatible eras of MCP and this server answers both.** Revision
+`2026-07-28` dropped the `initialize` handshake and sessions entirely — every request
+carries its version in `_meta` — while everything up to `2025-11-25` opens with
+`initialize`. Neither Claude nor ChatGPT documents which it speaks, so `initialize`,
+`server/discover`, `tools/list`, `tools/call` and `ping` are all implemented, and nothing
+is stored between requests either way. Wire shapes read from the specification 2026-08-23:
+[versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning),
+[streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http),
+[discover](https://modelcontextprotocol.io/specification/2026-07-28/server/discover),
+[tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools),
+[2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
+and OpenAI's [`search`/`fetch` shapes](https://developers.openai.com/api/docs/mcp).
+
+**One deliberate deviation, documented rather than hidden:** the 2026-07-28 revision says
+an unknown method MUST return `404`. This returns `200` with the JSON-RPC `-32601` instead,
+because a handshake-era client reads a `404` as "there is no MCP endpoint here" and falls
+back to a transport deprecated two revisions ago — the connector then looks broken rather
+than merely missing one method. The JSON-RPC error is the part either era reads.
+
+**Where each app takes the address:** Claude — Customize → Connectors, on any plan
+including Free. ChatGPT — Settings → Security and login → Developer mode, Plus or Pro only.
+The Gemini app cannot: Google requires the user be in the US.
 
 ### PC worker (send `X-Service-Token: <WORKER_SERVICE_TOKEN>`)
 
