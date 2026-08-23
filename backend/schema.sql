@@ -166,3 +166,29 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_sync ON tasks (user_id, updated_at);
+
+-- What the user LEARNED from a reel, brought back from the AI app they discussed it in
+-- (D29). The reel is the seed; this is the part that makes the notebook worth keeping.
+--
+-- Its own table rather than a row in `notes`: `notes` is prose the user typed, this is a
+-- fixed seven-field shape. Keyed to the clip, so it is one person's and delta sync (D6)
+-- carries it with everything else.
+CREATE TABLE IF NOT EXISTS learnings (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  clip_id        TEXT NOT NULL REFERENCES clips (id) ON DELETE CASCADE,
+  learned        TEXT NOT NULL,             -- JSON array — what I now understand
+  verdicts       TEXT NOT NULL,             -- JSON array [{claim, verdict, why}],
+                                            -- verdict is 'true' | 'false' | 'unsure'
+  actions        TEXT NOT NULL,             -- JSON array — what I will do about it
+  still_open     TEXT NOT NULL,             -- JSON array — what did not get resolved
+  corrections    TEXT NOT NULL,             -- JSON array — where the reel was wrong
+  look_into      TEXT NOT NULL,             -- JSON array — worth reading or trying next
+  learned_with   TEXT,                      -- which AI app, and the model if it said
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  deleted_at     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_learnings_sync ON learnings (user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_learnings_clip ON learnings (clip_id);

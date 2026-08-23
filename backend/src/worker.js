@@ -26,6 +26,11 @@ import {
   fileSourceForAllSavers,
   setClipTopicByHand
 } from "./topics.js";
+import {
+  buildLearningPrompt,
+  learningColumns,
+  validateLearning
+} from "./learnings.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
@@ -213,12 +218,13 @@ async function deltaSync(request, env, userId) {
       .bind(userId, since)
       .all();
 
-  const [clips, notes, questions, topics, tasks] = await Promise.all([
+  const [clips, notes, questions, topics, tasks, learnings] = await Promise.all([
     scoped("clips"),
     scoped("notes"),
     scoped("questions"),
     scoped("topics"),
-    scoped("tasks")
+    scoped("tasks"),
+    scoped("learnings")
   ]);
 
   // Shared rows are pivoted on the joining clip, not on their own timestamp. A reel
@@ -287,6 +293,7 @@ async function deltaSync(request, env, userId) {
     questions: questions.results,
     topics: topics.results,
     tasks: tasks.results,
+    learnings: learnings.results,
     sources: sources.results,
     transcripts: transcripts.results,
     analyses: analyses.results
@@ -736,6 +743,122 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   return json(env, { ok: true });
 }
 
+// ---------------------------------------------------------------- the learning loop (D29)
+
+/**
+ * The text to take to an AI app. Everything known about the reel — what it said, what it
+ * claimed and how much that was trusted, and the words themselves — wrapped in the
+ * instruction to teach first and hand the learning back at the end.
+ *
+ * A transcript is required and an analysis is not. Someone with no AI key has no summary
+ * and no claims, and the words alone are still worth discussing; refusing them here would
+ * put the one feature that needs no key of your own behind having one.
+ */
+async function buildLearnPrompt(env, userId, clipId) {
+  const row = await env.DB.prepare(
+    `SELECT t.text AS transcript, a.summary, a.key_points, a.claims
+     FROM clips c
+     JOIN transcripts t ON t.source_id = c.source_id
+     LEFT JOIN analyses a ON a.source_id = c.source_id AND a.user_id IN (?2, ?3)
+     WHERE c.id = ?1 AND c.user_id = ?2
+     ORDER BY CASE WHEN a.user_id = ?2 THEN 0 ELSE 1 END`
+  )
+    .bind(clipId, userId, SHARED)
+    .first();
+
+  if (!row) return fail(env, "No transcript yet for this clip.", 404);
+
+  const list = (value) => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  return json(env, {
+    prompt: buildLearningPrompt({
+      summary: row.summary || "",
+      keyPoints: list(row.key_points),
+      claims: list(row.claims),
+      transcript: row.transcript
+    })
+  });
+}
+
+/**
+ * Stores what came back. Two ways in, on purpose:
+ *
+ *   * `pasted` — the AI's whole reply, json block and all, for the apps that cannot
+ *     connect to us. Gemini is in this group and will be for as long as Google keeps
+ *     custom apps inside the US (D29).
+ *   * `learning` — the object itself, which is what a connector will send in Stage 3.
+ *
+ * Both land on the same validation and the same row, so the connector never becomes a
+ * second, laxer door into the same table.
+ */
+async function saveLearning(request, env, userId, clipId) {
+  const owned = await env.DB.prepare(`SELECT id FROM clips WHERE id = ?1 AND user_id = ?2`)
+    .bind(clipId, userId)
+    .first();
+  if (!owned) return fail(env, "Clip not found.", 404);
+
+  const body = await readJson(request);
+
+  let payload;
+  if (body.pasted !== undefined) {
+    try {
+      payload = parseAnalysis(String(body.pasted));
+    } catch {
+      return fail(
+        env,
+        "That does not look like the AI's answer. Copy the whole reply, including the json block."
+      );
+    }
+  } else {
+    payload = body.learning;
+  }
+
+  const problems = validateLearning(payload);
+  if (problems.length) {
+    return fail(env, `That learning is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);
+  }
+
+  const columns = learningColumns(payload);
+  const timestamp = now();
+  const id = newId();
+
+  await env.DB.prepare(
+    `INSERT INTO learnings
+       (id, user_id, clip_id, learned, verdicts, actions, still_open, corrections,
+        look_into, learned_with, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
+  )
+    .bind(
+      id,
+      userId,
+      clipId,
+      columns.learned,
+      columns.verdicts,
+      columns.actions,
+      columns.still_open,
+      columns.corrections,
+      columns.look_into,
+      columns.learned_with,
+      timestamp
+    )
+    .run();
+
+  // The clip moves too, so a reel that has been learned from is not still sitting in the
+  // list looking untouched — and so delta sync carries the change to every device.
+  await env.DB.prepare(`UPDATE clips SET updated_at = ?1 WHERE id = ?2 AND user_id = ?3`)
+    .bind(timestamp, clipId, userId)
+    .run();
+
+  return json(env, { id }, 201);
+}
+
 /**
  * "Sort my old clips" (D27) — for the clips summarised before topics existed.
  *
@@ -919,6 +1042,12 @@ export default {
         }
         if (segments[3] === "topic" && request.method === "PUT") {
           return await setTopic(request, env, userId, segments[2]);
+        }
+        if (segments[3] === "learn-prompt" && request.method === "GET") {
+          return await buildLearnPrompt(env, userId, segments[2]);
+        }
+        if (segments[3] === "learning" && request.method === "POST") {
+          return await saveLearning(request, env, userId, segments[2]);
         }
       }
       if (segments[1] === "topics" && segments[2] === "sort" && request.method === "POST") {

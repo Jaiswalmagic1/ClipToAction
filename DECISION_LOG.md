@@ -618,3 +618,86 @@ would double the time per reel to store something nothing looks at.
 
 **Rules out:** any feature that quotes a clip back in the language it was spoken in, and
 any search that expects Hindi words to be findable in the transcript.
+
+---
+
+### D29 — The notebook is a place you learn from, not a place text sits. The learning comes back.
+**Date:** 2026-08-23
+**Options considered, for getting a saved topic in front of an AI he can talk to:**
+(a) a copy button that puts a topic on the clipboard; (b) a public read-only share page per
+topic; (c) a chat built inside ClipToAction, on his own key; (d) **publish an MCP server so
+his own AI app can search the notebook itself**; (e) write each topic out to a Google Doc so
+Gemini sees it through Drive.
+**Decided: (d), with (a) kept as the path for apps that cannot do (d)** — and the half that
+matters more than either: **whatever is learned is written back into the notebook.**
+
+**The problem being solved, in Jaiswal's words:** *"if it sits there as a text only, it
+doesn't help as much. It has to enable me to learn."* The reel was always the seed. Until
+now the product stopped at storing what the reel said.
+
+**What the official docs say — read 2026-08-23, not recalled (Golden Rule 1, D13):**
+
+| App | Available to him? | Source |
+|---|---|---|
+| **Claude** | **Yes, on Free** — one custom connector. Customize -> Connectors -> paste the server URL | `support.claude.com/en/articles/11175166`, `/14503689` |
+| **ChatGPT** | Yes, but **Plus or Pro only.** Developer mode, Settings -> Security and login. Auth may be OAuth, none, or mixed; SSE or streaming HTTP | `developers.openai.com/api/docs/guides/developer-mode`, `/api/docs/mcp` |
+| **Gemini app** | **No.** Custom apps need Gemini Spark, which requires being **18+ and in the US**, on a personal Google account, English only | `support.google.com/gemini/answer/17209137`, `/17171264` |
+
+**Free is a requirement, not a preference,** so **Claude Free is the target** and ChatGPT is
+built for at the same time and switched on the day it costs nothing. One server serves both —
+the work does not change. **Gemini is why (a) survives:** it is closed to India today, so the
+copy-out / paste-back route is not a fallback, it is the only route for a large AI app.
+
+**The loop, which is the actual feature:**
+
+1. The AI app searches the notebook itself, or a topic is copied into it.
+2. The conversation happens there — the learning, the argument, the checking.
+3. **The finished learning comes back** — written through the connector where there is one,
+   pasted back as JSON where there is not.
+
+**Rejected, and why.** (b) puts a user's notebook on a public URL — no. (c) is a second chat
+window competing with the app he already has open, for far more work. (e) needs the Doc under
+`rumeein@gmail.com` while the app lives under `cliptoaction@gmail.com` (D12), and only ever
+serves Google.
+
+**A learning attaches to the reel, and has a fixed shape.** Both were Jaiswal's calls, asked
+before anything was designed. Attached to the reel *"so that everything can be synced"*.
+Fixed shape *"but detailed to cover everything"* — seven fields: what I learned · the verdict
+on each claim the reel made (true / false / unsure, with the reason) · what I will do · what
+is still open · corrections · worth looking at next · which app, which model, and when.
+
+**Its own table, not `notes`.** `notes` holds prose the user typed. JSON in `notes.body` would
+be searched and rendered as raw text, and would mix his words with a machine's record.
+`learnings` carries `clip_id` and `updated_at`, so delta sync (D6) takes it for free.
+
+**Why "attached to the reel" is the answer to the question he actually asked.** With 200
+reels he cannot scroll to find what he learned from the fiftieth. **The app's search already
+covers the bodies of a clip's notes** (`searchText`, `app.html:547`) — so anything filed
+against a clip is findable the day it is written, with no search feature to build. Two gaps
+close with this work: `claims` is not currently searched, and no date is shown on anything.
+
+**This is a write, and it is designed as one.** Everything before this decision was read-only
+to the outside world. A connector that saves a learning writes to the database. It stays
+inside D18 — a learning is the user's own content, stored against that user, and nothing
+external ever touches a shared row. Write tools confirm before running; OpenAI's own doc
+warns *"Incorrect write actions can inadvertently destroy, alter, or share data"*.
+
+**Stated plainly, because it is a real trade:** connecting the notebook to Claude or ChatGPT
+means the user's own notebook content goes to that company under that company's terms. That
+is the user's own account and the user's own choice, which is what makes it acceptable — but
+the app must say so where the connector is set up, not bury it. Google's own doc gives the
+mirror-image warning about custom servers: it *"does not control, monitor, or secure"* them.
+
+**What follows:**
+
+- The connector URL carries a **per-user secret that can be revoked and reissued.** No-auth is
+  permitted by OpenAI and is not permitted here — a public URL with no secret is every
+  notebook readable by anyone who finds it (Golden Rules 3 and 8).
+- The paste-back leg must validate the fixed shape before storing, the way `parseAnalysis`
+  already does for the copy-paste tier (`backend/src/analyze.js:96`).
+- Read tools are `search` and `fetch`, the two OpenAI names, in OpenAI's documented result
+  shape. Claude does not require those names; matching them costs nothing and keeps one
+  server serving both.
+
+**Rules out:** any design where the AI app writes to a shared row, and any connector that
+works without a secret.

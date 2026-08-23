@@ -4,7 +4,7 @@ Running list of what is settled and what is still open. Updated every session.
 **Why each decision was made — options considered, factors weighed — is in
 [DECISION_LOG.md](DECISION_LOG.md).** That file is binding; this one is its index.
 
-Last updated: 2026-08-22
+Last updated: 2026-08-23
 
 ---
 
@@ -48,6 +48,7 @@ The reel is a seed, not the destination.
 | D26 | Staging hosting | The staging Worker also serves the app, so it can be opened on a phone at all. Production keeps the app on GitHub Pages. |
 | D27 | Topics | The AI proposes topics, two levels deep. The topic rows stay per-user even though the analysis that suggested them is shared. All questions answered; backend built 2026-08-22. |
 | D28 | Transcripts | Whisper always translates -- the transcript is English whatever was spoken -- and the model floor moves from `base` to `small`. Measured, not argued: transcribe mode is wrong at every size. |
+| D29 | Learning loop | The notebook connects to the user's own AI app (MCP), and what they learn is written back to the reel in a fixed seven-field shape. Claude Free is the target; Gemini is closed to India, so copy-out / paste-back stays. |
 
 ---
 

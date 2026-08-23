@@ -120,6 +120,12 @@
     .claim.low { border-left-color: var(--danger); }
     .claim.medium { border-left-color: var(--warn); }
     .claim.high { border-left-color: var(--accent); }
+    /* A verdict you reached yourself, drawn like a claim so the two read as one thread. */
+    .claim.verdict-true { border-left-color: var(--accent); }
+    .claim.verdict-false { border-left-color: var(--danger); }
+    .claim.verdict-unsure { border-left-color: var(--warn); }
+    .learning { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 10px 0; }
+    .learning h4 { margin: 0 0 2px; font-size: 14px; }
     .signin { max-width: 460px; margin: 60px auto; text-align: center; }
     .signin p { color: var(--muted); }
     a { color: var(--accent); }
@@ -355,7 +361,7 @@ if ("serviceWorker" in navigator) {
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
 const EMPTY = {
   since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
-  tasks: [], sources: [], transcripts: [], analyses: []
+  tasks: [], sources: [], transcripts: [], analyses: [], learnings: []
 };
 let store = structuredClone(EMPTY);
 let user = null;
@@ -398,6 +404,7 @@ function applyDelta(delta) {
   store.questions = mergeRows(store.questions, delta.questions || [], byId);
   store.topics = mergeRows(store.topics, delta.topics || [], byId);
   store.tasks = mergeRows(store.tasks, delta.tasks || [], byId);
+  store.learnings = mergeRows(store.learnings, delta.learnings || [], byId);
   store.sources = mergeRows(store.sources, delta.sources || [], byId);
   store.transcripts = mergeRows(store.transcripts, delta.transcripts || [], bySource);
   store.analyses = mergeRows(
@@ -474,6 +481,12 @@ const transcriptOf = (clip) => store.transcripts.find((t) => t.source_id === cli
 const analysisOf = (clip) => store.analyses.find((a) => a.source_id === clip.source_id);
 const notesOf = (clip) =>
   store.notes.filter((n) => n.clip_id === clip.id && !n.deleted_at)
+    .sort((a, b) => a.created_at - b.created_at);
+
+// D29 — what the user worked out about this reel elsewhere, oldest first so the page
+// reads in the order it happened.
+const learningsOf = (clip) =>
+  store.learnings.filter((row) => row.clip_id === clip.id && !row.deleted_at)
     .sort((a, b) => a.created_at - b.created_at);
 
 const topicById = (id) => (id ? store.topics.find((t) => t.id === id && !t.deleted_at) : undefined);
@@ -553,8 +566,38 @@ function searchText(clip) {
     analysis?.summary,
     jsonList(analysis?.key_points).join(" "),
     jsonList(analysis?.learn_more).join(" "),
-    notesOf(clip).map((n) => n.body).join(" ")
+    // What the reel claimed, and why it was doubted. Already stored and already drawn on
+    // the page, but never findable — so "that reel that said X" missed it.
+    jsonList(analysis?.claims).map((c) => `${c?.claim || ""} ${c?.why || ""}`).join(" "),
+    notesOf(clip).map((n) => n.body).join(" "),
+    // D29, and the reason the feature is worth building: with 200 reels you cannot scroll
+    // to find what you learned from the fiftieth. Every field of every learning goes in,
+    // so searching for what you concluded finds the reel it came from.
+    learningsOf(clip).map(learningText).join(" ")
   ].filter(Boolean).join(" ").toLowerCase();
+}
+
+/**
+ * A stored moment as a person would say it. Needed here because "which app, and when" is
+ * one of the seven things a learning holds (D29) — a learning with no date is exactly the
+ * gap this product already has everywhere else, repeated.
+ */
+function whenText(milliseconds) {
+  if (!milliseconds) return "";
+  const then = new Date(milliseconds);
+  const days = Math.floor((Date.now() - milliseconds) / 86400000);
+  if (days <= 0) return `Today, ${then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  if (days === 1) return `Yesterday, ${then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  return then.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** Every word of one learning, flattened, for the search box. */
+function learningText(learning) {
+  const lists = ["learned", "actions", "still_open", "corrections", "look_into"]
+    .map((field) => jsonList(learning[field]).join(" "));
+  const verdicts = jsonList(learning.verdicts)
+    .map((entry) => `${entry?.claim || ""} ${entry?.verdict || ""} ${entry?.why || ""}`);
+  return [...lists, ...verdicts, learning.learned_with || ""].join(" ");
 }
 
 function show(view) {
@@ -1000,6 +1043,157 @@ function byHandSection(clip) {
   return section;
 }
 
+// ---------------------------------------------------------------- what you worked out (D29)
+
+/** One saved learning, drawn as the seven things it holds. Empty parts are left out. */
+function learningBlock(learning) {
+  const block = document.createElement("div");
+  block.className = "learning";
+
+  const when = document.createElement("div");
+  when.className = "muted";
+  when.textContent = learning.learned_with
+    ? `${whenText(learning.created_at)} · with ${learning.learned_with}`
+    : whenText(learning.created_at);
+  block.append(when);
+
+  const listPart = (field, heading) => {
+    const items = jsonList(learning[field]);
+    if (!items.length) return;
+    const title = document.createElement("h4");
+    title.textContent = heading;
+    const list = document.createElement("ul");
+    list.className = "plain";
+    for (const item of items) {
+      const entry = document.createElement("li");
+      entry.textContent = String(item);
+      list.append(entry);
+    }
+    block.append(title, list);
+  };
+
+  listPart("learned", "What you learned");
+
+  const verdicts = jsonList(learning.verdicts);
+  if (verdicts.length) {
+    const title = document.createElement("h4");
+    title.textContent = "True or not";
+    block.append(title);
+    for (const entry of verdicts) {
+      const verdict = String(entry?.verdict || "").toLowerCase();
+      const row = document.createElement("div");
+      row.className = `claim verdict-${verdict}`;
+      const what = document.createElement("strong");
+      what.textContent = String(entry?.claim || "");
+      const why = document.createElement("div");
+      why.className = "muted";
+      why.textContent = `${verdict || "unsure"} — ${entry?.why || ""}`;
+      row.append(what, why);
+      block.append(row);
+    }
+  }
+
+  listPart("actions", "What you said you would do");
+  listPart("corrections", "Where the reel was wrong");
+  listPart("still_open", "Still open");
+  listPart("look_into", "Worth looking into next");
+  return block;
+}
+
+/**
+ * Take the reel to an AI, talk it through, bring the answer back (D29).
+ *
+ * Deliberately the same three-step shape as the copy-paste summary above it: the person
+ * who has no AI key is the person this is for, and they have already used that flow once.
+ */
+function learnSection(clip) {
+  const section = document.createElement("div");
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Learn from this one";
+  section.append(heading);
+
+  const steps = document.createElement("ol");
+  steps.className = "plain";
+  for (const step of [
+    "Press the button. It copies the reel and asks the AI to teach you, not to summarise.",
+    "Paste it into whichever AI you use, and talk it through properly — argue with it.",
+    "When you are done, ask it to finish. Paste its last reply below and save it here."
+  ]) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    steps.append(item);
+  }
+  section.append(steps);
+
+  const copyButton = document.createElement("button");
+  copyButton.textContent = "Copy it for your AI";
+
+  const fallback = document.createElement("textarea");
+  fallback.readOnly = true;
+  fallback.hidden = true;
+  fallback.style.marginTop = "8px";
+
+  const status = document.createElement("div");
+  status.id = "learnMsg";
+
+  copyButton.onclick = async () => {
+    copyButton.disabled = true;
+    say("learnMsg", "");
+    try {
+      const { prompt } = await api(`/v1/clips/${clip.id}/learn-prompt`);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        say("learnMsg", "Copied. Now paste it into your AI and get into it.", "ok");
+      } catch {
+        // Copying can be refused outright — an insecure address, or a browser that only
+        // allows it straight after a tap. Showing the text is the difference between the
+        // feature working and not.
+        fallback.value = prompt;
+        fallback.hidden = false;
+        fallback.select();
+        say("learnMsg", "Your browser would not let the app copy it. "
+          + "The text is below — select it all and copy it yourself.", "warn");
+      }
+    } catch (error) {
+      say("learnMsg", error.message);
+    } finally {
+      copyButton.disabled = false;
+    }
+  };
+
+  const answer = document.createElement("textarea");
+  answer.placeholder = "Paste the AI's last reply here";
+  answer.style.marginTop = "10px";
+
+  const saveButton = document.createElement("button");
+  saveButton.textContent = "Save what you learned";
+  saveButton.style.marginTop = "8px";
+  saveButton.onclick = async () => {
+    const pasted = answer.value.trim();
+    if (!pasted) {
+      say("learnMsg", "Paste the AI's reply first.");
+      return;
+    }
+    saveButton.disabled = true;
+    say("learnMsg", "");
+    try {
+      await api(`/v1/clips/${clip.id}/learning`, {
+        method: "POST",
+        body: JSON.stringify({ pasted })
+      });
+      await sync();
+      render();
+    } catch (error) {
+      say("learnMsg", error.message);
+      saveButton.disabled = false;
+    }
+  };
+
+  section.append(copyButton, fallback, answer, saveButton, status);
+  return section;
+}
+
 // ---------------------------------------------------------------- one clip's own page
 function renderClip(clipId) {
   const clip = store.clips.find((c) => c.id === clipId);
@@ -1155,6 +1349,19 @@ function renderClip(clipId) {
     details.append(summaryLine, body);
     panel.append(details);
   }
+
+  // What was worked out elsewhere and brought back (D29). This sits above the notes
+  // because it is the part that took effort, and below the reel because it came second.
+  const learnings = learningsOf(clip);
+  if (learnings.length) {
+    const learnedHeading = document.createElement("h3");
+    learnedHeading.textContent = "What you worked out";
+    panel.append(learnedHeading);
+    for (const learning of learnings) panel.append(learningBlock(learning));
+  }
+
+  // Needs the words to be worth taking anywhere, same as the summarise-by-hand flow.
+  if (transcript) panel.append(learnSection(clip));
 
   // The user's own notes — this is how an entry grows past the reel that seeded it.
   const notesHeading = document.createElement("h3");
