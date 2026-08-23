@@ -105,6 +105,26 @@ describe("saving links", () => {
   });
 });
 
+describe("the app is told when each reel was saved", () => {
+  // Display-only in the app, but it depends entirely on this column arriving. A future
+  // tidy-up that narrows the sync SELECT to named columns would silently take the date
+  // off every card, and nothing else would fail.
+  test("sync carries the moment a clip was saved", async () => {
+    const before = Date.now();
+    const created = await saveClip(alice, "https://instagram.com/reel/WHENSAVED/");
+    const after = Date.now();
+
+    const response = await harness.call(worker, "/v1/sync?since=0", { token: alice });
+    const saved = response.body.clips.find((clip) => clip.id === created.body.clip.id);
+
+    assert.ok(saved.created_at, "with no created_at there is no date to show anywhere");
+    assert.ok(
+      saved.created_at >= before && saved.created_at <= after,
+      "it must be when the reel was saved, not when it was transcribed or summarised"
+    );
+  });
+});
+
 describe("one user cannot reach another user's data", () => {
   test("sync returns only your own clips", async () => {
     await saveClip(alice, "https://instagram.com/reel/ALICEONLY/");

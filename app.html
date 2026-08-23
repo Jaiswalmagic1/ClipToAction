@@ -591,6 +591,25 @@ function whenText(milliseconds) {
   return then.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
 }
 
+/**
+ * When a reel was saved, as it reads on a card. Relative on purpose: "yesterday" is how
+ * you actually look for a reel — "I saw something yesterday and saved it" — and an
+ * absolute date makes you work that out for yourself.
+ */
+function savedText(milliseconds) {
+  const text = whenText(milliseconds);
+  return text ? `Saved ${text.charAt(0).toLowerCase()}${text.slice(1)}` : "";
+}
+
+/** The same moment spelled out in full, for the reel's own page, where there is room. */
+function exactWhen(milliseconds) {
+  if (!milliseconds) return "";
+  const then = new Date(milliseconds);
+  const date = then.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
+  const time = then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `Saved on ${date} at ${time}`;
+}
+
 /** Every word of one learning, flattened, for the search box. */
 function learningText(learning) {
   const lists = ["learned", "actions", "still_open", "corrections", "look_into"]
@@ -747,6 +766,14 @@ function clipCard(clip, { showTopic = true } = {}) {
   }
 
   card.append(heading, pills);
+
+  // When it was saved. Without this a notebook is a wall of cards with no sense of time
+  // in it, and there is no way to find "the one I saved yesterday" short of reading
+  // every card.
+  const saved = document.createElement("p");
+  saved.className = "muted";
+  saved.textContent = savedText(clip.created_at);
+  card.append(saved);
 
   if (analysis?.summary) {
     const summary = document.createElement("p");
@@ -1227,6 +1254,11 @@ function renderClip(clipId) {
   state.textContent = progress.text;
   pills.append(platform, state);
   panel.append(pills);
+
+  const saved = document.createElement("p");
+  saved.className = "muted";
+  saved.textContent = exactWhen(clip.created_at);
+  panel.append(saved);
 
   if (source?.url_original) {
     const link = document.createElement("p");
