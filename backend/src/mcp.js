@@ -25,6 +25,28 @@ import { learningColumns, validateLearning } from "./learnings.js";
 // version we cannot serve.
 export const SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
 
+// WHY `server/discover` DELIBERATELY FAILS, 2026-08-23. Do not "fix" it without reading this.
+//
+// Claude connected to this server, called `server/discover` and then `tools/list`, both at
+// `2026-07-28`, and was answered 200 with all three tools — the log proves it. It then
+// showed "This connector has no tools available", on the phone and on the web. Anthropic
+// has several open reports of the same shape (modelcontextprotocol#1675,
+// anthropics/claude-ai-mcp#552 and #572), none with a fix.
+//
+// The official MCP client library (@modelcontextprotocol/sdk 1.30.0) connects to this very
+// server and lists all three tools — but it does so through `initialize`, the handshake
+// era. **So the legacy path is proven with a real client and the modern path is proven
+// with nothing but our own tests.**
+//
+// The specification defines the way out, and this is it rather than a hack: a dual-era
+// client "attempts a modern request and inspects the body of a `400 Bad Request` before
+// falling back... If the body is empty or is NOT a recognized modern JSON-RPC error, fall
+// back to `initialize`". So `server/discover` answers 400 with a plain `-32601`, which is
+// not one of the recognised modern errors, and the client uses the handshake instead.
+//
+// The cost, stated plainly: a modern-ONLY client cannot use this server at all. Today no
+// such client is known to ship. Everything else here still answers both eras.
+
 const SERVER_INFO = { name: "cliptoaction", title: "ClipToAction notebook", version: "1.0.0" };
 
 // Shown to the model, so it knows what it is holding before it calls anything.
@@ -569,15 +591,14 @@ export async function handleMcp(request, env, secret) {
       }));
     }
 
-    // The modern era's replacement for it. Servers MUST implement this.
+    // The modern era's replacement for `initialize`. Servers MUST implement it — and this
+    // one deliberately does not. The long comment at the top of this file says why, and
+    // what has to be true before it is put back.
     case "server/discover":
-      return respond(rpcResult(id, {
-        resultType: "complete",
-        supportedVersions: SUPPORTED_VERSIONS,
-        capabilities: { tools: {} },
-        instructions: INSTRUCTIONS,
-        _meta: { "io.modelcontextprotocol/serverInfo": SERVER_INFO }
-      }));
+      return respond(
+        rpcError(id, -32601, "This server speaks the initialize handshake. Use it."),
+        400
+      );
 
     case "ping":
       return respond(rpcResult(id, {}));

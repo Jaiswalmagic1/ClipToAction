@@ -712,6 +712,7 @@ that are binding from here, and none of them were obvious before the specificati
    Neither Claude's nor ChatGPT's documentation states which era it speaks. Answering both
    costs one extra branch and nothing else, because a Cloudflare Worker keeps no session
    either way — so nothing here may be "simplified" by deleting one of them.
+   **AMENDED the same day — see D30. `server/discover` is now refused on purpose.**
 2. **An unknown method returns `200` with JSON-RPC `-32601`, not the `404` the spec
    requires.** A handshake-era client reads a `404` as "no MCP endpoint at this address"
    and falls back to a transport deprecated two revisions ago, so the connector looks
@@ -729,4 +730,57 @@ somebody else's words off the internet, and the connector hands it to a model th
 `fetch` labels the transcript as the video's own words, to be discussed and never followed.
 That is a mitigation, not a guarantee — anything built on top of this must assume reel text
 is untrusted input.
+
+---
+
+### D30 — The connector refuses the modern handshake, so Claude falls back to the one that works.
+**Date:** 2026-08-23
+**Amends D29.** Nothing about the product changes; this is about which half of the protocol
+is spoken to a real client.
+
+**What happened.** Jaiswal connected his own Claude to the staging connector. Claude showed
+**"This connector has no tools available"** — on the phone and on claude.ai — with a warning
+against the connector. Google Drive beside it showed 11 tools, so the UI was working.
+
+**What was measured, before anything was changed.** A `console.log` of every MCP request was
+added and `wrangler tail` caught the real client twice:
+
+| Time (UTC) | Agent | Method | Version | Answered |
+|---|---|---|---|---|
+| 11:19:01 | `Claude-User` | `server/discover` | 2026-07-28 | **200** |
+| 11:19:02 | `Claude-User` | `tools/list` | 2026-07-28 | **200**, all three tools |
+| 11:22:56/57 | `Claude-User` | the same pair again | 2026-07-28 | **200** |
+
+**Claude was handed the tools and recorded none.** No `initialize` was ever sent.
+
+**Then the gap in our own testing was found.** The official client library
+(`@modelcontextprotocol/sdk` 1.30.0) connects to this same server and lists all three tools
+— but the log shows it does so through `initialize` at `2025-11-25`. **So the handshake era
+was proven with a real client and the modern era was proven with nothing but our own curl
+and our own tests.** Two of our tests asserting `server/discover` were testing our own
+opinion of the spec, not interoperability.
+
+**Anthropic has open reports of this exact shape** — `modelcontextprotocol#1675`,
+`anthropics/claude-ai-mcp#552` and `#572` — where claude.ai fetches a valid non-empty tool
+list and never exposes it. None has a fix; #1675 and #552 are closed without one.
+
+**Decided:** `server/discover` answers **`400` with a plain `-32601`**, and nothing else
+changes. This is the specification's own mechanism, not a hack — a dual-era client
+"attempts a modern request and inspects the body of a `400 Bad Request` before falling
+back... If the body is empty or is **not** a recognized modern JSON-RPC error, fall back to
+`initialize`." A plain `-32601` is deliberately not one of the recognised modern errors
+(`-32022` unsupported version, `-32020` header mismatch), so the client drops to the
+handshake — the path that a real client demonstrably completes.
+
+**Rejected:** guessing at the tool definitions. Renaming `search`/`fetch` in case they
+collided with Claude's own tool names, or stripping `outputSchema` and `annotations`, were
+both plausible and both unprovable — each would have cost a round trip through Jaiswal's
+phone to test one hunch. The measurement said the modern era was the untested variable.
+
+**The cost, stated plainly:** a modern-**only** client cannot use this server at all. No such
+client is known to ship today. If one appears, or if Anthropic fixes the discovery path,
+this reverses in one line — and the modern code is all still there and still tested.
+
+**What must be true before it is put back:** a real client, not our own tests, completing
+`server/discover` → `tools/list` → `tools/call` and showing the tools to a person.
 

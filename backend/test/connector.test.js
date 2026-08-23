@@ -9,8 +9,11 @@
 //   * Ben's connector cannot see, read, or write a single thing of Amy's
 //
 // The rest pin the wire format against the specification, which has two incompatible eras
-// (`initialize` up to 2025-11-25, per-request `_meta` from 2026-07-28). Shipping clients
-// do not say which they speak, so this server answers both and both are tested.
+// (`initialize` up to 2025-11-25, per-request `_meta` from 2026-07-28). This server serves
+// the handshake era and deliberately refuses the modern probe, so a dual-era client falls
+// back to the path a real client is known to work with — see the long comment at the top
+// of `src/mcp.js`. Both behaviours are pinned here, including the exact shape of that
+// refusal, because getting the shape wrong silently strands every client.
 
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -222,15 +225,23 @@ describe("both eras of the protocol are answered", () => {
     assert.ok(SUPPORTED_VERSIONS.includes(response.body.result.protocolVersion));
   });
 
-  test("the modern era: server/discover lists the versions and names the server", async () => {
+  // Deliberately refused, so a dual-era client falls back to the handshake — the only
+  // path proven against a real client. Claude was answered 200 here with all three tools
+  // and still showed "no tools available"; the official SDK works, but only through
+  // `initialize`. The spec's own fallback rule is that a 400 whose body is NOT a
+  // recognised modern error means "legacy server, use initialize" — so this test is the
+  // promise that the refusal keeps that exact shape.
+  test("the modern probe is refused in the one way that makes a client fall back", async () => {
     const response = await mcp(amysSecret, {
       jsonrpc: "2.0", id: "d1", method: "server/discover",
       params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }
     });
 
-    assert.deepEqual(response.body.result.supportedVersions, SUPPORTED_VERSIONS);
-    assert.ok(response.body.result.capabilities.tools);
-    assert.ok(response.body.result._meta["io.modelcontextprotocol/serverInfo"].name);
+    assert.equal(response.status, 400, "anything but 400 and the client never falls back");
+    assert.equal(response.body.error.code, -32601);
+    assert.notEqual(response.body.error.code, -32022,
+      "a recognised modern error tells the client to retry as modern, not to fall back");
+    assert.equal(response.body.result, undefined);
   });
 
   test("a notification is accepted with no answer at all", async () => {
