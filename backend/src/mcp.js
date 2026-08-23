@@ -504,6 +504,19 @@ export async function handleMcp(request, env, secret) {
   const id = body?.id ?? null;
   const method = String(body?.method || "");
 
+  // What the AI app actually asked for. A connector is the one part of this product
+  // nobody can see into — it runs inside somebody else's cloud, and when it goes wrong
+  // the only thing on screen is "no tools", which says nothing about why (Golden Rule 29).
+  // The secret is never logged; `wrangler tail` shows the path anyway, so adding it here
+  // would only put it in a second place.
+  console.log("mcp", JSON.stringify({
+    method,
+    version: requestedVersion(body, request.headers.get("MCP-Protocol-Version")),
+    accept: request.headers.get("Accept"),
+    agent: request.headers.get("User-Agent"),
+    origin: request.headers.get("Origin")
+  }));
+
   // Header and body must agree. The spec makes this a MUST for any server that reads the
   // body: without it a proxy can route on one value while this code acts on another.
   // Checked only when the client actually sent the header — requiring it would break
