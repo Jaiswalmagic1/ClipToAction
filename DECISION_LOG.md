@@ -701,3 +701,32 @@ mirror-image warning about custom servers: it *"does not control, monitor, or se
 
 **Rules out:** any design where the AI app writes to a shared row, and any connector that
 works without a secret.
+
+**BUILT 2026-08-23 — the connector, Stage 3.** Three things were settled while building it
+that are binding from here, and none of them were obvious before the specification was read:
+
+1. **There are two incompatible eras of MCP, and this server answers both.** Revision
+   `2026-07-28` removed the `initialize` handshake and protocol-level sessions outright;
+   every request now carries its version in `_meta` and servers **MUST** implement
+   `server/discover`. Everything up to `2025-11-25` opens with `initialize` instead.
+   Neither Claude's nor ChatGPT's documentation states which era it speaks. Answering both
+   costs one extra branch and nothing else, because a Cloudflare Worker keeps no session
+   either way — so nothing here may be "simplified" by deleting one of them.
+2. **An unknown method returns `200` with JSON-RPC `-32601`, not the `404` the spec
+   requires.** A handshake-era client reads a `404` as "no MCP endpoint at this address"
+   and falls back to a transport deprecated two revisions ago, so the connector looks
+   broken rather than merely missing one method. Deviation, logged, not hidden.
+3. **Only the hash of the connector secret is stored.** The secret is returned by
+   `POST /v1/connector` and never again — not by sync, not by any endpoint. It is the
+   entire authentication, it travels inside a URL pasted into someone else's app, and a
+   database holding it in the clear would hand over every notebook at once. Lookup is *by*
+   the hash, so there is no secret-dependent comparison to time and a revoked row cannot
+   match. Cap of five live addresses per notebook, so a leaked one is noticed rather than
+   lost in a list.
+
+**And one thing the product now has to live with, stated plainly:** a reel's transcript is
+somebody else's words off the internet, and the connector hands it to a model that can act.
+`fetch` labels the transcript as the video's own words, to be discussed and never followed.
+That is a mitigation, not a guarantee — anything built on top of this must assume reel text
+is untrusted input.
+

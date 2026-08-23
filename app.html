@@ -228,6 +228,33 @@
           <button class="secondary" id="settingsBack">Back to notebook</button>
         </div>
       </div>
+
+      <div class="panel">
+        <h2>Talk to your notebook from your AI app</h2>
+        <p class="muted">Make an address, paste it into your AI app once, and after that
+          you can just ask it — "what did I save about Amazon titles?" — without opening
+          this app at all. It can search your notebook, read any reel in full, and save
+          what you worked out back here.</p>
+        <div class="notice warn">
+          <strong>Works today in Claude, on the free plan</strong> — Customize, then
+          Connectors. <strong>ChatGPT</strong> needs Plus or Pro (Settings, then Security
+          and login, turn on Developer mode). <strong>The Gemini app cannot do this yet</strong>
+          — Google only allows it inside the US.
+        </div>
+        <div class="notice">
+          Anyone holding this address can read your whole notebook, so treat it like a
+          password: paste it into the app and nowhere else. Once connected, what that AI
+          reads goes to that company under their terms, not ours. You can turn an address
+          off here at any time.
+        </div>
+        <div id="connectorList"></div>
+        <label for="connectorLabel">Which app is this for</label>
+        <input type="text" id="connectorLabel" placeholder="Claude" autocomplete="off">
+        <div id="connectorMsg"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="makeConnector">Make an address</button>
+        </div>
+      </div>
     </div>
   </div>
     <div id="guideView" hidden>
@@ -361,7 +388,7 @@ if ("serviceWorker" in navigator) {
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
 const EMPTY = {
   since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
-  tasks: [], sources: [], transcripts: [], analyses: [], learnings: []
+  tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: []
 };
 let store = structuredClone(EMPTY);
 let user = null;
@@ -410,6 +437,9 @@ function applyDelta(delta) {
   store.analyses = mergeRows(
     store.analyses, delta.analyses || [], (row) => `${row.source_id}|${row.user_id}`
   );
+  // Not merged by key like the rest: this is the whole current list every time, so a
+  // connector turned off elsewhere disappears here instead of lingering for ever.
+  if (delta.connectors) store.connectors = delta.connectors;
   if (delta.settings) store.settings = delta.settings;
   if (delta.worker) store.worker = delta.worker;
   store.since = delta.now || store.since;
@@ -1579,6 +1609,53 @@ $("saveSettings").onclick = async () => {
   }
 };
 
+$("makeConnector").onclick = async () => {
+  const button = $("makeConnector");
+  button.disabled = true;
+  say("connectorMsg", "");
+  try {
+    const made = await api("/v1/connector", {
+      method: "POST",
+      body: JSON.stringify({ label: $("connectorLabel").value.trim() })
+    });
+
+    await sync();
+    renderConnectors();
+    $("connectorLabel").value = "";
+
+    // Shown in a box rather than only copied to the clipboard. This is the one and only
+    // time this address exists in readable form — a silent copy that quietly failed, on a
+    // phone or an insecure address, would lose it for good.
+    const box = document.createElement("textarea");
+    box.readOnly = true;
+    box.value = made.url;
+    box.style.marginTop = "8px";
+    box.rows = 3;
+
+    const copy = document.createElement("button");
+    copy.textContent = "Copy the address";
+    copy.style.marginTop = "8px";
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(made.url);
+        copy.textContent = "Copied";
+      } catch {
+        box.select();
+        copy.textContent = "Select it above and copy it yourself";
+      }
+    };
+
+    say("connectorMsg", "Here it is — this is the only time it will be shown. Paste it "
+      + "into your AI app now, and keep it as private as a password.", "warn");
+    $("connectorMsg").append(box, copy);
+    box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  } catch (error) {
+    say("connectorMsg", error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
 // Where a key actually comes from. Telling someone they need a key and then leaving them
 // to find it is the friction D9's copy-paste tier exists to avoid — and it is worse than
 // no instruction at all, because they cannot even tell whether it will cost them money.
@@ -1638,7 +1715,63 @@ const PROVIDER_HELP = {
  * provider in the list with an empty key box every time, so someone who had connected Groq
  * months ago was shown "Gemini" and no key — indistinguishable from never having set it up.
  */
+/**
+ * The addresses handed out to AI apps (D29). The list carries no secret in it — the
+ * address is readable exactly once, in the moment it is made, and after that only "which
+ * app, made when, last used when" is left. Saying so on screen is what stops someone
+ * hunting for it later and concluding the app has lost it.
+ */
+function renderConnectors() {
+  const host = $("connectorList");
+  host.innerHTML = "";
+
+  const live = store.connectors || [];
+  if (!live.length) {
+    const none = document.createElement("p");
+    none.className = "muted";
+    none.textContent = "No AI app is connected yet.";
+    host.append(none);
+    return;
+  }
+
+  for (const connector of live) {
+    const row = document.createElement("div");
+    row.className = "learning";
+
+    const name = document.createElement("h4");
+    name.textContent = connector.label || "Unnamed app";
+
+    const detail = document.createElement("div");
+    detail.className = "muted";
+    detail.textContent = connector.last_used_at
+      ? `Made ${whenText(connector.created_at)} · last used ${whenText(connector.last_used_at)}`
+      : `Made ${whenText(connector.created_at)} · never used yet`;
+
+    const off = document.createElement("button");
+    off.className = "secondary";
+    off.textContent = "Turn it off";
+    off.style.marginTop = "8px";
+    off.onclick = async () => {
+      off.disabled = true;
+      say("connectorMsg", "");
+      try {
+        await api(`/v1/connector/${connector.id}`, { method: "DELETE" });
+        await sync();
+        renderConnectors();
+        say("connectorMsg", "Turned off. That address stops working straight away.", "ok");
+      } catch (error) {
+        say("connectorMsg", error.message);
+        off.disabled = false;
+      }
+    };
+
+    row.append(name, detail, off);
+    host.append(row);
+  }
+}
+
 function renderSettings() {
+  renderConnectors();
   const settings = store.settings;
   if (settings?.ai_provider) $("provider").value = settings.ai_provider;
   $("apiKey").value = "";

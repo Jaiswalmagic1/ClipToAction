@@ -31,6 +31,7 @@ import {
   learningColumns,
   validateLearning
 } from "./learnings.js";
+import { handleMcp, hashSecret, newConnectorSecret } from "./mcp.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
@@ -50,6 +51,9 @@ const MAX_ATTEMPTS = 3;
 // make. The app presses again while `remaining` is above zero, so the cap costs nothing
 // but keeps a notebook of any size inside one request's budget.
 const MAX_SORT_PER_REQUEST = 10;
+// How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
+// and a spare; low enough that a leaked one is noticed rather than lost in a list.
+const MAX_CONNECTORS = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const LIMITS = {
@@ -278,8 +282,20 @@ async function deltaSync(request, env, userId) {
     .bind(THE_WORKER)
     .first();
 
+  // The addresses this user has handed to an AI app (D29). Metadata only — the secret
+  // itself is shown once, when it is made, and is not recoverable from anywhere. Sent on
+  // every sync like `settings`, because it is a handful of rows with no `updated_at` to
+  // gate on and the settings screen needs it to say what is connected.
+  const connectors = await env.DB.prepare(
+    `SELECT id, label, created_at, last_used_at FROM connector_tokens
+     WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY created_at`
+  )
+    .bind(userId)
+    .all();
+
   return json(env, {
     now: timestamp,
+    connectors: connectors.results,
     settings: {
       ai_provider: user?.ai_provider || null,
       has_key: Boolean(user?.ai_key_cipher)
@@ -743,6 +759,58 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   return json(env, { ok: true });
 }
 
+// ---------------------------------------------------------------- the connector (D29)
+
+/**
+ * Mints the address the user pastes into their AI app.
+ *
+ * The secret is returned HERE AND NOWHERE ELSE. Only its hash is stored, so this response
+ * is the single moment it exists in readable form — which is why the app shows it with a
+ * copy button and says plainly that it will not be shown again.
+ */
+async function createConnector(request, env, userId) {
+  const body = await readJson(request);
+  const label = String(body.label || "").trim().slice(0, 80) || null;
+
+  const existing = await env.DB.prepare(
+    `SELECT COUNT(*) AS held FROM connector_tokens WHERE user_id = ?1 AND revoked_at IS NULL`
+  )
+    .bind(userId)
+    .first();
+  if ((existing?.held || 0) >= MAX_CONNECTORS) {
+    return fail(env, "That is as many connectors as one notebook may have. Turn one off first.");
+  }
+
+  const secret = newConnectorSecret();
+  const timestamp = now();
+  const id = newId();
+
+  await env.DB.prepare(
+    `INSERT INTO connector_tokens (id, user_id, token_hash, label, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5)`
+  )
+    .bind(id, userId, await hashSecret(secret), label, timestamp)
+    .run();
+
+  // Built from the address this very request arrived on, so it is by definition one the
+  // AI app can reach — staging and production each produce their own without config.
+  const url = `${new URL(request.url).origin}/mcp/${secret}`;
+  return json(env, { id, url, label, created_at: timestamp }, 201);
+}
+
+/** Turns one off. Kept as a row, so "I turned that off on the 3rd" stays answerable. */
+async function revokeConnector(env, userId, connectorId) {
+  const result = await env.DB.prepare(
+    `UPDATE connector_tokens SET revoked_at = ?1
+     WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL`
+  )
+    .bind(now(), connectorId, userId)
+    .run();
+
+  if (!result.meta.changes) return fail(env, "No such connector.", 404);
+  return json(env, { ok: true });
+}
+
 // ---------------------------------------------------------------- the learning loop (D29)
 
 /**
@@ -990,6 +1058,13 @@ export default {
     }
 
     try {
+      // The connector (D29). Outside /v1 and before the check below, because this is not
+      // our app calling: it is the user's AI app, speaking MCP, authenticated by the
+      // secret in the address itself rather than by a Firebase token.
+      if (segments[0] === "mcp" && segments[1]) {
+        return await handleMcp(request, env, segments[1]);
+      }
+
       if (segments[0] !== "v1") return fail(env, "Not found.", 404);
 
       // Every handler call below is `return await`, not `return`. A bare `return` hands
@@ -1049,6 +1124,12 @@ export default {
         if (segments[3] === "learning" && request.method === "POST") {
           return await saveLearning(request, env, userId, segments[2]);
         }
+      }
+      if (segments[1] === "connector" && !segments[2] && request.method === "POST") {
+        return await createConnector(request, env, userId);
+      }
+      if (segments[1] === "connector" && segments[2] && request.method === "DELETE") {
+        return await revokeConnector(env, userId, segments[2]);
       }
       if (segments[1] === "topics" && segments[2] === "sort" && request.method === "POST") {
         return await sortOldClips(request, env, userId);

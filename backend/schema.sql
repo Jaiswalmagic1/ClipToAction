@@ -192,3 +192,23 @@ CREATE TABLE IF NOT EXISTS learnings (
 
 CREATE INDEX IF NOT EXISTS idx_learnings_sync ON learnings (user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_learnings_clip ON learnings (clip_id);
+
+-- The address a user gives their AI app so it can read their notebook itself (D29).
+--
+-- Only the HASH is stored. The secret is shown once, when it is made, and never again by
+-- any endpoint — this row recognises a secret that is presented, it cannot recover one.
+-- The secret is the whole of the authentication and it travels inside a URL pasted into
+-- someone else's app, so a database storing it in the clear would hand over every
+-- notebook at once.
+CREATE TABLE IF NOT EXISTS connector_tokens (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL,               -- SHA-256 of the secret, hex
+  label        TEXT,                        -- which app it was made for, in their words
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,                     -- so a forgotten connector is visible as one
+  revoked_at   INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_tokens_hash ON connector_tokens (token_hash);
+CREATE INDEX IF NOT EXISTS idx_connector_tokens_user ON connector_tokens (user_id);
