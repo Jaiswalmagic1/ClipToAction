@@ -238,6 +238,21 @@ const titleOf = (row) =>
   (row.summary ? row.summary.split(/(?<=[.!?])\s/)[0] : "").slice(0, 90)
   || `${row.platform || "Saved"} clip`;
 
+// Dates the connector hands to an AI app are India time, the same as the app shows.
+// These used to be plain UTC, which runs 5:30 behind: anything saved between midnight and
+// 5:30am India time was reported as the previous day, so the AI would talk about a reel
+// saved last night as if it were the day before. India has no daylight saving, so shifting
+// the moment by a fixed offset and reading the clock off it is exact, not an approximation.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+/** The India calendar day of a moment, as YYYY-MM-DD. */
+const istDate = (milliseconds) =>
+  new Date(Number(milliseconds) + IST_OFFSET_MS).toISOString().slice(0, 10);
+
+/** The full moment in India time, offset spelled out so no reader has to guess the zone. */
+const istStamp = (milliseconds) =>
+  `${new Date(Number(milliseconds) + IST_OFFSET_MS).toISOString().slice(0, 19)}+05:30`;
+
 /**
  * Every clip of one user's, with the text that can be searched already joined on.
  *
@@ -336,7 +351,7 @@ async function runFetch(env, userId, args) {
   const { notes, learnings } = await notesAndLearnings(env, userId);
   const lines = [];
 
-  lines.push(`Saved on ${new Date(clip.created_at).toISOString().slice(0, 10)}.`);
+  lines.push(`Saved on ${istDate(clip.created_at)}.`);
   if (clip.topic) {
     lines.push(`Filed under: ${clip.topic}${clip.sub_topic ? ` › ${clip.sub_topic}` : ""}`);
   }
@@ -364,7 +379,7 @@ async function runFetch(env, userId, args) {
   if (worked.length) {
     lines.push("", "WHAT THEY HAVE ALREADY WORKED OUT:");
     for (const learning of worked) {
-      const when = new Date(learning.created_at).toISOString().slice(0, 10);
+      const when = istDate(learning.created_at);
       lines.push(`(${when}${learning.learned_with ? `, with ${learning.learned_with}` : ""})`);
       for (const item of jsonList(learning.learned)) lines.push(`- learned: ${item}`);
       for (const entry of jsonList(learning.verdicts)) {
@@ -395,7 +410,7 @@ async function runFetch(env, userId, args) {
     url: clip.url_original || "",
     text: lines.join("\n"),
     metadata: {
-      saved_at: new Date(clip.created_at).toISOString(),
+      saved_at: istStamp(clip.created_at),
       status: clip.status || "",
       topic: clip.topic || "",
       sub_topic: clip.sub_topic || ""
