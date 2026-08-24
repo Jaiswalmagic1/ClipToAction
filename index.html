@@ -365,7 +365,8 @@
     }
 
     function renderCard(idea) {
-      const date = new Date(idea.createdAt).toLocaleDateString();
+      // India time, always — the same zone the notebook and the connector report in.
+      const date = new Date(idea.createdAt).toLocaleDateString([], { timeZone: "Asia/Kolkata" });
       const href = safeHref(idea.url);
       const link = href ? `<p><a href="${href}" target="_blank" rel="noreferrer">Open video</a></p>` : "";
       // The id goes in a data attribute read by the delegated listener below, never

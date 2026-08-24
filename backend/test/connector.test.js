@@ -332,6 +332,27 @@ describe("reading the notebook", () => {
     assert.ok(found.metadata.saved_at, "when it was saved travels with it");
   });
 
+  // UTC runs 5:30 behind India, so a reel saved in the small hours used to come back to
+  // the AI dated to the previous day. 19:00 UTC on the 15th IS 00:30 on the 16th in India,
+  // and 00:30 on the 16th is what the person who saved it remembers.
+  test("a reel saved after midnight India time is dated that day, not the day before", async () => {
+    const original = amysClip.created_at;
+    const justAfterMidnightIst = Date.UTC(2026, 2, 15, 19, 0, 0);
+    harness.database
+      .prepare("UPDATE clips SET created_at = ? WHERE id = ?")
+      .run(justAfterMidnightIst, amysClip.id);
+
+    try {
+      const found = structured(await callTool(amysSecret, "fetch", { id: amysClip.id }));
+      assert.match(found.text, /Saved on 2026-03-16\./);
+      assert.equal(found.metadata.saved_at, "2026-03-16T00:30:00+05:30");
+    } finally {
+      harness.database
+        .prepare("UPDATE clips SET created_at = ? WHERE id = ?")
+        .run(original, amysClip.id);
+    }
+  });
+
   test("the answer comes back in both shapes, because clients differ on which they read", async () => {
     const response = await callTool(amysSecret, "search", { query: "keyword" });
     const result = response.body.result;

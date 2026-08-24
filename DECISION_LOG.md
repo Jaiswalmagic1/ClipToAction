@@ -784,3 +784,40 @@ this reverses in one line — and the modern code is all still there and still t
 **What must be true before it is put back:** a real client, not our own tests, completing
 `server/discover` → `tools/list` → `tools/call` and showing the tools to a person.
 
+
+---
+
+### D31 — Every time this product shows is India time, whatever the device says
+**Date:** 2026-08-24
+**Options considered:** (a) show every date and time in India time, always;
+(b) keep using each device's own zone and fix only the connector, which was formatting in
+UTC; (c) store a zone per user and show each person their own.
+**Decided:** (a). `Asia/Kolkata`, fixed, everywhere a person or an AI reads a time.
+
+**Why.** There were two different clocks running. The app formatted with no zone at all, so
+it followed whatever the phone or laptop was set to — the same reel carried a different
+date depending on where it was opened. The connector was worse: it formatted in UTC, which
+runs 5:30 behind India, so anything saved between midnight and 5:30am was handed to the AI
+dated to the previous day. The AI would then discuss a reel saved last night as if it were
+from the day before.
+
+Option (c) is the correct answer for a product with users in several countries, and this
+project is not that yet. Everybody using it is in India, and a per-user zone means a
+setting, a place to store it, and a migration — for a difference nobody can currently
+observe. It stays available: the zone is one constant in each of the three files, so
+turning it into a stored value later is a small change, not a rewrite.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `app.html` | Every date and clock formats with `timeZone: "Asia/Kolkata"`, and "Today"/"Yesterday" now count whole India calendar days instead of 24-hour blocks — so 1am reads as today, not yesterday |
+| `backend/src/mcp.js` | The dates the connector hands an AI app are India dates, and `saved_at` carries `+05:30` rather than pretending to be UTC |
+| `index.html` | The old page's date formats the same way, so the two never disagree |
+
+**Stored times did not change.** Everything is still a plain moment in time — the same
+number of milliseconds, no zone baked in. Only what is displayed moved. That is what keeps
+(c) cheap if it is ever wanted.
+
+**Pinned by a test.** `connector.test.js` — a clip saved at 19:00 UTC on the 15th is
+reported as saved on the 16th, because in India it was 00:30 on the 16th.

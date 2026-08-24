@@ -607,6 +607,17 @@ function searchText(clip) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+// Every time this product shows is India time, whatever zone the device is set to. Left
+// to the device, the same reel carried a different date for a user who travelled, and the
+// connector was worse again — it formatted in UTC, 5:30 behind, so anything saved in the
+// small hours came back dated to the day before. India is one fixed zone at UTC+5:30 with
+// no daylight saving, so the offset is a constant, not a calculation.
+const IST_ZONE = "Asia/Kolkata";
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+/** Which calendar day a moment falls on in India, so "Today" means today here. */
+const istDay = (milliseconds) => Math.floor((milliseconds + IST_OFFSET_MS) / 86400000);
+
 /**
  * A stored moment as a person would say it. Needed here because "which app, and when" is
  * one of the seven things a learning holds (D29) — a learning with no date is exactly the
@@ -615,10 +626,12 @@ function searchText(clip) {
 function whenText(milliseconds) {
   if (!milliseconds) return "";
   const then = new Date(milliseconds);
-  const days = Math.floor((Date.now() - milliseconds) / 86400000);
-  if (days <= 0) return `Today, ${then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-  if (days === 1) return `Yesterday, ${then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-  return then.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+  // Counted in whole India days, not 24-hour blocks: 1am is "today", not "yesterday".
+  const days = istDay(Date.now()) - istDay(milliseconds);
+  const clock = { timeZone: IST_ZONE, hour: "numeric", minute: "2-digit" };
+  if (days <= 0) return `Today, ${then.toLocaleTimeString([], clock)}`;
+  if (days === 1) return `Yesterday, ${then.toLocaleTimeString([], clock)}`;
+  return then.toLocaleDateString([], { timeZone: IST_ZONE, day: "numeric", month: "short", year: "numeric" });
 }
 
 /**
@@ -635,8 +648,8 @@ function savedText(milliseconds) {
 function exactWhen(milliseconds) {
   if (!milliseconds) return "";
   const then = new Date(milliseconds);
-  const date = then.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
-  const time = then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const date = then.toLocaleDateString([], { timeZone: IST_ZONE, day: "numeric", month: "long", year: "numeric" });
+  const time = then.toLocaleTimeString([], { timeZone: IST_ZONE, hour: "numeric", minute: "2-digit" });
   return `Saved on ${date} at ${time}`;
 }
 
