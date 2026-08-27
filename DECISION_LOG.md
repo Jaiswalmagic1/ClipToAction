@@ -821,3 +821,48 @@ number of milliseconds, no zone baked in. Only what is displayed moved. That is 
 
 **Pinned by a test.** `connector.test.js` — a clip saved at 19:00 UTC on the 15th is
 reported as saved on the 16th, because in India it was 00:30 on the 16th.
+
+---
+
+### D32 — Dark mode follows the device, until the person says otherwise
+**Date:** 2026-08-27
+**Options considered:** (a) a switch in the header, and follow the phone or laptop until it
+is used; (b) follow the phone or laptop only, with no switch at all; (c) a setting on the
+Settings page.
+**Decided:** (a).
+
+**Why.** (b) is the smallest change and it is wrong for this app. A notebook is read at
+night, in bed, after the phone has already been put in dark mode for the night — and it is
+also read in daylight on the same phone, where the person may still want the darker page
+because it is easier on their eyes. Tying it to the device takes the choice away.
+
+(c) buries it. The moment somebody wants dark mode is the moment they are looking at a page
+that is too bright, and a switch two screens away is a switch they will not find. It goes
+in the header, next to the page they are complaining about.
+
+So there are three states and only two are stored: **dark** and **light** are the person's
+own choice and are remembered in the browser; **nothing stored** means follow the device,
+and keeps following it as the device changes through the day. An explicit choice always
+beats the device — somebody who picks light on a dark phone gets light.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `app.html` — the style block | Every colour in the file is now a variable. There were 30-odd colours written straight into rules — header, pills, notices, chips, input backgrounds — and each one would have stayed light forever. The dark values are written once, in one block. |
+| `app.html` — `:root` | `color-scheme` is declared for both. Without it the scrollbars, dropdowns and the on-screen keyboard stay light on a dark page, and Chrome force-darkens the light page itself. |
+| `app.html` — `<head>` | A plain script, not the module, so it runs **before the page is painted**. A module is deferred, and a deferred theme is a white flash on every load for a dark-mode user. |
+| `app.html` — the header | The signed-in details and the new switch share one box, so the header stays two columns whether or not somebody is signed in. |
+| `<meta name="theme-color">` | Moves with the theme, so the phone's status bar matches the page instead of staying navy over a dark page. |
+
+**The one thing that is deliberately not stored on the server.** The choice lives in the
+browser, not in the user's account, so it does not sync between their phone and their
+laptop. That is the right default — the device the page is being read on is exactly what
+this is about — and it costs nothing to revisit. It also means every read and write is
+wrapped: a private window and a browser set to block site data both throw, and the page
+falls back to following the device rather than breaking.
+
+**Not pinned by a test.** This is colour and a stored preference, not the analysis
+contract, canonicalisation, or auth — the three things `CLAUDE.md` requires a test for. It
+was proven in a browser instead: light on a dark device, dark on a light device, the choice
+surviving a reload, and the switch, its label, and the status-bar colour all moving together.
