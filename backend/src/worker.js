@@ -14,7 +14,9 @@
 import { verifyFirebaseToken, encryptSecret, tokensMatch, AuthError } from "./auth.js";
 import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "./canonical.js";
 import {
-  ANALYSIS_PROMPT,
+  promptFor,
+  tidyTranscript,
+  isLong,
   analyzeSource,
   parseAnalysis,
   proposeTopic,
@@ -65,6 +67,20 @@ const LIMITS = {
   url: 2000,
   transcript: 200000
 };
+
+// A long video's analysis is a bigger object than a reel's, and the reel's ceilings would
+// reject a good one. Applied only when the video is actually long, so nothing a reel
+// produces is judged by a looser rule than it is today (D33).
+const LONG_LIMITS = {
+  summary: 24000,
+  item: 2000,
+  items: 200,
+  sections: 24
+};
+
+function limitsFor(durationSec) {
+  return isLong(durationSec) ? { ...LIMITS, ...LONG_LIMITS } : LIMITS;
+}
 
 function corsHeaders(env) {
   return {
@@ -481,6 +497,10 @@ async function storeTranscript(request, env, sourceId) {
   if (!text) return fail(env, "Transcript text is required.");
   if (text.length > LIMITS.transcript) return fail(env, "That transcript is too long.");
 
+  // The length decides which of the two prompts this gets, so it has to be known here.
+  // The worker sends it; anything already on the row is the fallback for a re-post.
+  const durationSec = Number(body.duration_sec || 0) || (await durationOf(env, sourceId));
+
   const timestamp = now();
   await env.DB.batch([
     env.DB.prepare(
@@ -503,7 +523,7 @@ async function storeTranscript(request, env, sourceId) {
   // with everyone else who saved it. If nobody has one, the source stays at 'transcribed'
   // and the app offers the copy-paste tier instead — that is not a failure.
   try {
-    const analysis = await analyzeSource(env, sourceId, text);
+    const analysis = await analyzeSource(env, sourceId, text, null, durationSec);
     if (analysis) {
       const problems = await storeAnalysis(
         env,
@@ -511,7 +531,8 @@ async function storeTranscript(request, env, sourceId) {
         SHARED,
         analysis.payload,
         analysis.provider,
-        analysis.model
+        analysis.model,
+        durationSec
       );
       if (problems.length) throw new AnalysisError("the AI's reply was malformed");
     }
@@ -528,19 +549,42 @@ async function storeTranscript(request, env, sourceId) {
   }
 }
 
-export function validateAnalysis(payload) {
+/** How long this video is, from the row. 0 when it was never reported (D33). */
+async function durationOf(env, sourceId) {
+  const row = await env.DB.prepare(`SELECT duration_sec FROM sources WHERE id = ?1`)
+    .bind(sourceId)
+    .first();
+  return Number(row?.duration_sec || 0);
+}
+
+export function validateAnalysis(payload, durationSec = 0) {
   const problems = [];
+  const limits = limitsFor(durationSec);
 
   const summary = String(payload?.summary || "").trim();
   if (!summary) problems.push("summary");
-  else if (summary.length > LIMITS.summary) problems.push("summary is too long");
+  else if (summary.length > limits.summary) problems.push("summary is too long");
 
   for (const field of ["key_points", "learn_more", "claims"]) {
     const value = payload?.[field];
     if (!Array.isArray(value)) problems.push(field);
-    else if (value.length > LIMITS.items) problems.push(`${field} has too many items`);
-    else if (value.some((item) => JSON.stringify(item ?? "").length > LIMITS.item)) {
+    else if (value.length > limits.items) problems.push(`${field} has too many items`);
+    else if (value.some((item) => JSON.stringify(item ?? "").length > limits.item)) {
       problems.push(`${field} has an item that is too long`);
+    }
+  }
+
+  // Chapters are optional in exactly the way a topic is (D27): a long video that came back
+  // without them is a summary worth keeping, not a broken reply. Only a wrong *type* is a
+  // problem. A short reel is never asked for them, and one that volunteers them is still
+  // checked rather than trusted.
+  const sections = payload?.sections;
+  if (sections !== null && sections !== undefined) {
+    if (!Array.isArray(sections)) problems.push("sections");
+    else if (sections.length > (limits.sections || LONG_LIMITS.sections)) {
+      problems.push("sections has too many items");
+    } else if (sections.some((item) => JSON.stringify(item ?? "").length > limits.item)) {
+      problems.push("sections has an item that is too long");
     }
   }
 
@@ -562,8 +606,8 @@ export function validateAnalysis(payload) {
  * paste is stored against that user so it can never overwrite what others read.
  * Returns an array of problems; empty means it was stored.
  */
-async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
-  const problems = validateAnalysis(payload);
+async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, durationSec = 0) {
+  const problems = validateAnalysis(payload, durationSec);
   if (problems.length) return problems;
 
   const timestamp = now();
@@ -571,11 +615,12 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
     env.DB.prepare(
       `INSERT INTO analyses
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
-          suggested_task, topic, sub_topic, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+          suggested_task, topic, sub_topic, sections, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
-         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, created_at = ?12`
+         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, sections = ?12,
+         created_at = ?13`
     ).bind(
       sourceId,
       ownerId,
@@ -588,6 +633,11 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
       payload.suggested_task || null,
       cleanTopicName(payload.topic) || null,
       cleanTopicName(payload.sub_topic) || null,
+      // Null rather than "[]" when there are none, so a reel's row is exactly what it was
+      // before chapters existed and the app can tell "no chapters" from "none found".
+      Array.isArray(payload.sections) && payload.sections.length
+        ? JSON.stringify(payload.sections)
+        : null,
       timestamp
     )
   ];
@@ -655,15 +705,19 @@ async function storeFailure(request, env, sourceId) {
 
 async function buildPrompt(env, userId, clipId) {
   const row = await env.DB.prepare(
-    `SELECT t.text FROM clips c
+    `SELECT t.text, s.duration_sec FROM clips c
      JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
      WHERE c.id = ?1 AND c.user_id = ?2`
   )
     .bind(clipId, userId)
     .first();
 
   if (!row) return fail(env, "No transcript yet for this clip.", 404);
-  return json(env, { prompt: ANALYSIS_PROMPT + row.text });
+  // The same prompt the Worker would have used, and the same tidied transcript. What a
+  // person pastes into a free chat AI has to be what a connected key would have sent, or
+  // the two tiers quietly produce different answers for the same reel (D9).
+  return json(env, { prompt: promptFor(row.duration_sec) + tidyTranscript(row.text) });
 }
 
 /**
@@ -680,8 +734,9 @@ async function buildPrompt(env, userId, clipId) {
  */
 async function summariseOnDemand(request, env, userId, clipId) {
   const row = await env.DB.prepare(
-    `SELECT c.source_id, t.text FROM clips c
+    `SELECT c.source_id, t.text, s.duration_sec FROM clips c
      JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
      WHERE c.id = ?1 AND c.user_id = ?2`
   )
     .bind(clipId, userId)
@@ -696,7 +751,13 @@ async function summariseOnDemand(request, env, userId, clipId) {
   if (already) return json(env, { ok: true, already: true });
 
   try {
-    const analysis = await analyzeSource(env, row.source_id, row.text, userId);
+    const analysis = await analyzeSource(
+      env,
+      row.source_id,
+      row.text,
+      userId,
+      row.duration_sec
+    );
     if (!analysis) {
       return fail(env, "Connect an AI account in Settings first, or use copy and paste.");
     }
@@ -707,7 +768,8 @@ async function summariseOnDemand(request, env, userId, clipId) {
       SHARED,
       analysis.payload,
       analysis.provider,
-      analysis.model
+      analysis.model,
+      row.duration_sec
     );
     if (problems.length) throw new AnalysisError("the AI's reply was malformed");
     return json(env, { ok: true });
@@ -725,8 +787,9 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   // A paste is only meaningful against a transcript this user can already see, which also
   // stops anyone pasting an analysis for a reel that has not been downloaded yet.
   const clip = await env.DB.prepare(
-    `SELECT c.source_id FROM clips c
+    `SELECT c.source_id, s.duration_sec FROM clips c
      JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
      WHERE c.id = ?1 AND c.user_id = ?2`
   )
     .bind(clipId, userId)
@@ -751,7 +814,8 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
     userId,
     payload,
     "manual",
-    body.model || null
+    body.model || null,
+    clip.duration_sec
   );
   if (problems.length) {
     return fail(env, `The analysis is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);

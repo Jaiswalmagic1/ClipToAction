@@ -73,5 +73,104 @@ class TranscriptionSettings(unittest.TestCase):
         )
 
 
+def load_functions(*names):
+    """Compiles just these functions out of worker.py, with no whisper and no .env.
+
+    The module cannot be imported -- it loads a model and exits without a live API_BASE --
+    but these are pure functions, so lifting their definitions out of the parsed source and
+    running them is the real code, not a copy of it.
+    """
+    wanted = [
+        node
+        for node in SOURCE.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    namespace = {"MARK_EVERY_SEC": default_of("MARK_EVERY_SEC") or 30}
+    module = ast.Module(body=wanted, type_ignores=[])
+    exec(compile(ast.fix_missing_locations(module), "worker.py", "exec"), namespace)
+    return namespace
+
+
+class Segment:
+    """Stands in for one of faster-whisper's segments: a start time and some words."""
+
+    def __init__(self, start, text):
+        self.start = start
+        self.text = text
+
+
+class LongVideoSettings(unittest.TestCase):
+    """The 30-minute ceiling is gone and long videos carry times now (D33)."""
+
+    def test_the_ceiling_allows_a_real_talk(self):
+        limit = int(default_of("MAX_DURATION_SEC"))
+        self.assertGreaterEqual(
+            limit,
+            7200,
+            "MAX_DURATION_SEC below two hours refuses the talks this was built for (D33)",
+        )
+
+    def test_the_ceiling_is_still_a_ceiling(self):
+        """Removing it entirely is not the fix. A machine tied up for six hours strands
+        every reel behind it, and the refusal is what makes that visible."""
+        limit = int(default_of("MAX_DURATION_SEC"))
+        self.assertLessEqual(limit, 4 * 3600, "there must still be a real limit (D33)")
+
+    def test_only_a_long_video_gets_times_written_into_it(self):
+        """A reel's transcript must come back exactly as it always has -- one block of
+        speech, no markers. Everything already stored was made that way."""
+        source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "if duration_sec > LONG_VIDEO_SEC:",
+            source,
+            "marking must be conditional, or every reel's transcript changes shape",
+        )
+
+    def test_the_length_actually_reaches_transcribe(self):
+        """The condition above is dead code if the caller never passes the duration."""
+        source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "transcribe(audio_path, duration)",
+            source,
+            "process() must hand transcribe() the duration it just measured",
+        )
+
+
+class TimeMarkers(unittest.TestCase):
+    def setUp(self):
+        self.fns = load_functions("clock", "mark_times")
+
+    def test_the_clock_reads_the_way_a_player_shows_it(self):
+        clock = self.fns["clock"]
+        self.assertEqual(clock(0), "0:00:00")
+        self.assertEqual(clock(72), "0:01:12")
+        self.assertEqual(clock(3723), "1:02:03")
+
+    def test_a_mark_lands_every_half_minute_at_most(self):
+        segments = [Segment(t, f"line at {t}") for t in (0, 10, 20, 31, 40, 62)]
+        marked = self.fns["mark_times"](segments)
+        self.assertEqual(marked.count("["), 3, "one at 0, one past 30, one past 60")
+        self.assertIn("[0:00:00]", marked)
+        self.assertIn("[0:00:31]", marked)
+        self.assertIn("[0:01:02]", marked)
+
+    def test_a_mark_never_lands_inside_a_sentence(self):
+        segments = [Segment(0, "The price"), Segment(45, "is fixed.")]
+        marked = self.fns["mark_times"](segments)
+        self.assertEqual(marked, "[0:00:00] The price [0:00:45] is fixed.")
+
+    def test_a_long_silence_does_not_produce_a_run_of_markers(self):
+        """Counting the next mark from the clock rather than from the segment that was
+        actually marked gives [0:00:30] [0:01:00] [0:01:30] all in a row after a pause."""
+        segments = [Segment(0, "before"), Segment(600, "after")]
+        marked = self.fns["mark_times"](segments)
+        self.assertEqual(marked, "[0:00:00] before [0:10:00] after")
+
+    def test_empty_segments_are_skipped_rather_than_marked(self):
+        segments = [Segment(0, "words"), Segment(31, "   "), Segment(62, "more words")]
+        marked = self.fns["mark_times"](segments)
+        self.assertEqual(marked, "[0:00:00] words [0:01:02] more words")
+
+
 if __name__ == "__main__":
     unittest.main()

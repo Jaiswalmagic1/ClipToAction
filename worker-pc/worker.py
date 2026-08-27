@@ -32,7 +32,14 @@ SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "3"))
-MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "1800"))
+# 3 hours. Long enough for the talks and interviews people actually save, and still a
+# real ceiling -- past this the machine is tied up for hours and everything else queues
+# behind it, so it is refused out loud rather than accepted and left to rot.
+MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "10800"))
+# Past this, a video stops being a reel and starts being something you come back to. It
+# gets times written into the transcript so there is a way back into the video.
+LONG_VIDEO_SEC = int(os.getenv("LONG_VIDEO_SEC", "600"))
+MARK_EVERY_SEC = 30
 MEDIA_DIR = Path(__file__).parent / "media"
 
 if not API_BASE or not SERVICE_TOKEN:
@@ -133,16 +140,50 @@ def download_audio(source):
     return audio_path, info.get("title"), duration
 
 
-def transcribe(audio_path):
+def clock(seconds):
+    """Seconds as h:mm:ss -- the same shape the video player shows, so it can be typed in."""
+    total = int(seconds)
+    return f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def mark_times(segments):
+    """Writes [h:mm:ss] into the speech every half minute, never mid-sentence.
+
+    The mark goes before a segment, never inside one, so a sentence is never cut in half
+    by a timestamp. The next mark is counted from the segment that was actually marked
+    rather than from the clock, so a long silence does not come back as a run of markers
+    catching up with each other.
+    """
+    parts = []
+    next_mark = 0.0
+    for segment in segments:
+        piece = segment.text.strip()
+        if not piece:
+            continue
+        if segment.start >= next_mark:
+            parts.append(f"[{clock(segment.start)}]")
+            next_mark = segment.start + MARK_EVERY_SEC
+        parts.append(piece)
+    return " ".join(parts).strip()
+
+
+def transcribe(audio_path, duration_sec=0):
     """Always task="translate" -- the transcript comes back in English whatever was spoken.
 
     Asked to write Hindi down in Hindi, whisper produces broken Devanagari on the
     Hinglish these reels are actually in, and everything downstream inherits it (D28).
     Same audio, same model, translate instead: clean English, and far quicker, because
     a failing decode is retried at rising temperatures before it gives up.
+
+    A reel comes back exactly as it always has: one block of speech, no markers. Only a
+    long video gets times written into it -- on an hour of talk, a point with no time
+    against it cannot be found again, which is most of the reason for saving it.
     """
     segments, info = model.transcribe(str(audio_path), task="translate", vad_filter=True)
-    text = " ".join(segment.text.strip() for segment in segments).strip()
+    if duration_sec > LONG_VIDEO_SEC:
+        text = mark_times(segments)
+    else:
+        text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text:
         raise ValueError("No speech found in this video.")
     return text, info.language
@@ -195,7 +236,7 @@ def process(source):
     print(f"- {source['platform']}: {source['url_canonical']}")
     try:
         audio_path, title, duration = download_audio(source)
-        text, lang = transcribe(audio_path)
+        text, lang = transcribe(audio_path, duration)
         post_transcript(source["id"], text, lang, title, duration)
         print(f"  transcribed {len(text)} chars ({lang})")
     # Deliberately broad: a whisper RuntimeError or an OSError killing the loop would

@@ -866,3 +866,85 @@ falls back to following the device rather than breaking.
 contract, canonicalisation, or auth — the three things `CLAUDE.md` requires a test for. It
 was proven in a browser instead: light on a dark device, dark on a light device, the choice
 surviving a reload, and the switch, its label, and the status-bar colour all moving together.
+
+---
+
+### D33 — A long video gets a different question, not just a bigger allowance
+**Date:** 2026-08-27
+**Options considered:** (a) raise `MAX_DURATION_SEC` and change nothing else;
+(b) break a long transcript into pieces, summarise each, then summarise the summaries;
+(c) keep one prompt but ask for chapters when the video is long, and let the length choose
+between two prompts.
+**Decided:** (c), with the ceiling raised to 3 hours.
+
+**Why not (a).** It is one line and it produces something worse than the refusal it
+replaces. The prompt says "a **short** social-media video" and asks for a 3-4 sentence
+summary. Pointed at a ninety-minute interview that is not a short answer, it is a useless
+one — and the person is left believing the video was handled.
+
+**Why not (b).** Chunking is the standard answer and it is not needed here, which took
+measuring rather than assuming. Ninety minutes of speech is about 70,000 characters, well
+inside what every provider in `OPENAI_COMPATIBLE`, Gemini and Anthropic take in one
+request; the 200,000-character ceiling on a stored transcript is about four and a half
+hours, so it is not the binding constraint either. What chunking would have cost is the
+thing the feature exists for: summarising before analysing throws away the detail, and the
+detail is the point. It stays available if a six-hour video ever has to be handled.
+
+**Why the second prompt is the first one plus a field.** Three things already read this
+shape — the app, the connector an AI app uses (D29), and topic filing (D27). A different
+shape for long videos would have meant changing all three and keeping two paths alive in
+each. The long prompt asks for every field the short one does, in the same names, and adds
+`sections`. Everything downstream carries on not knowing this happened, and gains chapters
+when they are there.
+
+**What "long" means, and why the unknown is short.** Over ten minutes, decided in one place
+(`isLong`). Instagram reports no duration at all, so a great many real reels arrive with
+nothing — those count as short. Guessing "long" on a missing number would send every
+Instagram reel the wrong prompt and ask for chapters of a sixty-second clip.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `worker-pc/worker.py` | Ceiling 30 min → 3 hours. Over `LONG_VIDEO_SEC` the transcript carries `[h:mm:ss]` every half minute; a reel's is one block of speech exactly as before |
+| `backend/src/analyze.js` | `LONG_ANALYSIS_PROMPT`, `promptFor`, `isLong`, `tidyTranscript`, and a larger output budget for a chaptered reply |
+| `backend/src/worker.js` | Limits and validation take the length; `sections` stored; both the automatic run and the copy-paste tier pick the prompt by length |
+| `backend/migrations/0006_long_video_sections.sql` | One nullable column on `analyses` |
+| `app.html` | "What happens when" — the chapters, with the time on each |
+
+**The times are the reason this is worth building.** Without them a long video's summary is
+something to read instead of the video. With them it is a way back into it: the point is at
+0:41:12 and can be found. That is why the markers are in the transcript rather than a
+separate table — the AI is told to copy a time it can see, never to invent one, and a
+marker it cannot see is a time it will make up.
+
+**Why the output budget moved too, and this is not cosmetic.** 24 chapters of a few
+sentences each, on top of everything the short reply already carries, does not fit in 4096
+tokens. A cut-off reply is not a shorter analysis — it is unparseable JSON, which reaches
+the person as "the AI's reply was not in the expected format" with no clue why. Long
+replies get 16384.
+
+**The tidying is deliberately timid.** It removes hesitation noises and whisper's own
+stutter and nothing else — perhaps a tenth of the text, not the 80% the reel that prompted
+it claims for shell output. Shell output is machine noise; a transcript is a person
+talking, and almost all of it means something. It runs on the way to the AI only: what is
+stored is word for word what was said, and there is a test that says so. The first
+implementation used a back-reference to find repeated sentences, passed every correctness
+test, and then took longer than the analysis itself on an hour of speech — it walks the
+sentences now, and a test pins that.
+
+**The cost, stated plainly.** A three-hour video holds the one PC for the best part of an
+hour and every reel shared meanwhile waits behind it. That is a real regression in
+responsiveness for a queue of one machine, accepted knowingly, and it is documented in
+`worker-pc/README.md` rather than left to be discovered. It is also another reason the
+open "get the work off the PC" question matters.
+
+**Not carried to the connector yet.** `backend/src/mcp.js` names its columns, so an AI app
+reading the notebook gets the summary and the points but not the chapters. Deliberately
+left: that file is live on `main` and shipping a fortnight ago, and touching it was not in
+what was agreed.
+
+**Pinned by tests.** 30 new ones in `backend/test/long-video.test.js` and 9 in
+`worker-pc/test_worker.py`, including the three that matter most: a reel gets the old
+prompt and stores a row with no chapters, the stored transcript is never the tidied one,
+and the copy-paste tier is handed exactly what a connected key would have sent.

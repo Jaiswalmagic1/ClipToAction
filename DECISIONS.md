@@ -52,6 +52,7 @@ The reel is a seed, not the destination.
 | D30 | Connector handshake | The connector refuses `server/discover` with a plain 400, so a dual-era client falls back to `initialize` — the only path a real client is known to complete. Measured against Claude, not argued. Amends D29. |
 | D31 | Time zone | Every date and time the app or the connector shows is India time (`Asia/Kolkata`), not the device's zone and not UTC. Stored moments are unchanged — only what is displayed. A per-user zone is deliberately deferred. |
 | D32 | Dark mode | Follows the phone or laptop until the person uses the switch in the header; after that their choice wins and is remembered on that device. Every colour is a variable, so the dark palette is written once. |
+| D33 | Long videos | The ceiling is 3 hours, and over 10 minutes the video gets a different question, not just a bigger allowance: times written into the transcript and chapters asked for. The long shape is the short shape plus one field, so nothing downstream had to change. |
 
 ---
 
@@ -93,7 +94,7 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | 160 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved — whether the app can tell the PC worker is running, the connector that lets an AI app read and write the notebook (both handshake versions, that saved keys are never stored in plain text, that one user can never see another's notebook, and that what the AI learns gets written back), and that every time shows in India time (D31). Plus 3 in `worker-pc`, `python -m unittest discover -p "test_*.py"`, guarding the transcription settings (D28) |
+| Test suite | 190 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved — whether the app can tell the PC worker is running, the connector that lets an AI app read and write the notebook (both handshake versions, that saved keys are never stored in plain text, that one user can never see another's notebook, and that what the AI learns gets written back), and that every time shows in India time (D31), and long videos end to end (D33) -- that a reel is left exactly as it was, that the tidied transcript is never the stored one, and that both AI tiers are handed the same prompt. Plus 12 in `worker-pc`, `python -m unittest discover -p "test_*.py"`, guarding the transcription settings (D28) |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |

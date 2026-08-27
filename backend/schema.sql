@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS analyses (
   suggested_task TEXT,
   topic         TEXT,                      -- D27: proposed by the AI from the reel alone,
   sub_topic     TEXT,                      -- so one analysis still serves everyone (D10)
+  sections      TEXT,                      -- D33: JSON [{at, heading, detail}] for a long
+                                           -- video. NULL for a reel, which is never asked
+                                           -- for chapters, and for a long one that came
+                                           -- back without them
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (source_id, user_id)
 );

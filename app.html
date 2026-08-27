@@ -233,6 +233,17 @@
     details { margin: 10px 0; }
     summary { cursor: pointer; font-weight: 700; font-size: 14px; }
     .transcript { white-space: pre-wrap; font-size: 14px; color: var(--body-soft); margin-top: 8px; }
+    .chapter { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; font-size: 14px; }
+    .chapter .at {
+      display: inline-block;
+      background: var(--chip-bg);
+      color: var(--chip-text);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 12px;
+      margin-right: 6px;
+      font-variant-numeric: tabular-nums;
+    }
     .claim { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; font-size: 14px; }
     .claim.low { border-left-color: var(--danger); }
     .claim.medium { border-left-color: var(--warn); }
@@ -1543,6 +1554,39 @@ function renderClip(clipId) {
     const summary = document.createElement("p");
     summary.textContent = analysis.summary;
     panel.append(summaryHeading, summary);
+
+    // Only a long video has these, and they go straight after the summary — on an hour of
+    // talk this is the part somebody actually reads, and the way back into the video.
+    const sections = jsonList(analysis.sections);
+    if (sections.length) {
+      const chaptersHeading = document.createElement("h3");
+      chaptersHeading.textContent = "What happens when";
+      panel.append(chaptersHeading);
+      for (const entry of sections) {
+        const block = document.createElement("div");
+        block.className = "chapter";
+        const heading = document.createElement("div");
+        const at = String(entry.at || "").trim();
+        if (at) {
+          const stamp = document.createElement("span");
+          stamp.className = "at";
+          stamp.textContent = at;
+          heading.append(stamp);
+        }
+        const name = document.createElement("strong");
+        name.textContent = String(entry.heading || "");
+        heading.append(name);
+        block.append(heading);
+        const detail = String(entry.detail || "").trim();
+        if (detail) {
+          const line = document.createElement("div");
+          line.className = "muted";
+          line.textContent = detail;
+          block.append(line);
+        }
+        panel.append(block);
+      }
+    }
 
     const points = jsonList(analysis.key_points);
     if (points.length) {
