@@ -20,13 +20,18 @@ import {
   analyzeSource,
   parseAnalysis,
   proposeTopic,
+  cleanKind,
+  cleanItems,
+  itemKey,
+  ITEM_STATUSES,
   AnalysisError
 } from "./analyze.js";
 import {
   cleanTopicName,
   fileClipIntoTopic,
   fileSourceForAllSavers,
-  setClipTopicByHand
+  setClipTopicByHand,
+  tidyTopics
 } from "./topics.js";
 import {
   buildLearningPrompt,
@@ -238,13 +243,14 @@ async function deltaSync(request, env, userId) {
       .bind(userId, since)
       .all();
 
-  const [clips, notes, questions, topics, tasks, learnings] = await Promise.all([
+  const [clips, notes, questions, topics, tasks, learnings, itemStatus] = await Promise.all([
     scoped("clips"),
     scoped("notes"),
     scoped("questions"),
     scoped("topics"),
     scoped("tasks"),
-    scoped("learnings")
+    scoped("learnings"),
+    scoped("item_status")
   ]);
 
   // Shared rows are pivoted on the joining clip, not on their own timestamp. A reel
@@ -326,6 +332,7 @@ async function deltaSync(request, env, userId) {
     topics: topics.results,
     tasks: tasks.results,
     learnings: learnings.results,
+    item_status: itemStatus.results,
     sources: sources.results,
     transcripts: transcripts.results,
     analyses: analyses.results
@@ -513,7 +520,8 @@ async function storeTranscript(request, env, sourceId) {
       // come back late, and without this it would overwrite a newer transcript.
       `UPDATE sources
        SET state = 'transcribed', title = COALESCE(?1, title),
-           duration_sec = COALESCE(?2, duration_sec), error = NULL, claimed_at = NULL,
+           duration_sec = COALESCE(?2, duration_sec), error = NULL, error_detail = NULL,
+           claimed_at = NULL,
            updated_at = ?3
        WHERE id = ?4 AND state = 'downloading'`
     ).bind(body.title || null, body.duration_sec || null, timestamp, sourceId)
@@ -534,19 +542,34 @@ async function storeTranscript(request, env, sourceId) {
         analysis.model,
         durationSec
       );
-      if (problems.length) throw new AnalysisError("the AI's reply was malformed");
+      if (problems.length) throw new AnalysisError(...malformed(problems));
     }
     return json(env, { ok: true, analyzed: Boolean(analysis) });
   } catch (error) {
     // sources.error is read by every user who saved this reel, so it carries a fixed
     // classification — never a provider's response body, which can contain a fragment of
     // the key that failed and the account it belongs to.
+    //
+    // sources.error_detail is the HTTP status and a name from a fixed list in analyze.js,
+    // and can carry nothing else — see safeDetail there. It is the difference between
+    // knowing what went wrong next time and guessing at it (Golden Rule 1).
     const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
-    await env.DB.prepare(`UPDATE sources SET error = ?1, updated_at = ?2 WHERE id = ?3`)
-      .bind(`Analysis failed: ${reason}`, now(), sourceId)
+    const detail = error instanceof AnalysisError ? error.detail : null;
+    await env.DB.prepare(
+      `UPDATE sources SET error = ?1, error_detail = ?2, updated_at = ?3 WHERE id = ?4`
+    )
+      .bind(`Analysis failed: ${reason}`, detail, now(), sourceId)
       .run();
-    return json(env, { ok: true, analyzed: false, analysis_error: reason });
+    return json(env, { ok: true, analyzed: false, analysis_error: reason, detail });
   }
+}
+
+/**
+ * The arguments for an AnalysisError about our own validation, not the provider's.
+ * The field names are this file's own words, so nothing a provider wrote travels.
+ */
+function malformed(problems) {
+  return ["the AI's reply was malformed", `200 malformed:${problems.join(",")}`.slice(0, 120)];
 }
 
 /** How long this video is, from the row. 0 when it was never reported (D33). */
@@ -588,6 +611,24 @@ export function validateAnalysis(payload, durationSec = 0) {
     }
   }
 
+  // A kind of the wrong TYPE is a malformed reply; a kind that is simply not one of the
+  // five is not. cleanKind turns that into null and the video sits outside the trackers,
+  // which is visible, rather than a good summary being thrown away over one word.
+  if (payload?.kind !== null && payload?.kind !== undefined && typeof payload.kind !== "string") {
+    problems.push("kind");
+  }
+
+  // Same rule as sections: optional, and only a wrong type or an unreasonable size is a
+  // problem. cleanItems drops rows belonging to a kind that has no row shape.
+  const items = payload?.items;
+  if (items !== null && items !== undefined) {
+    if (!Array.isArray(items)) problems.push("items");
+    else if (items.length > limits.items) problems.push("items has too many items");
+    else if (items.some((item) => JSON.stringify(item ?? "").length > limits.item)) {
+      problems.push("items has an item that is too long");
+    }
+  }
+
   // Optional, like suggested_task. A missing topic is not a broken analysis — it leaves
   // the clip unfiled, which the app shows and offers to sort, rather than throwing away a
   // good summary over a field the model happened to skip. A topic of the wrong *type*
@@ -611,16 +652,23 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   if (problems.length) return problems;
 
   const timestamp = now();
+  // What sort of video this is, and the rows that sort of video carries (D34). Both are
+  // null for anything that named no kind, which is every analysis stored before today —
+  // so an old row and a new one that tracks nothing are indistinguishable, and nothing
+  // has to be backfilled.
+  const kind = cleanKind(payload.kind);
+  const rows = cleanItems(kind, payload.items);
+
   const statements = [
     env.DB.prepare(
       `INSERT INTO analyses
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
-          suggested_task, topic, sub_topic, sections, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+          suggested_task, topic, sub_topic, sections, kind, items, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
          claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, sections = ?12,
-         created_at = ?13`
+         kind = ?13, items = ?14, created_at = ?15`
     ).bind(
       sourceId,
       ownerId,
@@ -638,6 +686,8 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
       Array.isArray(payload.sections) && payload.sections.length
         ? JSON.stringify(payload.sections)
         : null,
+      kind,
+      rows && rows.length ? JSON.stringify(rows) : null,
       timestamp
     )
   ];
@@ -647,7 +697,8 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   if (ownerId === SHARED) {
     statements.push(
       env.DB.prepare(
-        `UPDATE sources SET state = 'analyzed', error = NULL, claimed_at = NULL, updated_at = ?1
+        `UPDATE sources SET state = 'analyzed', error = NULL, error_detail = NULL,
+             claimed_at = NULL, updated_at = ?1
          WHERE id = ?2`
       ).bind(timestamp, sourceId)
     );
@@ -692,7 +743,7 @@ async function storeFailure(request, env, sourceId) {
   const result = await env.DB.prepare(
     `UPDATE sources
      SET state = CASE WHEN attempts >= ?4 THEN 'failed' ELSE 'pending' END,
-         error = ?1, claimed_at = NULL, updated_at = ?2
+         error = ?1, error_detail = NULL, claimed_at = NULL, updated_at = ?2
      WHERE id = ?3 AND state = 'downloading'`
   )
     .bind(message, now(), sourceId, MAX_ATTEMPTS)
@@ -771,7 +822,7 @@ async function summariseOnDemand(request, env, userId, clipId) {
       analysis.model,
       row.duration_sec
     );
-    if (problems.length) throw new AnalysisError("the AI's reply was malformed");
+    if (problems.length) throw new AnalysisError(...malformed(problems));
     return json(env, { ok: true });
   } catch (error) {
     // Unlike the automatic run, nothing is written to `sources.error` here. That column is
@@ -779,7 +830,8 @@ async function summariseOnDemand(request, env, userId, clipId) {
     // about the reel. The person who pressed the button is watching, so the reason goes
     // back to them and nowhere else.
     const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
-    return fail(env, `Could not summarise it: ${reason}`);
+    const detail = error instanceof AnalysisError ? error.detail : null;
+    return json(env, { error: `Could not summarise it: ${reason}`, detail }, 400);
   }
 }
 
@@ -992,6 +1044,63 @@ async function saveLearning(request, env, userId, clipId) {
 }
 
 /**
+ * What the user has decided about one row of a product or tool tracker (D34).
+ *
+ * Keyed to the clip, like every other per-user write, so ownership is checked the same
+ * way. An empty status clears the decision — a soft delete, so delta sync carries the
+ * clearing to their other devices instead of the row silently reappearing.
+ */
+async function setItemStatus(request, env, userId, clipId) {
+  const body = await readJson(request);
+  const key = itemKey(body.name);
+  if (!key) return fail(env, "That row has no name to remember it by.");
+
+  const status = String(body.status || "").trim().toLowerCase();
+  if (status && !ITEM_STATUSES.includes(status)) return fail(env, "Unknown status.");
+
+  const clip = await env.DB.prepare(
+    `SELECT source_id FROM clips WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!clip) return fail(env, "Clip not found.", 404);
+
+  const timestamp = now();
+  await env.DB.prepare(
+    `INSERT INTO item_status
+       (id, user_id, source_id, item_key, status, created_at, updated_at, deleted_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+     ON CONFLICT (user_id, source_id, item_key) DO UPDATE SET
+       status = ?5, updated_at = ?6, deleted_at = ?7`
+  )
+    .bind(
+      newId(),
+      userId,
+      clip.source_id,
+      key,
+      status || "want",
+      timestamp,
+      status ? null : timestamp
+    )
+    .run();
+
+  return json(env, { ok: true, item_key: key, status: status || null });
+}
+
+/**
+ * "Tidy my folders" — folds together the top-level topics that are the same broad
+ * subject under different names, and moves their clips across.
+ *
+ * Costs nothing and calls nobody: the rule is the one every new clip is already filed by,
+ * applied to what a notebook accumulated before it existed. Safe to press twice — the
+ * second press finds nothing left to do.
+ */
+async function tidyMyTopics(env, userId) {
+  const result = await tidyTopics(env, userId, now());
+  return json(env, { ok: true, ...result });
+}
+
+/**
  * "Sort my old clips" (D27) — for the clips summarised before topics existed.
  *
  * Two kinds get sorted. One is a reel somebody else has since had named, where the name
@@ -1188,6 +1297,9 @@ export default {
         if (segments[3] === "learning" && request.method === "POST") {
           return await saveLearning(request, env, userId, segments[2]);
         }
+        if (segments[3] === "item" && request.method === "PUT") {
+          return await setItemStatus(request, env, userId, segments[2]);
+        }
       }
       if (segments[1] === "connector" && !segments[2] && request.method === "POST") {
         return await createConnector(request, env, userId);
@@ -1197,6 +1309,9 @@ export default {
       }
       if (segments[1] === "topics" && segments[2] === "sort" && request.method === "POST") {
         return await sortOldClips(request, env, userId);
+      }
+      if (segments[1] === "topics" && segments[2] === "tidy" && request.method === "POST") {
+        return await tidyMyTopics(env, userId);
       }
 
       return fail(env, "Not found.", 404);

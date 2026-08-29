@@ -4,7 +4,7 @@ Running list of what is settled and what is still open. Updated every session.
 **Why each decision was made — options considered, factors weighed — is in
 [DECISION_LOG.md](DECISION_LOG.md).** That file is binding; this one is its index.
 
-Last updated: 2026-08-27
+Last updated: 2026-08-30
 
 ---
 
@@ -53,6 +53,7 @@ The reel is a seed, not the destination.
 | D31 | Time zone | Every date and time the app or the connector shows is India time (`Asia/Kolkata`), not the device's zone and not UTC. Stored moments are unchanged — only what is displayed. A per-user zone is deliberately deferred. |
 | D32 | Dark mode | Follows the phone or laptop until the person uses the switch in the header; after that their choice wins and is remembered on that device. Every colour is a variable, so the dark palette is written once. |
 | D33 | Long videos | The ceiling is 3 hours, and over 10 minutes the video gets a different question, not just a bigger allowance: times written into the transcript and chapters asked for. The long shape is the short shape plus one field, so nothing downstream had to change. |
+| D34 | Kinds and trackers | Each video is labelled with what KIND it is, and a product or tool video also comes back as rows you can sort and tick off. Top-level folders now merge instead of multiplying. A failed analysis stores a reason code, and a one-off is retried once. |
 
 ---
 

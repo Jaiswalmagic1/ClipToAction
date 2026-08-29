@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS sources (
   duration_sec  INTEGER,
   state         TEXT NOT NULL,             -- pending | downloading | transcribed | analyzed | failed
   error         TEXT,                      -- surfaced in the UI, never swallowed
+  -- Why, in a form that cannot carry a key: the HTTP status and a name from a fixed list
+  -- in src/analyze.js, or "unrecognised". `error` stays the sentence people read; this is
+  -- what makes a failure diagnosable instead of guessable (D34).
+  error_detail  TEXT,
   attempts      INTEGER NOT NULL DEFAULT 0,
   claimed_at    INTEGER,                   -- lease: a claim older than the timeout is retryable
   created_at    INTEGER NOT NULL,
@@ -66,6 +70,12 @@ CREATE TABLE IF NOT EXISTS analyses (
                                            -- video. NULL for a reel, which is never asked
                                            -- for chapters, and for a long one that came
                                            -- back without them
+  kind          TEXT,                      -- D34: product | tool | tactic | opinion |
+                                           -- other. NULL where none was named
+  items         TEXT,                      -- D34: JSON rows, only for 'product' and
+                                           -- 'tool'. NULL, never '[]', so a row written
+                                           -- before kinds existed is indistinguishable
+                                           -- from one that tracks nothing
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (source_id, user_id)
 );
@@ -196,6 +206,27 @@ CREATE TABLE IF NOT EXISTS learnings (
 
 CREATE INDEX IF NOT EXISTS idx_learnings_sync ON learnings (user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_learnings_clip ON learnings (clip_id);
+
+-- The user's own decision about one row of a product or tool tracker (D34). Per-user,
+-- because "I ordered this" is the one part of a tracker that is about the person rather
+-- than the video (D10, D18).
+--
+-- Keyed by item_key -- the row's name flattened -- and never by its position in the list.
+-- A re-run analysis returns the rows in a different order, and a position would then move
+-- somebody's "ordered" onto a different product.
+CREATE TABLE IF NOT EXISTS item_status (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  source_id  TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+  item_key   TEXT NOT NULL,                 -- the row's name, flattened for matching
+  status     TEXT NOT NULL,                 -- want | doing | done | no
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  UNIQUE (user_id, source_id, item_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_status_sync ON item_status (user_id, updated_at);
 
 -- The address a user gives their AI app so it can read their notebook itself (D29).
 --

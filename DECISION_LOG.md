@@ -948,3 +948,135 @@ what was agreed.
 `worker-pc/test_worker.py`, including the three that matter most: a reel gets the old
 prompt and stores a row with no chapters, the stored transcript is never the tidied one,
 and the copy-paste tier is handed exactly what a connected key would have sent.
+
+### D34 — Different kinds of video get organised differently, and a failure says why
+**Date:** 2026-08-30
+**Raised by:** Jaiswal, after living in the staging notebook. Three things at once:
+product videos arriving as prose instead of a tracker; an error appearing on some videos;
+and "how else can it be organised so the data is used properly".
+**Grounded in the real notebook, not in theory.** 86 analysed videos on staging: 28 about
+a tool or a code project, 26 carrying a price, roughly 20 selling tactics, the rest
+opinion. Every one of them was getting the same seven boxes.
+
+**Options considered:** (a) leave the shape alone and build the trackers by parsing prose
+out of `key_points`; (b) a separate analysis shape per kind; (c) one new label — what kind
+of video this is — plus one extra block whose shape depends on it.
+**Decided:** (c), which is D33's move again. The new shape is the old shape plus fields.
+
+**Why not (a).** The facts are not in the text in a reliable form. "6-piece hook set priced
+at Rs. 22, capable of holding 1-2 kg" is one sentence with four facts in it, and a parser
+that pulls them out is a parser that gets them wrong on the next video. The AI already has
+the transcript; asking it for the fields is free and asking a regular expression for them
+is not.
+**Why not (b).** Three things read the analysis — the app, the connector (D29) and topic
+filing (D27). A shape per kind means every one of them grows a branch per kind. D33 settled
+this argument already.
+
+**Only two kinds carry rows, and that is deliberate.** `product` and `tool`. A tactic's
+steps are already what `key_points` is for, and an opinion's substance is already what
+`claims` is for — a second, emptier home for them would be a worse notebook. `other` is an
+honest answer the AI is told to reach for, and a video filed there behaves exactly as every
+video behaved before any of this existed.
+
+**Storage.** `analyses.kind` and `analyses.items`, both nullable, both shared like the rest
+of the analysis (D10) — what a video said about a product is a fact about the video.
+`items` is NULL and never `'[]'` when there is nothing, so a row written today that tracks
+nothing is indistinguishable from one written last week. Nothing is backfilled.
+
+**What the person decides is theirs, and is keyed by name.** `item_status` is per-user
+(D18) and carries `updated_at` (D6). It is keyed by the row's flattened name, never by its
+position in the list: re-running an analysis returns the rows in a different order, and a
+position would move somebody's "ordered" onto a different product.
+
+---
+
+**The filing was the bigger problem, and it was our own rule causing it.** 86 videos across
+45 topics. Seven top-level folders for AI (`AI tools`, `AI development`,
+`AI development tools`, `AI coding assistants`, `AI coding tools`, `AI Agents`,
+`artificial intelligence`) and nine for e-commerce. A folder per video is the same as no
+folders.
+
+**The cause is D27's own prompt line:** *"Name them from this video alone. You have not
+been shown anyone's existing topics."* That line is right and it stays. Showing the AI
+somebody's topic list would make the analysis personal to them, and one analysis serving
+everyone who saved the reel is the whole cost model (D10).
+
+**So the matching moved to where it always belonged** — per-user, at filing time, which is
+exactly where `topics.js` already does its work. Two names are the same broad subject when
+they share their first significant word, after a tiny fold of true spelling variants
+(`artificial intelligence` to `ai`, `e commerce` to `ecommerce`) and with head words that
+name no subject (`best`, `top`, `content`, `business`, `product`, `tool`…) refusing to
+anchor anything.
+
+**First word, and nothing cleverer.** D27 already says a topic is the broad subject and a
+sub-topic narrows it — and the broad subject is what a name leads with. Matching on shared
+words instead would put "product listings" and "product research" in one place.
+
+**Top level only.** Sub-topics are meant to be narrow, and are left completely alone. That
+line is what keeps "product research" and "product listings" apart while "AI tools" and
+"AI coding assistants" come together.
+
+**"Tidy my folders" is user-triggered, never automatic.** It moves clips between folders,
+and a notebook rearranging itself while nobody asked would be alarming. It costs nothing
+and calls no AI — it is the same rule, applied to what a notebook grew before the rule
+existed. Pressing it twice does nothing, which is what makes it safe to press. Clips the
+user filed by hand move too, because the folder they chose is going away, but keep
+`topic_set_by = 'user'` so the sort button still will not touch them (D27).
+
+---
+
+**The error, and why the fix is not a guess.** Three of 86 videos failed with
+*"Analysis failed: the AI provider refused the request"* — 27, 28 and 29 August, one a day,
+62s / 26s / 28s long, transcripts of 399 to 1,108 characters. Nothing in common, and far
+longer videos went through on the same days.
+
+**Nobody could say why, by design.** `classify()` maps any status that is not 401, 403, 429
+or 5xx to that one sentence and drops the provider's own reply. That is correct for the
+sentence — `sources.error` is read by everyone who saved the reel, and a rejection body can
+carry a fragment of the key that failed and the account it belongs to. But it left a real
+failure with no cause anyone could name, and **guessing at it is exactly what Golden Rule 1
+exists to stop.**
+
+**What is stored instead:** `sources.error_detail` — the HTTP status, and a name only if the
+provider sent one already on a fixed list in `analyze.js`. Anything else becomes
+`unrecognised`.
+
+**An allowlist and not a character filter, and this is the whole safety argument.** An API
+key is plain letters, digits, hyphen and underscore. A filter that permitted "safe
+characters" would pass `AIzaSyD-1234…` straight through into a shared row. Only a name
+already written down in this repo can ever be stored. The list was checked against
+Gemini's (ai.google.dev/gemini-api/docs/api-errors) and Anthropic's
+(platform.claude.com/docs/en/api/errors) own docs on 2026-08-29 (D13); the
+OpenAI-compatible names on it are marked in the source as not doc-verified, and nothing
+depends on them.
+
+**Retry once, and only where trying again could work.** Never 401, 402, 403, 413 or 429 —
+a rejected key stays rejected, a billing problem needs a person, and asking again after a
+rate limit is what the limit is there to stop. Everything else, including the unexplained
+400s and an unparseable reply, gets exactly one more go after a short pause. One-a-day
+failures with nothing in common are a passing blip, and a blip belongs retried, not shown
+to somebody as a video that cannot be summarised.
+
+**Two statuses came out of the "refused" bucket while we were in there.** 402 is now "the AI
+account has a billing problem" and 404 is "the provider does not have that model" — both
+documented, both things the person can act on, both previously indistinguishable from
+everything else.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `backend/src/analyze.js` | `KINDS`, `KIND_RULES` in both prompts, `cleanKind`, `cleanItems`, `itemKey`, `ITEM_STATUSES`, `safeDetail` + its allowlist, `withOneRetry`, 402/404 in `classify` |
+| `backend/src/topics.js` | `headKey`, `findByHead`, top-level reuse in `findOrCreateTopic`, `tidyTopics` |
+| `backend/src/worker.js` | `error_detail` written and cleared, `kind`/`items` validated and stored, `PUT /v1/clips/:id/item`, `POST /v1/topics/tidy`, `item_status` in delta sync |
+| `backend/src/mcp.js` | The rows handed to the AI app as named facts, so it can be asked which product is cheapest |
+| `backend/migrations/0007_kinds_items_and_error_detail.sql` | Two columns on `analyses`, one on `sources`, one new per-user table |
+| `app.html` | Products and Tools tracker views, the rows on a clip's own page, "Tidy my folders", the reason code in small print |
+| `.github/workflows/ci.yml` | `app.html` is syntax-checked now. It was not, and it is the app being built |
+
+**An address a video read out is shown as text and never as something to tap.** It came out
+of a stranger's video, and one press is too cheap a way to end up somewhere on their say-so.
+
+**Pinned by tests.** 46 new ones in `backend/test/organise.test.js`, including the three
+that matter most: a key-shaped string cannot get through `safeDetail`; the AI is still never
+shown anyone's topic list; and sub-topics are never merged by head word.

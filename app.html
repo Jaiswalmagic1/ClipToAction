@@ -230,6 +230,35 @@
     .notice.warn { background: var(--notice-warn-bg); color: var(--notice-warn-text); }
     ul.plain { margin: 6px 0; padding-left: 20px; }
     ul.plain li { margin: 5px 0; font-size: 14px; }
+    /* The trackers (D34). A table is the point of them — the whole complaint was that
+       three products with three prices arrived as a paragraph. It scrolls inside its own
+       box so a phone never ends up scrolling the page sideways. */
+    .tablewrap { overflow-x: auto; margin: 10px 0; }
+    table.tracker { border-collapse: collapse; width: 100%; font-size: 14px; }
+    table.tracker th, table.tracker td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    table.tracker td.wrap { white-space: normal; min-width: 200px; }
+    table.tracker th {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+    }
+    table.tracker th:hover { color: var(--heading); }
+    table.tracker tbody tr:hover { background: var(--chip-bg); }
+    table.tracker td.from { cursor: pointer; color: var(--muted); font-size: 13px; }
+    table.tracker td.from:hover { text-decoration: underline; }
+    table.tracker select { width: auto; min-width: 130px; padding: 5px 7px; font-size: 13px; margin: 0; }
+    tr.decided-no { opacity: .5; }
     details { margin: 10px 0; }
     summary { cursor: pointer; font-weight: 700; font-size: 14px; }
     .transcript { white-space: pre-wrap; font-size: 14px; color: var(--body-soft); margin-top: 8px; }
@@ -383,6 +412,8 @@
         <div class="filters" id="views">
           <button data-view="list" class="active">List</button>
           <button data-view="topics">By topic</button>
+          <button data-view="product">Products</button>
+          <button data-view="tool">Tools</button>
         </div>
         <div id="syncMsg"></div>
         <div id="clipList"></div>
@@ -585,14 +616,19 @@ if ("serviceWorker" in navigator) {
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
 const EMPTY = {
   since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
-  tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: []
+  tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: [],
+  item_status: []
 };
 let store = structuredClone(EMPTY);
 let user = null;
 let signedIn = false;
 let filter = "all";
 let query = "";
-let grouping = "list";   // "list" | "topics" — D22: a view over the list, never instead of it
+// "list" | "topics" | "product" | "tool" — D22: all of them are views OVER the list,
+// never instead of it. The list is what opens, and is always one press away.
+let grouping = "list";
+// Which column a tracker is sorted by, and which way (D34).
+let trackerSort = { column: "saved", ascending: false };
 
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
@@ -629,6 +665,7 @@ function applyDelta(delta) {
   store.topics = mergeRows(store.topics, delta.topics || [], byId);
   store.tasks = mergeRows(store.tasks, delta.tasks || [], byId);
   store.learnings = mergeRows(store.learnings, delta.learnings || [], byId);
+  store.item_status = mergeRows(store.item_status, delta.item_status || [], byId);
   store.sources = mergeRows(store.sources, delta.sources || [], byId);
   store.transcripts = mergeRows(store.transcripts, delta.transcripts || [], bySource);
   store.analyses = mergeRows(
@@ -922,6 +959,10 @@ function renderList() {
 
   $("clipList").innerHTML = "";
 
+  // New/Keeping/Done describe a clip, and a tracker's rows are the things inside clips.
+  // Leaving the chips on screen there would look like a filter that does nothing.
+  $("filters").hidden = grouping === "product" || grouping === "tool";
+
   const health = workerNotice();
   if (health) $("clipList").append(health);
 
@@ -962,6 +1003,14 @@ function renderList() {
     $("clipList").append(offer);
   }
 
+  // The trackers are not a filtered list of clips, they are a list of the ROWS inside
+  // them, so they answer to the search box and not to the New/Keeping/Done chips — those
+  // describe a clip, and one clip can hold three products.
+  if (grouping === "product" || grouping === "tool") {
+    renderTracker(grouping);
+    return;
+  }
+
   if (!wanted.length) {
     const empty = document.createElement("p");
     empty.className = "muted";
@@ -974,6 +1023,266 @@ function renderList() {
 
   if (grouping === "topics") renderByTopic(wanted);
   else for (const clip of wanted) $("clipList").append(clipCard(clip));
+}
+
+// ---------------------------------------------------------------- the trackers (D34)
+//
+// The complaint these exist to answer: a video listing three products at three prices in
+// one shop arrived as a paragraph and four bullets. Right words, wrong shape — it cannot
+// be sorted by price, and there is nowhere to tick one off as ordered.
+//
+// Only two kinds get a table, because only two carry facts worth sorting and ticking off.
+// A tactic's steps are already the main points; an opinion's substance is already its
+// claims.
+
+const TRACKERS = {
+  product: {
+    blank: "Nothing here yet. Save a video that shows things to buy or sell, and every "
+      + "item it names will appear here as its own row.",
+    columns: [
+      { key: "name", label: "Item", wrap: true },
+      { key: "cost", label: "Cost", numeric: true },
+      { key: "sell_price", label: "Sell for", numeric: true },
+      { key: "where", label: "Where", wrap: true },
+      { key: "min_order", label: "Min order" },
+      { key: "note", label: "Note", wrap: true }
+    ],
+    statuses: [
+      ["", "Not decided"],
+      ["want", "Want to source"],
+      ["doing", "Ordered"],
+      ["done", "Listed"],
+      ["no", "Rejected"]
+    ]
+  },
+  tool: {
+    blank: "Nothing here yet. Save a video about an app, a website or a code project, and "
+      + "it will appear here as its own row.",
+    columns: [
+      { key: "name", label: "Tool", wrap: true },
+      { key: "does", label: "What it does", wrap: true },
+      { key: "popularity", label: "How popular" },
+      { key: "price", label: "Free or paid" },
+      { key: "link", label: "Link", wrap: true },
+      { key: "install", label: "How to get it", wrap: true }
+    ],
+    statuses: [
+      ["", "Not decided"],
+      ["want", "Want to try"],
+      ["doing", "Trying it"],
+      ["done", "Using it"],
+      ["no", "Not for me"]
+    ]
+  }
+};
+
+/**
+ * The row's name, flattened for matching. Deliberately the same rule as itemKey in
+ * backend/src/analyze.js: the app has to name a row the way the server will name it, or a
+ * decision made here would be stored against something else.
+ */
+function itemKeyOf(name) {
+  return String(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 120);
+}
+
+/** What this person has already decided about one row, or "" if nothing. */
+function decisionOf(clip, name) {
+  const key = itemKeyOf(name);
+  const row = store.item_status.find(
+    (entry) => entry.source_id === clip.source_id && entry.item_key === key && !entry.deleted_at
+  );
+  return row ? row.status : "";
+}
+
+/** Every row of that kind across the whole notebook. */
+function trackerRows(kind) {
+  const rows = [];
+  for (const clip of store.clips) {
+    if (clip.deleted_at) continue;
+    const analysis = analysisOf(clip);
+    if (!analysis || analysis.kind !== kind) continue;
+    for (const item of jsonList(analysis.items)) {
+      if (!item || typeof item !== "object" || !item.name) continue;
+      rows.push({ clip, item, status: decisionOf(clip, item.name) });
+    }
+  }
+  return rows;
+}
+
+/** The first number in a value, so a column of prices written as they were said sorts. */
+function firstNumber(value) {
+  const found = String(value ?? "").replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+  return found ? Number(found[0]) : Number.POSITIVE_INFINITY;
+}
+
+function sortRows(rows, columns) {
+  const { column, ascending } = trackerSort;
+  const direction = ascending ? 1 : -1;
+  const spec = columns.find((one) => one.key === column);
+
+  return rows.slice().sort((a, b) => {
+    if (column === "saved") return direction * (a.clip.created_at - b.clip.created_at);
+    if (column === "status") return direction * String(a.status).localeCompare(String(b.status));
+    if (spec && spec.numeric) {
+      return direction * (firstNumber(a.item[column]) - firstNumber(b.item[column]));
+    }
+    return direction * String(a.item[column] ?? "").localeCompare(String(b.item[column] ?? ""));
+  });
+}
+
+function renderTracker(kind) {
+  const spec = TRACKERS[kind];
+  const host = $("clipList");
+
+  const rows = trackerRows(kind).filter((row) => {
+    if (!query) return true;
+    return `${JSON.stringify(row.item)} ${titleOf(row.clip)}`.toLowerCase().includes(query);
+  });
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = query ? "Nothing here matches." : spec.blank;
+    host.append(empty);
+    return;
+  }
+
+  const count = document.createElement("p");
+  count.className = "muted";
+  count.textContent = `${rows.length} ${rows.length === 1 ? "row" : "rows"}, gathered from `
+    + "every video you have saved. Tap a heading to sort by it.";
+  host.append(count);
+
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  const table = document.createElement("table");
+  table.className = "tracker";
+
+  const headRow = document.createElement("tr");
+  const headings = [
+    ...spec.columns,
+    { key: "status", label: "What I decided" },
+    { key: "saved", label: "From" }
+  ];
+  for (const heading of headings) {
+    const cell = document.createElement("th");
+    cell.textContent = trackerSort.column === heading.key
+      ? `${heading.label} ${trackerSort.ascending ? "↑" : "↓"}`
+      : heading.label;
+    cell.onclick = () => {
+      trackerSort = trackerSort.column === heading.key
+        ? { column: heading.key, ascending: !trackerSort.ascending }
+        : { column: heading.key, ascending: true };
+      renderList();
+    };
+    headRow.append(cell);
+  }
+  const thead = document.createElement("thead");
+  thead.append(headRow);
+  table.append(thead);
+
+  const body = document.createElement("tbody");
+  for (const row of sortRows(rows, spec.columns)) body.append(trackerRow(row, spec));
+  table.append(body);
+  wrap.append(table);
+  host.append(wrap);
+}
+
+/**
+ * One clip's own rows, on its own page. The same cells and the same dropdown as the
+ * tracker, minus the "From" column — you are already looking at where they came from —
+ * and minus sorting, because three rows do not need it.
+ */
+function trackerTable(items, spec, clip) {
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  const table = document.createElement("table");
+  table.className = "tracker";
+
+  const headRow = document.createElement("tr");
+  for (const heading of [...spec.columns, { label: "What I decided" }]) {
+    const cell = document.createElement("th");
+    cell.style.cursor = "default";
+    cell.textContent = heading.label;
+    headRow.append(cell);
+  }
+  const thead = document.createElement("thead");
+  thead.append(headRow);
+  table.append(thead);
+
+  const body = document.createElement("tbody");
+  for (const item of items) {
+    if (!item || typeof item !== "object" || !item.name) continue;
+    body.append(
+      trackerRow({ clip, item, status: decisionOf(clip, item.name) }, spec, { withSource: false })
+    );
+  }
+  table.append(body);
+  wrap.append(table);
+  return wrap;
+}
+
+function trackerRow(row, spec, { withSource = true } = {}) {
+  const line = document.createElement("tr");
+  if (row.status === "no") line.className = "decided-no";
+
+  for (const column of spec.columns) {
+    const cell = document.createElement("td");
+    if (column.wrap) cell.className = "wrap";
+    const value = row.item[column.key];
+
+    // An address the video read out is shown as text and never as something to tap. It
+    // came out of somebody else's video, and nothing here should send a person to a
+    // stranger's address on one press.
+    cell.textContent = value === null || value === undefined || value === ""
+      ? "—"
+      : String(value);
+    line.append(cell);
+  }
+
+  const decision = document.createElement("td");
+  const select = document.createElement("select");
+  for (const [value, label] of spec.statuses) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === row.status;
+    select.append(option);
+  }
+  select.onchange = () => setItemDecision(row, select);
+  decision.append(select);
+  line.append(decision);
+
+  if (withSource) {
+    const from = document.createElement("td");
+    from.className = "from";
+    from.textContent = titleOf(row.clip).slice(0, 40);
+    from.onclick = () => { location.hash = `#/clip/${row.clip.id}`; };
+    line.append(from);
+  }
+
+  return line;
+}
+
+async function setItemDecision(row, select) {
+  const chosen = select.value;
+  select.disabled = true;
+  try {
+    await api(`/v1/clips/${row.clip.id}/item`, {
+      method: "PUT",
+      body: JSON.stringify({ name: row.item.name, status: chosen })
+    });
+    await sync();
+    // render(), not renderList(): the same dropdown appears on a clip's own page, and
+    // that page must not be replaced by the notebook when somebody uses it.
+    render();
+  } catch (error) {
+    // The two pages this can be used from have different places to put a message. A
+    // failure with nowhere to appear is a silent failure (Golden Rule 29).
+    say($("clipMsg") ? "clipMsg" : "syncMsg", `Could not save that: ${error.message}`);
+    select.value = row.status;
+    select.disabled = false;
+  }
 }
 
 /** One clip's card. Both views draw this same one, so they can never drift apart. */
@@ -1034,6 +1343,24 @@ function clipCard(clip, { showTopic = true } = {}) {
  */
 function renderByTopic(wanted) {
   const host = $("clipList");
+
+  // Offered here because this is the only screen where a person can see the problem: the
+  // AI names a topic from each video alone (D27), so one subject grows a folder per name
+  // it was ever given. Whether there is anything to merge is decided by the server, which
+  // owns that rule — asking the same question twice in two places is how two answers
+  // start to disagree.
+  const tidy = document.createElement("div");
+  tidy.className = "notice";
+  tidy.append(document.createTextNode(
+    "Folders that mean the same thing can be put together — “AI tools” and "
+    + "“AI development” are one subject, not two. "
+  ));
+  const tidyButton = document.createElement("button");
+  tidyButton.textContent = "Tidy my folders";
+  tidyButton.style.marginTop = "8px";
+  tidyButton.onclick = () => tidyFolders(tidyButton);
+  tidy.append(document.createElement("br"), tidyButton);
+  host.append(tidy);
   const groups = new Map();   // parent topic id -> Map(sub-topic name -> clips)
   const unfiled = [];
 
@@ -1085,6 +1412,30 @@ function renderByTopic(wanted) {
  * has looked at, named or not, so a clip it cannot place leaves the queue instead of being
  * asked about for ever.
  */
+/**
+ * "Tidy my folders" (D34). Costs nothing and calls no AI — it applies the rule every new
+ * clip is already filed by to the folders a notebook grew before that rule existed.
+ * Pressing it again does nothing, which is what makes it safe to press.
+ */
+async function tidyFolders(button) {
+  button.disabled = true;
+  button.textContent = "Tidying…";
+  try {
+    const result = await api("/v1/topics/tidy", { method: "POST" });
+    await sync();
+    say("syncMsg", result.merged
+      ? `Put ${result.merged} ${result.merged === 1 ? "folder" : "folders"} together, and `
+        + `moved ${result.moved} ${result.moved === 1 ? "clip" : "clips"} across.`
+      : "Nothing to tidy — your folders are already as tight as this can make them.", "ok");
+    renderList();
+  } catch (error) {
+    say("syncMsg", error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Tidy my folders";
+  }
+}
+
 async function sortOldClips(button) {
   button.disabled = true;
   button.textContent = "Sorting…";
@@ -1500,6 +1851,16 @@ function renderClip(clipId) {
   saved.textContent = exactWhen(clip.created_at);
   panel.append(saved);
 
+  // The reason code, in small print, only when something actually went wrong (D34). It
+  // means nothing to read and it is not meant to — it is the thing to quote when asking
+  // why, instead of everyone guessing from one sentence that fits every failure.
+  if (source?.error_detail) {
+    const detail = document.createElement("p");
+    detail.className = "muted";
+    detail.textContent = `Reason code: ${source.error_detail}`;
+    panel.append(detail);
+  }
+
   if (source?.url_original) {
     const link = document.createElement("p");
     const anchor = document.createElement("a");
@@ -1586,6 +1947,19 @@ function renderClip(clipId) {
         }
         panel.append(block);
       }
+    }
+
+    // The rows this video carries, if it carries any (D34). Shown here as well as in the
+    // tracker so that the video and what was taken out of it sit on one page — and so a
+    // decision can be made while reading it, rather than only from a table elsewhere.
+    const rows = jsonList(analysis.items);
+    const rowSpec = TRACKERS[analysis.kind];
+    if (rows.length && rowSpec) {
+      const rowsHeading = document.createElement("h3");
+      rowsHeading.textContent = analysis.kind === "product"
+        ? "What it showed, one by one"
+        : "What it introduced";
+      panel.append(rowsHeading, trackerTable(rows, rowSpec, clip));
     }
 
     const points = jsonList(analysis.key_points);

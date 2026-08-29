@@ -72,6 +72,74 @@ export function normaliseTopicName(raw) {
     .join(" ");
 }
 
+// Two spellings of one subject that no amount of case-and-plural flattening will ever
+// bring together, because they are different words. Kept deliberately tiny: this is a
+// list of spellings, not a thesaurus. A synonym list would never end, and every entry in
+// it is a decision made on somebody else's behalf about what their notebook means.
+const PHRASE_FOLDS = [
+  [/\bartificial intelligence\b/g, "ai"],
+  [/\be commerce\b/g, "ecommerce"],
+  [/\becom\b/g, "ecommerce"]
+];
+
+// Head words that name no subject, so two topics sharing one are not the same topic.
+// "Content creation" and "content marketing" are two subjects; "AI tools" and "AI agents"
+// are one.
+const GENERIC_HEADS = new Set([
+  "best", "top", "new", "free", "how", "online", "digital", "small", "my", "complete",
+  "ultimate", "simple", "easy", "quick", "modern", "advanced", "basic", "general",
+  "business", "content", "product", "tool", "tip", "guide", "tutorial", "strategy",
+  "idea", "hack", "trick", "thing", "way", "step"
+]);
+
+/**
+ * The one word a top-level topic is about, or "" when it has no such word.
+ *
+ * This is what stops a notebook growing a folder per video. Left to itself the AI names
+ * the subject afresh every time — "AI tools", "AI development", "AI development tools",
+ * "AI coding assistants", "AI agents" and "artificial intelligence" all arrived as
+ * separate top-level folders in one real notebook, which is the same as having no folders
+ * at all.
+ *
+ * Deliberately the FIRST word and nothing cleverer. A top-level topic is the broad
+ * subject by D27's own definition, and the broad subject is what the name leads with:
+ * everything after it narrows. Matching on shared words instead would put "product
+ * listings" and "product research" in one place, which is wrong — but those are
+ * sub-topics, and this is never applied to a sub-topic.
+ */
+export function headKey(nameKey) {
+  let text = String(nameKey ?? "");
+  for (const [pattern, replacement] of PHRASE_FOLDS) text = text.replace(pattern, replacement);
+  const head = text.trim().split(" ")[0] || "";
+  return GENERIC_HEADS.has(head) ? "" : head;
+}
+
+/**
+ * This user's existing top-level topic about the same broad subject, or null.
+ *
+ * Reads their top-level topics and compares in JS rather than in SQL, for the same reason
+ * name_key is computed in JS: two implementations of these rules would drift apart, and
+ * SQLite cannot express them anyway. A person has tens of top-level topics, not thousands.
+ *
+ * The oldest wins, so the answer does not change from one call to the next, and a topic
+ * the user deleted is not resurrected by this route — only an exact name match does that,
+ * which is the existing rule.
+ */
+async function findByHead(env, userId, nameKey) {
+  const head = headKey(nameKey);
+  if (!head) return null;
+
+  const rows = await env.DB.prepare(
+    `SELECT id, name_key FROM topics
+     WHERE user_id = ?1 AND parent_id = '' AND deleted_at IS NULL
+     ORDER BY created_at`
+  )
+    .bind(userId)
+    .all();
+
+  return rows.results.find((row) => headKey(row.name_key) === head) || null;
+}
+
 /**
  * Finds this user's topic of that name, or makes it. `parentId` is "" for a top-level
  * topic — never null, because SQLite treats NULLs as distinct in the unique index and two
@@ -100,6 +168,13 @@ async function findOrCreateTopic(env, userId, parentId, rawName, timestamp, newI
         .run();
     }
     return existing.id;
+  }
+
+  // Only at the top level. Sub-topics are meant to be narrow and are left alone — see
+  // headKey above.
+  if (parentId === "") {
+    const sameSubject = await findByHead(env, userId, key);
+    if (sameSubject) return sameSubject.id;
   }
 
   await env.DB.prepare(
@@ -185,6 +260,103 @@ export async function fileSourceForAllSavers(env, sourceId, proposed, timestamp,
     }
   }
   return filed;
+}
+
+/**
+ * Merges the top-level topics this notebook already has, using the same rule new ones are
+ * filed by. For a notebook that filled up before that rule existed — 86 videos across 45
+ * folders, seven of them different names for "AI".
+ *
+ * User-triggered, never automatic. It moves clips between folders, and a notebook
+ * rearranging itself while nobody asked would be alarming rather than helpful.
+ *
+ * Nothing is deleted outright: an emptied topic is soft-deleted like any other, so it
+ * travels through delta sync and is recoverable in the database. Clips the user filed by
+ * hand move too — their topic is going away — but keep `topic_set_by = 'user'`, so the
+ * sort button still will not touch them afterwards (D27).
+ *
+ * Returns { merged, moved }: how many topics were folded away, and how many clips moved.
+ */
+export async function tidyTopics(env, userId, timestamp) {
+  const tops = await env.DB.prepare(
+    `SELECT id, name_key FROM topics
+     WHERE user_id = ?1 AND parent_id = '' AND deleted_at IS NULL
+     ORDER BY created_at`
+  )
+    .bind(userId)
+    .all();
+
+  const groups = new Map();
+  for (const topic of tops.results) {
+    const head = headKey(topic.name_key);
+    if (!head) continue;
+    if (!groups.has(head)) groups.set(head, []);
+    groups.get(head).push(topic);
+  }
+
+  let merged = 0;
+  let moved = 0;
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const [keeper, ...rest] = group;
+
+    for (const doomed of rest) {
+      const children = await env.DB.prepare(
+        `SELECT id, name_key FROM topics
+         WHERE user_id = ?1 AND parent_id = ?2 AND deleted_at IS NULL`
+      )
+        .bind(userId, doomed.id)
+        .all();
+
+      for (const child of children.results) {
+        // The keeper may already have a sub-topic of that name, and the unique index on
+        // (user_id, parent_id, name_key) would refuse the move. Where it does, the two
+        // sub-topics are the same subject: the clips go to the one that stays.
+        const clash = await env.DB.prepare(
+          `SELECT id FROM topics
+           WHERE user_id = ?1 AND parent_id = ?2 AND name_key = ?3 AND deleted_at IS NULL`
+        )
+          .bind(userId, keeper.id, child.name_key)
+          .first();
+
+        if (clash) {
+          moved += await moveClips(env, userId, child.id, clash.id, timestamp);
+          await env.DB.prepare(
+            `UPDATE topics SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2`
+          )
+            .bind(timestamp, child.id)
+            .run();
+          merged += 1;
+        } else {
+          await env.DB.prepare(
+            `UPDATE topics SET parent_id = ?1, updated_at = ?2 WHERE id = ?3`
+          )
+            .bind(keeper.id, timestamp, child.id)
+            .run();
+        }
+      }
+
+      moved += await moveClips(env, userId, doomed.id, keeper.id, timestamp);
+      await env.DB.prepare(`UPDATE topics SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2`)
+        .bind(timestamp, doomed.id)
+        .run();
+      merged += 1;
+    }
+  }
+
+  return { merged, moved };
+}
+
+/** Points every clip filed under `fromId` at `toId`. Returns how many moved. */
+async function moveClips(env, userId, fromId, toId, timestamp) {
+  const result = await env.DB.prepare(
+    `UPDATE clips SET topic_id = ?1, updated_at = ?2
+     WHERE user_id = ?3 AND topic_id = ?4 AND deleted_at IS NULL`
+  )
+    .bind(toId, timestamp, userId, fromId)
+    .run();
+  return result.meta.changes || 0;
 }
 
 /**
