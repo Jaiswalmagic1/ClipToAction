@@ -1130,9 +1130,39 @@ function sortRows(rows, columns) {
   });
 }
 
+/** Clips that were summarised before kinds existed, so are in no tracker yet. */
+const unkindedClips = () =>
+  store.clips.filter((clip) => {
+    if (clip.deleted_at) return false;
+    const analysis = analysisOf(clip);
+    return analysis && analysis.summary && !analysis.kind;
+  });
+
 function renderTracker(kind) {
   const spec = TRACKERS[kind];
   const host = $("clipList");
+
+  // A tracker holding four rows out of a notebook of eighty-six is a demonstration, not a
+  // feature. Offered as a press rather than done automatically: it runs on their own AI
+  // allowance, and spending it without being asked looks like the app breaking.
+  const older = unkindedClips();
+  if (older.length) {
+    const offer = document.createElement("div");
+    offer.className = "notice";
+    offer.style.background = "var(--pill-topic-bg)";
+    offer.style.color = "var(--pill-topic-text)";
+    offer.append(document.createTextNode(
+      `${older.length} ${older.length === 1 ? "video was" : "videos were"} saved before `
+      + "this existed, so nothing has been picked out of them yet. Reading them again fills "
+      + "these tables in — it runs on your own AI account and takes a minute. "
+    ));
+    const button = document.createElement("button");
+    button.textContent = "Fill in my trackers";
+    button.style.marginTop = "8px";
+    button.onclick = () => fillInTrackers(button);
+    offer.append(document.createElement("br"), button);
+    host.append(offer);
+  }
 
   const rows = trackerRows(kind).filter((row) => {
     if (!query) return true;
@@ -1433,6 +1463,45 @@ async function tidyFolders(button) {
   } finally {
     button.disabled = false;
     button.textContent = "Tidy my folders";
+  }
+}
+
+/**
+ * "Fill in my trackers" (D34). Reads the videos saved before kinds existed again, a few
+ * at a time, until there are none left. Stops the moment a pass achieves nothing, so it
+ * can never sit there spending an allowance on the same failure.
+ */
+async function fillInTrackers(button) {
+  button.disabled = true;
+  let filled = 0;
+
+  try {
+    for (let pass = 0; pass < 40; pass += 1) {
+      button.textContent = `Reading them again… ${filled} done`;
+      const result = await api("/v1/kinds", { method: "POST" });
+      filled += result.done || 0;
+      if (result.error) {
+        await sync();
+        render();
+        say("syncMsg", `Read ${filled}, then stopped: ${result.error}`, "warn");
+        return;
+      }
+      // A pass that achieved nothing means the rest cannot be done either — stopping here
+      // is what guarantees this ends rather than pressing forty times for nothing.
+      if (!result.remaining || !result.done) break;
+    }
+
+    await sync();
+    render();
+    say("syncMsg", filled
+      ? `Read ${filled} ${filled === 1 ? "video" : "videos"} again. Anything with products `
+        + "or tools in it is in these tables now."
+      : "Nothing more could be read.", filled ? "ok" : "warn");
+  } catch (error) {
+    say("syncMsg", error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Fill in my trackers";
   }
 }
 

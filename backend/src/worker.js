@@ -1195,6 +1195,74 @@ async function sortOldClips(request, env, userId) {
   return json(env, { sorted, remaining: Math.max(queue.length - attempted, 0), error: failure });
 }
 
+/**
+ * "Fill in my trackers" (D34) — for everything saved before kinds existed.
+ *
+ * A tracker holding four rows out of a notebook of eighty-six is a demonstration, not a
+ * feature. This runs the analysis again over the transcript already stored, so a video
+ * that showed three products at three prices ends up as three rows.
+ *
+ * It runs on the presser's own key, like "Summarise this one" does: they volunteered
+ * their allowance by pressing, and quietly spending an earlier saver's would be wrong.
+ * And it is a press rather than something automatic, because eighty-six calls that nobody
+ * asked for look exactly like the app breaking.
+ *
+ * A few at a time, and the app presses again while anything is left — one Worker request
+ * has a hard ceiling on how many calls out it may make. It stops on the first failure
+ * rather than spending the rest of the allowance on the same failure ten more times.
+ */
+async function fillInKinds(request, env, userId) {
+  const pending = await env.DB.prepare(
+    `SELECT c.id, c.source_id, t.text, s.duration_sec
+     FROM clips c
+     JOIN analyses a ON a.source_id = c.source_id AND a.user_id = ?2
+     JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
+     WHERE c.user_id = ?1
+       AND c.deleted_at IS NULL
+       AND a.kind IS NULL
+     ORDER BY c.created_at DESC`
+  )
+    .bind(userId, SHARED)
+    .all();
+
+  const queue = pending.results;
+  let done = 0;
+  let attempted = 0;
+  let failure = null;
+
+  for (const row of queue.slice(0, MAX_SORT_PER_REQUEST)) {
+    try {
+      const analysis = await analyzeSource(env, row.source_id, row.text, userId, row.duration_sec);
+      if (!analysis) {
+        if (!done) return fail(env, "Connect an AI account in Settings first.", 400);
+        failure = "no AI account is connected";
+        break;
+      }
+
+      const problems = await storeAnalysis(
+        env,
+        row.source_id,
+        SHARED,
+        analysis.payload,
+        analysis.provider,
+        analysis.model,
+        row.duration_sec
+      );
+      if (problems.length) throw new AnalysisError(...malformed(problems));
+      done += 1;
+    } catch (error) {
+      // Never onto sources.error: one person's key failing is not a fact about the reel,
+      // and the person who pressed the button is watching.
+      failure = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+      break;
+    }
+    attempted += 1;
+  }
+
+  return json(env, { done, remaining: Math.max(queue.length - attempted, 0), error: failure });
+}
+
 /** Sets a clip's topic by hand. The user's choice is final (D27). */
 async function setTopic(request, env, userId, clipId) {
   const body = await readJson(request);
@@ -1312,6 +1380,9 @@ export default {
       }
       if (segments[1] === "topics" && segments[2] === "tidy" && request.method === "POST") {
         return await tidyMyTopics(env, userId);
+      }
+      if (segments[1] === "kinds" && !segments[2] && request.method === "POST") {
+        return await fillInKinds(request, env, userId);
       }
 
       return fail(env, "Not found.", 404);

@@ -541,6 +541,138 @@ describe("tidying the folders a notebook already grew", () => {
   });
 });
 
+// ------------------------------------------------------------------ filling in the old
+
+describe("filling in the trackers from what was already saved", () => {
+  const OLD = {
+    summary: "Three items to sell for under 25 rupees.",
+    key_points: ["6-piece hook set at Rs. 22"],
+    learn_more: [],
+    claims: [],
+    suggested_task: null,
+    topic: "e-commerce",
+    sub_topic: "product sourcing"
+    // No kind and no items — this is every analysis stored before D34.
+  };
+  const FILLED = {
+    ...OLD,
+    kind: "product",
+    items: [{ name: "6-piece hook set", cost: "Rs. 22", where: "B-35" }]
+  };
+
+  let harness;
+  let amy;
+  let ben;
+
+  const analysisFor = (name) =>
+    harness.database
+      .prepare(
+        `SELECT a.* FROM analyses a JOIN sources s ON s.id = a.source_id
+         WHERE s.url_canonical LIKE ? AND a.user_id = ''`
+      )
+      .get(`%${name}%`);
+
+  before(async () => {
+    harness = await createTestEnv();
+    amy = await harness.mintToken("amy");
+    ben = await harness.mintToken("ben");
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: amy,
+      body: { provider: "gemini", api_key: "amys-key-value-not-a-real-one" }
+    });
+
+    // Two reels analysed the old way, before kinds existed.
+    harness.answerProviderWith(() => harness.geminiReplyWith(OLD));
+    for (const name of ["OLDONE", "OLDTWO"]) {
+      await harness.call(worker, "/v1/clips", {
+        method: "POST",
+        token: amy,
+        body: { url: `https://www.instagram.com/reel/${name}/` }
+      });
+      const source = harness.database
+        .prepare("SELECT * FROM sources WHERE url_canonical LIKE ?")
+        .get(`%${name}%`);
+      harness.database
+        .prepare("UPDATE sources SET state = 'downloading' WHERE id = ?")
+        .run(source.id);
+      await harness.call(worker, `/v1/sources/${source.id}/transcript`, {
+        method: "POST",
+        serviceToken: SERVICE_TOKEN,
+        body: { text: "3 items to sell", lang: "en", engine: "test", duration_sec: 45 }
+      });
+    }
+  });
+
+  after(() => {
+    harness.answerProviderWith(null);
+    harness.restore();
+  });
+
+  test("they start with no kind, exactly as everything saved before today does", () => {
+    assert.equal(analysisFor("OLDONE").kind, null);
+    assert.equal(analysisFor("OLDONE").items, null);
+    assert.equal(analysisFor("OLDONE").summary, OLD.summary, "and a perfectly good summary");
+  });
+
+  test("one press reads them again and the rows appear", async () => {
+    harness.answerProviderWith(() => harness.geminiReplyWith(FILLED));
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: amy });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.done, 2);
+    assert.equal(response.body.remaining, 0);
+    assert.equal(response.body.error, null);
+
+    for (const name of ["OLDONE", "OLDTWO"]) {
+      const row = analysisFor(name);
+      assert.equal(row.kind, "product");
+      assert.equal(JSON.parse(row.items)[0].cost, "Rs. 22");
+    }
+  });
+
+  test("pressing again finds nothing to do and costs nothing", async () => {
+    const before = harness.providerCalls.length;
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: amy });
+    assert.equal(response.body.done, 0);
+    assert.equal(response.body.remaining, 0);
+    assert.equal(harness.providerCalls.length, before, "a second press must not spend anything");
+  });
+
+  test("it is charged to whoever pressed it, never to an earlier saver", async () => {
+    // Ben has no key. If this fell back to Amy's — the first saver's — he would be
+    // spending her allowance by pressing a button in his own notebook.
+    await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token: ben,
+      body: { url: "https://www.instagram.com/reel/OLDONE/" }
+    });
+    harness.database
+      .prepare("UPDATE analyses SET kind = NULL, items = NULL WHERE user_id = ''")
+      .run();
+
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: ben });
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /Connect an AI account/);
+  });
+
+  test("a failure stops the run and keeps what was already done", async () => {
+    harness.answerProviderWith(
+      () => new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429 })
+    );
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: amy });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.done, 0);
+    assert.match(response.body.error, /rate or quota limit/);
+    assert.equal(
+      harness.database.prepare("SELECT COUNT(*) n FROM analyses WHERE summary = ''").get().n,
+      0,
+      "a failed run must not have emptied anything"
+    );
+  });
+});
+
 // ------------------------------------------------------------------ kinds and rows
 
 describe("asking what kind of video it is", () => {

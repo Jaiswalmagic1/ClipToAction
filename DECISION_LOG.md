@@ -988,6 +988,15 @@ nothing is indistinguishable from one written last week. Nothing is backfilled.
 position in the list: re-running an analysis returns the rows in a different order, and a
 position would move somebody's "ordered" onto a different product.
 
+**"Fill in my trackers", because nothing is backfilled.** A notebook of 86 videos would
+otherwise have had four rows in it — a demonstration, not a feature. The button reads the
+videos again from the transcripts already stored, ten to a press, and the app presses
+again while anything is left. It runs on the presser's own key, exactly as "Summarise this
+one" does: they volunteered their allowance by pressing, and quietly spending an earlier
+saver's would be wrong. It is a press and not something automatic for the same reason 86
+calls nobody asked for look exactly like the app breaking. A pass that achieves nothing
+ends the run, which is what guarantees it terminates.
+
 ---
 
 **The filing was the bigger problem, and it was our own rule causing it.** 86 videos across
@@ -1068,7 +1077,7 @@ everything else.
 |---|---|
 | `backend/src/analyze.js` | `KINDS`, `KIND_RULES` in both prompts, `cleanKind`, `cleanItems`, `itemKey`, `ITEM_STATUSES`, `safeDetail` + its allowlist, `withOneRetry`, 402/404 in `classify` |
 | `backend/src/topics.js` | `headKey`, `findByHead`, top-level reuse in `findOrCreateTopic`, `tidyTopics` |
-| `backend/src/worker.js` | `error_detail` written and cleared, `kind`/`items` validated and stored, `PUT /v1/clips/:id/item`, `POST /v1/topics/tidy`, `item_status` in delta sync |
+| `backend/src/worker.js` | `error_detail` written and cleared, `kind`/`items` validated and stored, `PUT /v1/clips/:id/item`, `POST /v1/topics/tidy`, `POST /v1/kinds`, `item_status` in delta sync |
 | `backend/src/mcp.js` | The rows handed to the AI app as named facts, so it can be asked which product is cheapest |
 | `backend/migrations/0007_kinds_items_and_error_detail.sql` | Two columns on `analyses`, one on `sources`, one new per-user table |
 | `app.html` | Products and Tools tracker views, the rows on a clip's own page, "Tidy my folders", the reason code in small print |
@@ -1077,6 +1086,6 @@ everything else.
 **An address a video read out is shown as text and never as something to tap.** It came out
 of a stranger's video, and one press is too cheap a way to end up somewhere on their say-so.
 
-**Pinned by tests.** 46 new ones in `backend/test/organise.test.js`, including the three
+**Pinned by tests.** 51 new ones in `backend/test/organise.test.js`, including the three
 that matter most: a key-shaped string cannot get through `safeDetail`; the AI is still never
 shown anyone's topic list; and sub-topics are never merged by head word.
