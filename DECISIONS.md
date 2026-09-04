@@ -92,7 +92,7 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | 107 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved — and whether the app can tell the PC worker is running. Plus 3 in `worker-pc`, `python -m unittest discover -p "test_*.py"`, guarding the transcription settings (D28) |
+| Test suite | 160 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved — whether the app can tell the PC worker is running, the connector that lets an AI app read and write the notebook (both handshake versions, that saved keys are never stored in plain text, that one user can never see another's notebook, and that what the AI learns gets written back), and that every time shows in India time (D31). Plus 3 in `worker-pc`, `python -m unittest discover -p "test_*.py"`, guarding the transcription settings (D28) |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |
