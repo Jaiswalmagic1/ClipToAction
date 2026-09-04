@@ -664,7 +664,10 @@ describe("filling in the trackers from what was already saved", () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.body.done, 0);
-    assert.match(response.body.error, /rate or quota limit/);
+    // Since D35 an exhausted key reports that the LIST is empty rather than quoting the
+    // provider. With one key that is the same fact in plainer words; with several it is
+    // the only wording that is true.
+    assert.match(response.body.error, /out of allowance/);
     assert.equal(
       harness.database.prepare("SELECT COUNT(*) n FROM analyses WHERE summary = ''").get().n,
       0,

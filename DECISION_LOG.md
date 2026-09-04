@@ -1089,3 +1089,79 @@ of a stranger's video, and one press is too cheap a way to end up somewhere on t
 **Pinned by tests.** 51 new ones in `backend/test/organise.test.js`, including the three
 that matter most: a key-shaped string cannot get through `safeDetail`; the AI is still never
 shown anyone's topic list; and sub-topics are never merged by head word.
+
+---
+
+### D35 — Several AI keys, and only a spent allowance moves to the next one
+**Date:** 2026-08-29
+**Options considered:** (a) one key, as now, and stop when it runs out; (b) several keys,
+moving to the next on any failure; (c) several keys, moving to the next ONLY when the
+current one is out of allowance, with every other refusal stopping and being shown.
+**Decided:** (c). Jaiswal's own framing, and the reasoning behind it is the decision.
+
+**Why not (b), which is what "failover" normally means.** A rotation that steps past any
+failure hides the failures that matter. A key that has been revoked, or whose account
+cannot pay, returns a refusal for ever — and under (b) the other keys quietly carry the
+load while the dead one sits in the list looking fine. The first time anyone finds out is
+when the last good key runs out too. His words: any reason other than the limit being
+reached "should not go silent, it should come back and be shown to me".
+
+So the split is by what the refusal says about the key:
+
+| What came back | What happens | Why |
+|---|---|---|
+| 429 — allowance spent | Marked, and the next key is tried | Expected and temporary. This is the whole point of a list |
+| 401 / 403 — key rejected | Marked, and the run STOPS with the reason on the reel | A dead key has to be noticed. Waiting does not fix it |
+| 402 — account cannot pay | Same as rejected | Needs a person, not another attempt |
+| 5xx, or a reply that would not parse | Run stops, and NO key is marked | Not the key's fault. Blaming a good key for somebody else's outage takes it out of the rotation for nothing |
+
+That last row is not a detail. Without it, one bad afternoon at a provider would mark every
+key in the list as broken.
+
+**Whose keys, and in what order — D10 is untouched.** The first person to save the reel
+pays, and now their whole list is spent before it moves to the next saver, and so on down
+until somebody's key works. Everybody it reaches saved that reel and receives the analysis
+their key paid for, so nobody is paying for a stranger. It also introduces no new
+principle: the automatic run already spent the first saver's allowance the moment a
+transcript landed. This extends that from one person to a queue of them.
+
+**The one place the fall-through must never reach.** "Summarise this one" spends only the
+presser's keys. They pressed a button to volunteer their own allowance; falling through to
+another saver there would quietly spend somebody else's on a reel they were not thinking
+about. The `payerId` branch already drew that line and it is now pinned by a test.
+
+**An exhausted key comes back on its own after an hour.** A free tier gives the same 429
+for "too many this minute" and "too many today", and the two want opposite waits. An hour
+is chosen against the worse mistake: locking a key out for a day after a momentary rate
+limit leaves a perfectly good key idle while reels go unanalysed. Retrying a genuinely
+spent daily quota costs one refused call an hour and heals itself when the day rolls over.
+A rejected key never comes back on its own — only replacing it, or saying "try it again",
+clears it.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `backend/migrations/0007_many_ai_keys.sql` | The `ai_keys` table, and every existing key carried across as first in its owner's list |
+| `backend/src/keys.js` | Which keys may be spent and in what order, and the recording of what each was refused for |
+| `backend/src/analyze.js` | `categoryOf`, and `spendKeys` — the rotation rule, written once so the automatic run and the topic button cannot drift apart |
+| `backend/src/worker.js` | `/v1/keys` add, list, change, remove; `has_key` now means "holds at least one"; sync carries the list |
+| `app.html` | "Your keys" — the order, the state of each, and why one stopped working |
+
+**`users.ai_key_cipher` is deliberately not cleared.** Nothing reads it any more. It is
+left in place so that rolling the Worker back finds a working key rather than a signed-in
+account with nothing connected. Clearing it is a separate migration once a rollback is off
+the table — and until then it is the one piece of this that is half-migrated, which D21
+would normally forbid. Logged rather than done quietly.
+
+**Choosing "copy and paste" now removes several keys, not one.** That is the same meaning
+it always had — it is the statement that no key is in use — but it destroys more, and a
+key is never shown again. The endpoint does as it is told; the app asks first, naming how
+many will go.
+
+**Pinned by tests.** 32 new ones in `backend/test/ai-keys.test.js`. The three that matter:
+a rejected key stops the run even though the next key would have worked; an outage marks
+nobody's key; and "summarise this one" never reaches another person's keys. `api.test.js`
+and `organise.test.js` were updated where they looked for a key in the old column, or
+expected the provider's wording for an exhausted list — the promises they make are
+unchanged.

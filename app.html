@@ -457,6 +457,32 @@
         </div>
       </div>
 
+      <div class="panel" id="keysPanel">
+        <h2>Your keys</h2>
+        <p class="muted">Free allowances run out. Add more than one key — different AIs, or
+          more than one account on the same AI — and the app moves down the list when one
+          runs out of allowance for the day. It only moves on for that reason: if a key is
+          refused for anything else, it stops and tells you which key and why, so a key
+          that has stopped working never sits there unnoticed.</p>
+        <div id="keyList"></div>
+        <div id="keysMsg"></div>
+        <h3>Add another key</h3>
+        <div class="row">
+          <select id="newKeyProvider" style="flex:1 1 180px;width:auto">
+            <option value="gemini">Google Gemini — free key</option>
+            <option value="groq">Groq — free key</option>
+            <option value="openai">OpenAI — paid</option>
+            <option value="anthropic">Anthropic — paid</option>
+            <option value="xai">xAI — paid</option>
+          </select>
+          <input id="newKeyLabel" placeholder="What to call it, e.g. work gmail" style="flex:1 1 180px;width:auto">
+        </div>
+        <input type="password" id="newKeyValue" placeholder="Paste the key" autocomplete="off">
+        <div class="row" style="margin-top:12px">
+          <button id="addKey">Add this key</button>
+        </div>
+      </div>
+
       <div class="panel">
         <h2>Talk to your notebook from your AI app</h2>
         <p class="muted">Make an address, paste it into your AI app once, and after that
@@ -617,6 +643,7 @@ if ("serviceWorker" in navigator) {
 const EMPTY = {
   since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
   tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: [],
+  aiKeys: [],
   item_status: []
 };
 let store = structuredClone(EMPTY);
@@ -674,6 +701,7 @@ function applyDelta(delta) {
   // Not merged by key like the rest: this is the whole current list every time, so a
   // connector turned off elsewhere disappears here instead of lingering for ever.
   if (delta.connectors) store.connectors = delta.connectors;
+  if (delta.ai_keys) store.aiKeys = delta.ai_keys;
   if (delta.settings) store.settings = delta.settings;
   if (delta.worker) store.worker = delta.worker;
   store.since = delta.now || store.since;
@@ -2262,6 +2290,15 @@ $("saveSettings").onclick = async () => {
   const body = { provider: $("provider").value };
   const key = $("apiKey").value.trim();
   if (key) body.api_key = key;
+
+  const held = (store.aiKeys || []).length;
+  if (body.provider === "manual" && held) {
+    const warning = held === 1
+      ? "Copy and paste means no key is used, so your saved key will be removed. It cannot be shown again afterwards."
+      : `Copy and paste means no key is used, so all ${held} of your saved keys will be removed. They cannot be shown again afterwards.`;
+    if (!confirm(warning)) return;
+  }
+
   $("saveSettings").disabled = true;
   try {
     const result = await api("/v1/settings", { method: "PUT", body: JSON.stringify(body) });
@@ -2271,6 +2308,14 @@ $("saveSettings").onclick = async () => {
     // because it is never shown back, and on its own an empty box reads as "it did not
     // save" — renderSettings puts the reassurance in the placeholder instead.
     store.settings = { ai_provider: result.provider, has_key: Boolean(result.key_stored) };
+    // The list is the setting now, so it has to be re-read rather than guessed at: this
+    // save may have replaced the first key, or emptied the list altogether.
+    try {
+      store.aiKeys = (await api("/v1/keys")).keys || [];
+    } catch {
+      // The save itself worked. A list that failed to refresh is a stale panel, not a
+      // reason to tell somebody their key did not save.
+    }
     saveCache();
     renderSettings();
 
@@ -2456,8 +2501,177 @@ function renderConnectors() {
   }
 }
 
+const KEY_STATE_WORDS = {
+  ready: { word: "working", pill: "good" },
+  exhausted: { word: "out of allowance", pill: "wait" },
+  rejected: { word: "not working", pill: "bad" }
+};
+
+function renderKeys() {
+  const host = $("keyList");
+  host.innerHTML = "";
+  const keys = store.aiKeys || [];
+
+  if (!keys.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent =
+      "No keys yet. The app hands you the text to paste into your own AI instead.";
+    host.append(empty);
+    return;
+  }
+
+  keys.forEach((key, index) => {
+    const block = document.createElement("div");
+    block.className = "learning";
+
+    const title = document.createElement("h4");
+    title.textContent = key.label || `Key ${index + 1}`;
+    const shape = KEY_STATE_WORDS[key.state] || KEY_STATE_WORDS.ready;
+    const pill = document.createElement("span");
+    pill.className = `pill ${shape.pill}`;
+    pill.textContent = shape.word;
+    title.append(document.createTextNode(" "), pill);
+    block.append(title);
+
+    const which = document.createElement("div");
+    which.className = "muted";
+    which.textContent = `${key.provider} · ${index === 0 ? "used first" : `used ${index + 1}${index === 1 ? "nd" : index === 2 ? "rd" : "th"}`}`;
+    block.append(which);
+
+    // Golden Rule 29 on a key rather than a reel: if it stopped working, the reason is
+    // here, not nowhere.
+    if (key.last_error) {
+      const why = document.createElement("div");
+      why.className = "muted";
+      const when = key.last_error_at ? ` (${whenText(key.last_error_at)})` : "";
+      why.textContent = `Last refused: ${key.last_error}${when}`;
+      block.append(why);
+    }
+    if (key.ready_again_at) {
+      const back = document.createElement("div");
+      back.className = "muted";
+      back.textContent = `Tried again after ${whenText(key.ready_again_at)}`;
+      block.append(back);
+    }
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.marginTop = "8px";
+
+    if (index > 0) {
+      const up = document.createElement("button");
+      up.className = "secondary";
+      up.textContent = "Use earlier";
+      up.onclick = () => moveKey(key, keys[index - 1]);
+      row.append(up);
+    }
+
+    const replace = document.createElement("button");
+    replace.className = "secondary";
+    replace.textContent = "Replace key";
+    replace.onclick = () => replaceKey(key);
+    row.append(replace);
+
+    if (key.state !== "ready") {
+      const again = document.createElement("button");
+      again.className = "secondary";
+      again.textContent = "Try it again";
+      again.onclick = () => patchKey(key.id, { state: "ready" }, "Ready to try again.");
+      row.append(again);
+    }
+
+    const remove = document.createElement("button");
+    remove.className = "secondary";
+    remove.textContent = "Remove";
+    remove.onclick = () => removeKey(key);
+    row.append(remove);
+
+    block.append(row);
+    host.append(block);
+  });
+}
+
+async function refreshKeys(message) {
+  const result = await api("/v1/keys");
+  store.aiKeys = result.keys || [];
+  if (store.settings) store.settings.has_key = store.aiKeys.length > 0;
+  renderKeys();
+  if (message) say("keysMsg", message, "ok");
+}
+
+async function patchKey(id, body, message) {
+  try {
+    await api(`/v1/keys/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+    await refreshKeys(message);
+  } catch (error) {
+    say("keysMsg", error.message);
+  }
+}
+
+async function moveKey(key, above) {
+  // The two swap places rather than everything shuffling up, so pressing it twice on the
+  // same key does what it looks like it does. Both writes go before the reread, or the
+  // list is drawn once with two keys claiming the same place.
+  try {
+    await api(`/v1/keys/${key.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ position: above.position })
+    });
+    await api(`/v1/keys/${above.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ position: key.position })
+    });
+    await refreshKeys("Moved.");
+  } catch (error) {
+    say("keysMsg", error.message);
+  }
+}
+
+async function replaceKey(key) {
+  const value = prompt(`Paste the new key for ${key.label || "this key"}.`);
+  if (!value || !value.trim()) return;
+  await patchKey(key.id, { api_key: value.trim() }, "Key replaced.");
+}
+
+async function removeKey(key) {
+  if (!confirm(`Remove ${key.label || "this key"}? It cannot be shown again afterwards.`)) return;
+  try {
+    await api(`/v1/keys/${key.id}`, { method: "DELETE" });
+    await refreshKeys("Removed.");
+  } catch (error) {
+    say("keysMsg", error.message);
+  }
+}
+
+async function addKey() {
+  const value = $("newKeyValue").value.trim();
+  if (!value) return say("keysMsg", "Paste the key first.");
+
+  const button = $("addKey");
+  button.disabled = true;
+  try {
+    await api("/v1/keys", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: $("newKeyProvider").value,
+        api_key: value,
+        label: $("newKeyLabel").value.trim()
+      })
+    });
+    $("newKeyValue").value = "";
+    $("newKeyLabel").value = "";
+    await refreshKeys("Added.");
+  } catch (error) {
+    say("keysMsg", error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderSettings() {
   renderConnectors();
+  renderKeys();
   const settings = store.settings;
   if (settings?.ai_provider) $("provider").value = settings.ai_provider;
   $("apiKey").value = "";
@@ -2522,6 +2736,7 @@ function renderProviderHelp() {
 $("provider").onchange = renderProviderHelp;
 
 $("settingsBack").onclick = () => { location.hash = ""; };
+$("addKey").onclick = addKey;
 $("navSettings").onclick = () => { location.hash = "#/settings"; };
 $("navGuide").onclick = () => { location.hash = "#/guide"; };
 $("guideBack").onclick = () => { location.hash = ""; };

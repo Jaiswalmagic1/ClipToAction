@@ -9,6 +9,7 @@
 // only gain something. A new shape would have broken all three (D33).
 
 import { decryptSecret } from "./auth.js";
+import { usableKeys, markKeyFailed, markKeyWorked } from "./keys.js";
 
 /**
  * A provider failure, carrying only text that is safe to show every user who saved the
@@ -96,6 +97,25 @@ function classify(status) {
   if (status === 429) return "the AI provider's rate or quota limit was reached";
   if (status >= 500) return "the AI provider was unavailable";
   return "the AI provider refused the request";
+}
+
+/**
+ * What a refusal says about the KEY that was used — which is the only question that
+ * decides whether the next key is tried (D35).
+ *
+ *   exhausted — the allowance is spent. Expected, temporary, and the ONLY thing that moves
+ *               to the next key.
+ *   rejected  — the key itself is wrong, or its account cannot pay. Waiting fixes neither,
+ *               so it stops and is shown: a key that has gone bad has to be noticed.
+ *   other     — nothing to do with the key. The provider was down, or answered with prose
+ *               instead of JSON. The key is left untouched, because marking a good key bad
+ *               over somebody else's outage would take it out of the rotation for nothing.
+ */
+export function categoryOf(error) {
+  const status = Number(String(error?.detail || "").split(" ")[0]);
+  if (status === 429) return "exhausted";
+  if (status === 401 || status === 402 || status === 403) return "rejected";
+  return "other";
 }
 
 /**
@@ -476,32 +496,63 @@ async function callProvider(prompt, apiKey, provider, maxTokens = MAX_OUTPUT_TOK
  * Returns null when they have no key connected.
  */
 export async function proposeTopic(env, userId, summary) {
-  const owner = await env.DB.prepare(
-    `SELECT ai_provider, ai_key_cipher
-     FROM users
-     WHERE id = ?1
-       AND ai_key_cipher IS NOT NULL
-       AND ai_provider IS NOT NULL
-       AND ai_provider != 'manual'`
-  )
-    .bind(userId)
-    .first();
-  if (!owner) return null;
-
-  const apiKey = await decryptSecret(owner.ai_key_cipher, env.KEY_ENCRYPTION_SECRET);
-
-  return withOneRetry(async () => {
-    const result = await callProvider(TOPIC_PROMPT + summary, apiKey, owner.ai_provider);
-    try {
-      const payload = parseAnalysis(result.text);
-      return { topic: payload?.topic, sub_topic: payload?.sub_topic };
-    } catch {
-      throw new AnalysisError(
-        "the AI's reply was not in the expected format",
-        "200 unparseable_reply"
-      );
-    }
+  // Their own list only, never another saver's — naming a topic is their button press.
+  return spendKeys(env, await usableKeys(env, null, userId), async (key) => {
+    const apiKey = await decryptSecret(key.key_cipher, env.KEY_ENCRYPTION_SECRET);
+    return withOneRetry(async () => {
+      const result = await callProvider(TOPIC_PROMPT + summary, apiKey, key.provider);
+      try {
+        const payload = parseAnalysis(result.text);
+        return { topic: payload?.topic, sub_topic: payload?.sub_topic };
+      } catch {
+        throw new AnalysisError(
+          "the AI's reply was not in the expected format",
+          "200 unparseable_reply"
+        );
+      }
+    });
   });
+}
+
+/**
+ * Walks a list of keys, running `attempt` with each until one works (D35).
+ *
+ * The whole rotation rule lives here, once, so the automatic run and the topic button
+ * cannot drift apart: a spent allowance is marked and moves on; a rejected key is marked
+ * and STOPS, so the person sees it; anything else leaves the key alone and stops, because
+ * a provider outage says nothing about the key that hit it.
+ *
+ * Returns null for an empty list — that is the copy-paste tier, not a failure.
+ */
+async function spendKeys(env, candidates, attempt) {
+  if (!candidates.length) return null;
+
+  let exhausted = 0;
+  for (const key of candidates) {
+    try {
+      const value = await attempt(key);
+      await markKeyWorked(env, key.id);
+      return value;
+    } catch (error) {
+      if (!(error instanceof AnalysisError)) throw error;
+      const category = categoryOf(error);
+      if (category !== "other") {
+        await markKeyFailed(env, key.id, category, error.publicReason, error.detail);
+      }
+      if (category !== "exhausted") throw error;
+      exhausted += 1;
+    }
+  }
+
+  // Every key was spent. This is its own message rather than the last key's, because
+  // "the rate limit was reached" reads as one key having a bad moment, and the person
+  // needs to know the whole list is empty and nothing will run until it refills.
+  throw new AnalysisError(
+    exhausted === 1
+      ? "the connected AI key is out of allowance"
+      : `all ${exhausted} connected AI keys are out of allowance`,
+    "429 all_keys_exhausted"
+  );
 }
 
 /**
@@ -517,50 +568,26 @@ export async function proposeTopic(env, userId, summary) {
  * and is unchanged.
  */
 export async function analyzeSource(env, sourceId, transcript, payerId = null, durationSec = 0) {
-  const owner = payerId
-    ? await env.DB.prepare(
-        `SELECT ai_provider, ai_key_cipher
-         FROM users
-         WHERE id = ?1
-           AND ai_key_cipher IS NOT NULL
-           AND ai_provider IS NOT NULL
-           AND ai_provider != 'manual'`
-      )
-        .bind(payerId)
-        .first()
-    : await env.DB.prepare(
-    `SELECT u.ai_provider, u.ai_key_cipher
-     FROM clips c
-     JOIN users u ON u.id = c.user_id
-     WHERE c.source_id = ?1
-       AND u.ai_key_cipher IS NOT NULL
-       AND u.ai_provider IS NOT NULL
-       AND u.ai_provider != 'manual'
-     ORDER BY c.created_at
-     LIMIT 1`
-  )
-    .bind(sourceId)
-    .first();
-
-  if (!owner) return null;
-
-  const apiKey = await decryptSecret(owner.ai_key_cipher, env.KEY_ENCRYPTION_SECRET);
   const prompt = promptFor(durationSec) + tidyTranscript(transcript);
   const maxTokens = isLong(durationSec) ? LONG_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS;
 
-  // The call and the reading of it are retried together, because a reply that came back as
-  // prose instead of JSON is the same kind of one-off as a reply that did not come back.
-  const { payload, model } = await withOneRetry(async () => {
-    const result = await callProvider(prompt, apiKey, owner.ai_provider, maxTokens);
-    try {
-      return { payload: parseAnalysis(result.text), model: result.model };
-    } catch {
-      throw new AnalysisError(
-        "the AI's reply was not in the expected format",
-        "200 unparseable_reply"
-      );
-    }
-  });
+  return spendKeys(env, await usableKeys(env, sourceId, payerId), async (key) => {
+    const apiKey = await decryptSecret(key.key_cipher, env.KEY_ENCRYPTION_SECRET);
 
-  return { payload, provider: owner.ai_provider, model };
+    // The call and the reading of it are retried together, because a reply that came back
+    // as prose instead of JSON is the same kind of one-off as one that did not come back.
+    const { payload, model } = await withOneRetry(async () => {
+      const result = await callProvider(prompt, apiKey, key.provider, maxTokens);
+      try {
+        return { payload: parseAnalysis(result.text), model: result.model };
+      } catch {
+        throw new AnalysisError(
+          "the AI's reply was not in the expected format",
+          "200 unparseable_reply"
+        );
+      }
+    });
+
+    return { payload, provider: key.provider, model };
+  });
 }

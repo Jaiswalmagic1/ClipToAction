@@ -14,10 +14,36 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT,
   display_name  TEXT,
   ai_provider   TEXT,                      -- gemini | groq | openai | anthropic | xai | manual
+  -- D35: no longer read. The keys live in ai_keys below; this is kept only so a rollback
+  -- to the pre-D35 Worker finds a working key rather than an empty account.
   ai_key_cipher TEXT,                      -- AES-GCM ciphertext, never returned to client
   created_at    INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL
 );
+
+-- D35. One key became a list, because a free allowance runs out. Spent in `position`
+-- order, and the next one is reached ONLY when the current is out of allowance -- every
+-- other refusal stops and is shown, so a key that has gone bad is noticed rather than
+-- silently stepped over. Per-user, so it carries updated_at like the rest (D6). The
+-- ciphertext is decrypted only inside the Worker and never returned to a client (D11).
+CREATE TABLE IF NOT EXISTS ai_keys (
+  id                TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  label             TEXT,                   -- what the person calls it, e.g. "work gmail"
+  provider          TEXT NOT NULL,          -- gemini | groq | openai | anthropic | xai
+  key_cipher        TEXT NOT NULL,          -- never returned to any client
+  position          INTEGER NOT NULL,       -- the order this person's keys are spent in
+  state             TEXT NOT NULL DEFAULT 'ready',  -- ready | exhausted | rejected
+  last_error        TEXT,                   -- the sentence shown to its owner
+  last_error_detail TEXT,                   -- status + allowlisted name, never free text
+  last_error_at     INTEGER,
+  exhausted_at      INTEGER,                -- when the allowance ran out; drives the retry
+  last_used_at      INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_keys_user ON ai_keys (user_id, position);
 
 -- ---------------------------------------------------------------- shared layer
 

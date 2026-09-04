@@ -54,6 +54,7 @@ The reel is a seed, not the destination.
 | D32 | Dark mode | Follows the phone or laptop until the person uses the switch in the header; after that their choice wins and is remembered on that device. Every colour is a variable, so the dark palette is written once. |
 | D33 | Long videos | The ceiling is 3 hours, and over 10 minutes the video gets a different question, not just a bigger allowance: times written into the transcript and chapters asked for. The long shape is the short shape plus one field, so nothing downstream had to change. |
 | D34 | Kinds and trackers | Each video is labelled with what KIND it is, and a product or tool video also comes back as rows you can sort and tick off. Top-level folders now merge instead of multiplying. A failed analysis stores a reason code, and a one-off is retried once. |
+| D35 | Several AI keys | A list, not one key, spent in order. Only a spent allowance moves to the next; every other refusal stops and is shown against the key that gave it. Whose keys pay is D10 unchanged — the first saver's whole list, then the next saver's. |
 
 ---
 

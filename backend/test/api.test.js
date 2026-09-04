@@ -173,9 +173,11 @@ describe("one user cannot reach another user's data", () => {
     const sync = await harness.call(worker, "/v1/sync?since=0", { token: alice });
     assert.ok(!JSON.stringify(sync.body).includes(sentinel));
 
-    // Nor may it be stored in the clear.
-    const stored = harness.database.prepare("SELECT ai_key_cipher FROM users WHERE id = ?").get("alice");
-    assert.ok(stored.ai_key_cipher && !stored.ai_key_cipher.includes(sentinel));
+    // Nor may it be stored in the clear. Since D35 the keys live in ai_keys; users
+    // .ai_key_cipher is kept only so a rollback finds something, and is no longer written.
+    const stored = harness.database
+      .prepare("SELECT key_cipher FROM ai_keys WHERE user_id = ?").get("alice");
+    assert.ok(stored.key_cipher && !stored.key_cipher.includes(sentinel));
   });
 });
 
@@ -188,9 +190,12 @@ describe("saving settings does not silently throw the key away", () => {
   const KEY = "carols-first-key-value-not-a-real-one";
   const REPLACEMENT = "carols-second-key-value-not-a-real-one";
 
+  // The first key in the person's list — which is the one this screen has always meant
+  // by "the key I use" (D35).
   const cipherFor = (user) =>
-    harness.database.prepare("SELECT ai_key_cipher FROM users WHERE id = ?").get(user)
-      ?.ai_key_cipher ?? null;
+    harness.database
+      .prepare("SELECT key_cipher FROM ai_keys WHERE user_id = ? ORDER BY position, created_at")
+      .get(user)?.key_cipher ?? null;
 
   const providerFor = (user) =>
     harness.database.prepare("SELECT ai_provider FROM users WHERE id = ?").get(user)
@@ -306,9 +311,10 @@ describe("sync tells the app what the user's settings are, without telling it th
     const body = JSON.stringify(sync.body);
     assert.ok(!body.includes(KEY), "the key must not be in the response");
     assert.ok(!body.includes("ai_key_cipher"), "nor may the encrypted form be");
+    assert.ok(!body.includes("key_cipher"), "nor under its name in the key list (D35)");
 
     const cipher = harness.database
-      .prepare("SELECT ai_key_cipher FROM users WHERE id = ?").get("erin").ai_key_cipher;
+      .prepare("SELECT key_cipher FROM ai_keys WHERE user_id = ?").get("erin").key_cipher;
     assert.ok(cipher, "there should be a stored key for this to be a real test");
     assert.ok(!body.includes(cipher), "not even the ciphertext may be handed to the client");
   });

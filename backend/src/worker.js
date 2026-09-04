@@ -13,6 +13,7 @@
 
 import { verifyFirebaseToken, encryptSecret, tokensMatch, AuthError } from "./auth.js";
 import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "./canonical.js";
+import { forDisplay } from "./keys.js";
 import {
   promptFor,
   tidyTranscript,
@@ -41,6 +42,10 @@ import {
 import { handleMcp, hashSecret, newConnectorSecret } from "./mcp.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
+
+// Enough to hold a few free accounts across a couple of providers, and low enough that a
+// list stays something a person can actually read down and reason about (D35).
+const MAX_AI_KEYS = 10;
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
 const THE_WORKER = ""; // workers.id value meaning "the one PC worker"
 
@@ -290,9 +295,21 @@ async function deltaSync(request, env, userId) {
   //
   // `has_key` and never the key. The stored value is only ever decrypted inside the Worker
   // to call a provider (D11), and there is a test that it cannot come back through here.
-  const user = await env.DB.prepare(`SELECT ai_provider, ai_key_cipher FROM users WHERE id = ?1`)
+  const user = await env.DB.prepare(`SELECT ai_provider FROM users WHERE id = ?1`)
     .bind(userId)
     .first();
+
+  // The keys themselves, as the app is allowed to see them (D35): what each is called,
+  // whose provider it is, whether it is working, and why not when it is not. Never the key
+  // and never the ciphertext — `forDisplay` is what enforces that, and a test proves no
+  // sync response can carry one.
+  const keys = await env.DB.prepare(
+    `SELECT id, label, provider, position, state, last_error, last_error_detail,
+            last_error_at, exhausted_at, last_used_at
+     FROM ai_keys WHERE user_id = ?1 ORDER BY position, created_at`
+  )
+    .bind(userId)
+    .all();
 
   // Whether the machine that downloads and transcribes is running. Not per-user, and
   // deliberately shown to everybody: when it is off, nobody's reels are moving, and the
@@ -320,8 +337,11 @@ async function deltaSync(request, env, userId) {
     connectors: connectors.results,
     settings: {
       ai_provider: user?.ai_provider || null,
-      has_key: Boolean(user?.ai_key_cipher)
+      // The list IS the setting now. Having any key at all is what makes the Worker
+      // summarise for you; having none is the copy-paste tier (D35).
+      has_key: keys.results.length > 0
     },
+    ai_keys: keys.results.map((row) => forDisplay(row, timestamp)),
     worker: {
       last_seen_at: worker?.last_seen_at || null,
       running: Boolean(worker && timestamp - worker.last_seen_at < WORKER_QUIET_AFTER_MS)
@@ -392,27 +412,52 @@ async function saveSettings(request, env, userId) {
   const suppliedKey = String(body.api_key || "").trim();
 
   // 'manual' is the copy-paste tier. Choosing it is a statement that no key is in use, so
-  // the stored one goes rather than sitting encrypted for nothing.
+  // the stored ones go rather than sitting encrypted for nothing. With a list rather than
+  // a single key this throws away more than it used to, which is why the app asks first —
+  // the endpoint does what it is told, and the warning belongs on screen (D35).
   if (body.provider === "manual") {
-    await env.DB.prepare(
-      `UPDATE users SET ai_provider = ?1, ai_key_cipher = NULL, last_seen_at = ?2 WHERE id = ?3`
-    )
-      .bind(body.provider, timestamp, userId)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM ai_keys WHERE user_id = ?1`).bind(userId),
+      env.DB.prepare(`UPDATE users SET ai_provider = ?1, last_seen_at = ?2 WHERE id = ?3`)
+        .bind(body.provider, timestamp, userId)
+    ]);
     return json(env, { ok: true, provider: body.provider, key_stored: false });
   }
 
+  // A key given here replaces the FIRST key in the list, which is what this screen has
+  // always meant: "the key I use". Adding a second is POST /v1/keys, deliberately a
+  // different action so that saving this screen can never quietly append a duplicate.
   if (suppliedKey) {
     const cipher = await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET);
-    await env.DB.prepare(
-      `UPDATE users SET ai_provider = ?1, ai_key_cipher = ?2, last_seen_at = ?3 WHERE id = ?4`
+    const first = await env.DB.prepare(
+      `SELECT id FROM ai_keys WHERE user_id = ?1 ORDER BY position, created_at LIMIT 1`
     )
-      .bind(body.provider, cipher, timestamp, userId)
-      .run();
+      .bind(userId)
+      .first();
+
+    await env.DB.batch([
+      first
+        ? env.DB.prepare(
+            // A replaced key is a new key: whatever the old one was refused for says
+            // nothing about this one, so it starts ready with a clean slate.
+            `UPDATE ai_keys
+             SET provider = ?1, key_cipher = ?2, state = 'ready', last_error = NULL,
+                 last_error_detail = NULL, last_error_at = NULL, exhausted_at = NULL,
+                 updated_at = ?3
+             WHERE id = ?4`
+          ).bind(body.provider, cipher, timestamp, first.id)
+        : env.DB.prepare(
+            `INSERT INTO ai_keys
+               (id, user_id, label, provider, key_cipher, position, state, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4, 0, 'ready', ?5, ?5)`
+          ).bind(newId(), userId, body.provider, cipher, timestamp),
+      env.DB.prepare(`UPDATE users SET ai_provider = ?1, last_seen_at = ?2 WHERE id = ?3`)
+        .bind(body.provider, timestamp, userId)
+    ]);
     return json(env, { ok: true, provider: body.provider, key_stored: true });
   }
 
-  // No key was sent, so the stored one is left alone. This screen is also how someone
+  // No key was sent, so the stored ones are left alone. This screen is also how someone
   // changes which AI they use, and the key is never shown back to them — so if saving
   // without retyping it wiped it, they would have no way of noticing. Their clips would
   // simply stop being summarised with nothing on screen to explain why, which is the
@@ -421,15 +466,141 @@ async function saveSettings(request, env, userId) {
     .bind(body.provider, timestamp, userId)
     .run();
 
-  const existing = await env.DB.prepare(`SELECT ai_key_cipher FROM users WHERE id = ?1`)
+  const count = await env.DB.prepare(
+    `SELECT COUNT(*) AS held FROM ai_keys WHERE user_id = ?1`
+  )
     .bind(userId)
     .first();
 
-  return json(env, {
-    ok: true,
-    provider: body.provider,
-    key_stored: Boolean(existing?.ai_key_cipher)
-  });
+  return json(env, { ok: true, provider: body.provider, key_stored: (count?.held || 0) > 0 });
+}
+
+// ---------------------------------------------------------------- the key list (D35)
+
+/** Everything about this person's keys except the keys. */
+async function listKeys(env, userId) {
+  const rows = await env.DB.prepare(
+    `SELECT id, label, provider, position, state, last_error, last_error_detail,
+            last_error_at, exhausted_at, last_used_at
+     FROM ai_keys WHERE user_id = ?1 ORDER BY position, created_at`
+  )
+    .bind(userId)
+    .all();
+  const timestamp = now();
+  return json(env, { keys: rows.results.map((row) => forDisplay(row, timestamp)) });
+}
+
+/** Adds one key to the end of this person's list. */
+async function addKey(request, env, userId) {
+  const body = await readJson(request);
+
+  // 'manual' is the absence of a key, so it cannot be one entry in a list of them.
+  if (!PROVIDERS.includes(body.provider) || body.provider === "manual") {
+    return fail(env, `Provider must be one of: ${PROVIDERS.filter((p) => p !== "manual").join(", ")}`);
+  }
+
+  const suppliedKey = String(body.api_key || "").trim();
+  if (!suppliedKey) return fail(env, "An API key is required.");
+  if (suppliedKey.length > LIMITS.apiKey) return fail(env, "That does not look like an API key.");
+
+  const label = String(body.label || "").trim().slice(0, 60) || null;
+
+  const held = await env.DB.prepare(
+    `SELECT COUNT(*) AS held, COALESCE(MAX(position), -1) AS last FROM ai_keys WHERE user_id = ?1`
+  )
+    .bind(userId)
+    .first();
+  if ((held?.held || 0) >= MAX_AI_KEYS) {
+    return fail(env, `That is the most keys one account can hold (${MAX_AI_KEYS}).`);
+  }
+
+  const timestamp = now();
+  const id = newId();
+  const cipher = await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET);
+
+  await env.DB.prepare(
+    `INSERT INTO ai_keys
+       (id, user_id, label, provider, key_cipher, position, state, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ready', ?7, ?7)`
+  )
+    .bind(id, userId, label, body.provider, cipher, (held?.last ?? -1) + 1, timestamp)
+    .run();
+
+  return json(env, { id, provider: body.provider, label }, 201);
+}
+
+/**
+ * Renames a key, replaces it, moves it up or down the order, or wakes it up.
+ *
+ * Replacing the key clears whatever the old one was refused for — the new one has not
+ * been refused anything yet, and carrying the old error forward would leave a working key
+ * sitting there labelled broken.
+ */
+async function updateKey(request, env, userId, keyId) {
+  const body = await readJson(request);
+
+  const existing = await env.DB.prepare(
+    `SELECT id FROM ai_keys WHERE id = ?1 AND user_id = ?2`
+  )
+    .bind(keyId, userId)
+    .first();
+  if (!existing) return fail(env, "No such key.", 404);
+
+  const timestamp = now();
+  const sets = ["updated_at = ?1"];
+  const values = [timestamp];
+
+  if (body.label !== undefined) {
+    values.push(String(body.label || "").trim().slice(0, 60) || null);
+    sets.push(`label = ?${values.length}`);
+  }
+
+  if (body.provider !== undefined) {
+    if (!PROVIDERS.includes(body.provider) || body.provider === "manual") {
+      return fail(env, "That is not a provider a key can belong to.");
+    }
+    values.push(body.provider);
+    sets.push(`provider = ?${values.length}`);
+  }
+
+  if (body.position !== undefined) {
+    const position = Number(body.position);
+    if (!Number.isInteger(position) || position < 0 || position >= MAX_AI_KEYS) {
+      return fail(env, "That is not a place in the list.");
+    }
+    values.push(position);
+    sets.push(`position = ?${values.length}`);
+  }
+
+  const suppliedKey = String(body.api_key || "").trim();
+  if (suppliedKey) {
+    if (suppliedKey.length > LIMITS.apiKey) {
+      return fail(env, "That does not look like an API key.");
+    }
+    values.push(await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET));
+    sets.push(`key_cipher = ?${values.length}`);
+  }
+
+  // A replaced key, or one the person has explicitly told us to try again, starts clean.
+  if (suppliedKey || body.state === "ready") {
+    sets.push("state = 'ready'", "last_error = NULL", "last_error_detail = NULL");
+    sets.push("last_error_at = NULL", "exhausted_at = NULL");
+  }
+
+  values.push(keyId);
+  await env.DB.prepare(`UPDATE ai_keys SET ${sets.join(", ")} WHERE id = ?${values.length}`)
+    .bind(...values)
+    .run();
+
+  return json(env, { ok: true });
+}
+
+async function removeKey(env, userId, keyId) {
+  const result = await env.DB.prepare(`DELETE FROM ai_keys WHERE id = ?1 AND user_id = ?2`)
+    .bind(keyId, userId)
+    .run();
+  if (!result.meta.changes) return fail(env, "No such key.", 404);
+  return json(env, { ok: true });
 }
 
 // ---------------------------------------------------------------- service routes
@@ -1342,6 +1513,16 @@ export default {
       }
       if (segments[1] === "settings" && request.method === "PUT") {
         return await saveSettings(request, env, userId);
+      }
+      if (segments[1] === "keys" && !segments[2]) {
+        if (request.method === "GET") return await listKeys(env, userId);
+        if (request.method === "POST") return await addKey(request, env, userId);
+      }
+      if (segments[1] === "keys" && segments[2]) {
+        if (request.method === "PATCH") {
+          return await updateKey(request, env, userId, segments[2]);
+        }
+        if (request.method === "DELETE") return await removeKey(env, userId, segments[2]);
       }
       if (segments[1] === "clips" && segments[2]) {
         if (!segments[3] && request.method === "PATCH") {
