@@ -55,6 +55,7 @@ The reel is a seed, not the destination.
 | D33 | Long videos | The ceiling is 3 hours, and over 10 minutes the video gets a different question, not just a bigger allowance: times written into the transcript and chapters asked for. The long shape is the short shape plus one field, so nothing downstream had to change. |
 | D34 | Kinds and trackers | Each video is labelled with what KIND it is, and a product or tool video also comes back as rows you can sort and tick off. Top-level folders now merge instead of multiplying. A failed analysis stores a reason code, and a one-off is retried once. |
 | D35 | Several AI keys | A list, not one key, spent in order. Only a spent allowance moves to the next; every other refusal stops and is shown against the key that gave it. Whose keys pay is D10 unchanged — the first saver's whole list, then the next saver's. |
+| D36 | When production may be touched | Never offered or started until Jaiswal says the app is open to the public - "release", "deploy" and "go ahead" are not the trigger. And his staging data is carried over in every scenario, no exception. |
 
 ---
 

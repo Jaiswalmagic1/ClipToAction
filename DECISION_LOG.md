@@ -1165,3 +1165,43 @@ nobody's key; and "summarise this one" never reaches another person's keys. `api
 and `organise.test.js` were updated where they looked for a key in the old column, or
 expected the provider's wording for an exhausted list — the promises they make are
 unchanged.
+
+---
+
+### D36 - Production is not offered, and staging data is never lost
+**Date:** 2026-09-06
+**Decided by:** Jaiswal, directly, after being offered a production move he did not want.
+
+**Rule one: nobody offers, suggests or starts a move to production until Jaiswal says, in
+his own words, that the app is open to the public.** Not "shall we release", not "should I
+set production up", not "this would be the clean way to do it". The trigger is his sentence
+and nothing else. Until then production is parked, and staging IS the live system.
+
+**Why.** He was offered a production move today while the app is not published to anybody.
+The offer was wrong on its own terms: nothing is gained, the PC worker and the connector
+can only point at one backend at a time, so moving means giving up the working system he
+uses every day - and his whole notebook sits on it. Being asked to weigh that up cost him
+a decision he should never have been handed.
+
+**This holds even if a future instruction sounds like a go-ahead.** "Release", "deploy",
+"complete all", "go ahead" are NOT the trigger. If one of those arrives and production
+would be touched, say what it would cost and ask for the sentence.
+
+**Rule two: whatever he has saved on staging is carried over. In every scenario. No
+exception.** Any move, switch, rebuild or environment change starts from "his data comes
+with it, intact" and is not proposed at all until that is solved. There is no version of
+this where a migration is described as fine because the data is "only test data" - it is
+his notebook: 215 clips, 208 transcripts, 266 folders, his notes and his learnings.
+
+Two things cannot be copied and so must be re-entered by hand, and any plan must say so
+out loud rather than discovering it afterwards: **the AI keys** (encrypted with staging's
+secret, which D20 forbids production from sharing) and **the connector** (only a hash of it
+is stored, and its address points at staging). Everything else moves with
+`wrangler d1 export --table ...` into the new database.
+
+**What was already built and is now parked, not abandoned:** the production D1 database
+`cliptoaction` exists and is empty, `backend/wrangler.toml` points at it. No Worker is
+deployed to production, no schema is loaded. It costs nothing sitting there.
+
+**Supersedes nothing.** D16 and D20 still describe how a release works when there is one.
+This says when there may be one.
