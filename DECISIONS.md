@@ -59,6 +59,7 @@ The reel is a seed, not the destination.
 | D37 | The root page | `index.html` IS the app. The old capture page is retired to git history, `app.html` stays as a redirect so old links work, and the service worker is network-first so an installed phone app can never be pinned to a page that was replaced. |
 | D38 | New tables | Two, from reading all 202 analysed videos: `prompt` (wording you paste into an AI, which was arriving as a tool) and rows for `tactic` (one thing worth trying, never one step). `setting`, `place`, `fee`, `channel` and `course` were considered and rejected for thin evidence. |
 | D39 | Backfilling | A new table counts the reels read before it existed, says the number, and waits to be pressed. `analyses.shapes_version` is what makes that queue shrink to zero instead of asking for ever. |
+| D40 | Creators | Who made each video is stored on the shared row, arrives free with the download's metadata pass, and is searchable. The ones already saved are filled in two at a time when the PC has no real work, metadata only — being rate-limited would cost transcription, not just this. |
 | D41 | The look back | Every fortnight by default, changeable to weekly, monthly or never. It is an offer with a number on it and a button — one call over the reels that have been sitting unlooked-at, and no timer anywhere. Nothing is marked until the round-up is stored. |
 
 ---

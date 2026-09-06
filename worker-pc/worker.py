@@ -40,6 +40,13 @@ MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "10800"))
 # gets times written into the transcript so there is a way back into the video.
 LONG_VIDEO_SEC = int(os.getenv("LONG_VIDEO_SEC", "600"))
 MARK_EVERY_SEC = 30
+# Filling in who made the videos already saved (D40). Deliberately slow: this reads
+# metadata for videos that are already finished, so it may never compete with a reel
+# somebody is waiting on, and Facebook and Instagram will rate-limit a machine that asks
+# two hundred questions in two minutes. Two at a time, with a pause between each, and only
+# when there is no real work.
+CREATOR_BATCH = int(os.getenv("CREATOR_BATCH", "2"))
+CREATOR_PAUSE_SEC = int(os.getenv("CREATOR_PAUSE_SEC", "20"))
 MEDIA_DIR = Path(__file__).parent / "media"
 
 if not API_BASE or not SERVICE_TOKEN:
@@ -137,7 +144,77 @@ def download_audio(source):
     if not audio_path.exists():
         raise FileNotFoundError("Audio extraction produced no file.")
 
-    return audio_path, info.get("title"), duration
+    return audio_path, info.get("title"), duration, creator_from(info)
+
+
+def creator_from(info):
+    """Who made it, from whatever the platform actually filled in (D40).
+
+    The platforms disagree about which field carries this. YouTube fills `uploader` and
+    `channel`; Instagram and Facebook fill `uploader` for some videos, `uploader_id` for
+    others and nothing at all for the rest. Nothing is invented -- None is the honest
+    answer and the app shows the video without a name.
+    """
+    for field in ("uploader", "channel", "creator", "uploader_id"):
+        value = str(info.get(field) or "").strip()
+        if value:
+            return value[:200]
+    return None
+
+
+def fill_in_creators():
+    """Fills in who made the videos saved before this was recorded (D40).
+
+    Metadata only -- `download=False` -- so nothing is fetched twice and no audio is
+    touched. Called only when there was no real work in this poll, one at a time with a
+    pause between, because being rate-limited here would cost transcription too.
+
+    Every attempt is reported whether it found a name or not. That is what makes the queue
+    shrink: a video whose platform will not say who made it must leave it, or it comes back
+    on every poll for ever.
+    """
+    try:
+        response = requests.get(
+            f"{API_BASE}/v1/creators",
+            params={"limit": CREATOR_BATCH},
+            headers=HEADERS,
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as error:
+        print(f"  ! could not ask which videos need a creator: {error}")
+        return
+
+    pending = payload.get("sources", [])
+    if not pending:
+        return
+    print(f"- filling in who made {len(pending)} of {payload.get('remaining', '?')} videos")
+
+    for source in pending:
+        name = None
+        try:
+            assert_public_host(source["url_original"])
+            with YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as reader:
+                name = creator_from(reader.extract_info(source["url_original"], download=False))
+        # Deliberately broad, and deliberately not reported as a failure of the video:
+        # this runs over reels that are already finished and analysed. The worst case is
+        # that nobody is named, which the app already shows correctly.
+        except Exception as error:  # noqa: BLE001
+            print(f"  . no creator for {source['id']}: {type(error).__name__}")
+
+        try:
+            requests.post(
+                f"{API_BASE}/v1/sources/{source['id']}/creator",
+                json={"creator": name},
+                headers=HEADERS,
+                timeout=30,
+            )
+        except requests.RequestException as error:
+            # Not marked, so it is asked again next time round. Nothing is lost.
+            print(f"  ! could not report the creator for {source['id']}: {error}")
+
+        time.sleep(CREATOR_PAUSE_SEC)
 
 
 def clock(seconds):
@@ -189,12 +266,15 @@ def transcribe(audio_path, duration_sec=0):
     return text, info.language
 
 
-def post_transcript(source_id, text, lang, title, duration):
+def post_transcript(source_id, text, lang, title, duration, creator):
     response = requests.post(
         f"{API_BASE}/v1/sources/{source_id}/transcript",
         json={
             "text": text,
             "lang": lang,
+            # D40. Who made it, so the notebook can be searched by creator. None where the
+            # platform did not say, which the API stores as "asked, nobody named".
+            "creator": creator,
             # ":translate" matters. lang is the language that was *spoken*, while the
             # text is always English (D28) -- without this the row reads as a lie.
             "engine": f"faster-whisper:{WHISPER_MODEL}:translate",
@@ -235,9 +315,9 @@ def cleanup(source_id):
 def process(source):
     print(f"- {source['platform']}: {source['url_canonical']}")
     try:
-        audio_path, title, duration = download_audio(source)
+        audio_path, title, duration, creator = download_audio(source)
         text, lang = transcribe(audio_path, duration)
-        post_transcript(source["id"], text, lang, title, duration)
+        post_transcript(source["id"], text, lang, title, duration, creator)
         print(f"  transcribed {len(text)} chars ({lang})")
     # Deliberately broad: a whisper RuntimeError or an OSError killing the loop would
     # strand every source in this batch, and the operator would see clips stuck on
@@ -268,6 +348,8 @@ def main():
             process(source)
 
         if not batch:
+            # Only when there is nothing anybody is waiting for (D40).
+            fill_in_creators()
             time.sleep(POLL_SECONDS)
 
 

@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS sources (
   url_original  TEXT NOT NULL,
   platform      TEXT NOT NULL,
   title         TEXT,
+  -- D40. The channel, page or handle the video came from, as the platform reports it.
+  -- A fact about the video, so it is shared like the rest of this row (D10) and only the
+  -- Worker writes it (D18). NULL where the platform did not say.
+  creator       TEXT,
+  -- When it was last looked for, set whether one was found or not. That is what makes the
+  -- backfill finite: a video the platform will not name is asked once and then left alone.
+  creator_checked_at INTEGER,
   duration_sec  INTEGER,
   state         TEXT NOT NULL,             -- pending | downloading | transcribed | analyzed | failed
   error         TEXT,                      -- surfaced in the UI, never swallowed

@@ -172,5 +172,88 @@ class TimeMarkers(unittest.TestCase):
         self.assertEqual(marked, "[0:00:00] words [0:01:02] more words")
 
 
+class CreatorBackfill(unittest.TestCase):
+    """Filling in who made the videos already saved (D40).
+
+    The whole risk here is being rate-limited by Facebook or Instagram, which would cost
+    transcription and not just this. So what is guarded is the pacing, not the parsing.
+    """
+
+    def setUp(self):
+        self.source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
+
+    def test_it_only_runs_when_there_is_no_real_work(self):
+        """It must sit inside the `if not batch:` arm of the poll loop, not beside it."""
+        idle_arm = self.source[self.source.index("if not batch:"):]
+        self.assertIn(
+            "fill_in_creators()",
+            idle_arm,
+            "the backfill must never compete with a reel somebody is waiting on (D40)",
+        )
+        self.assertEqual(
+            self.source.count("fill_in_creators()\n"),
+            1,
+            "the backfill is called from exactly one place, and that place is the idle arm",
+        )
+
+    def test_there_is_a_pause_between_each_one(self):
+        self.assertIn(
+            "time.sleep(CREATOR_PAUSE_SEC)",
+            self.source,
+            "without a pause this asks a platform two hundred questions in two minutes",
+        )
+        self.assertGreaterEqual(int(default_of("CREATOR_PAUSE_SEC")), 10)
+        self.assertLessEqual(int(default_of("CREATOR_BATCH")), 5)
+
+    def test_nothing_is_ever_downloaded_again(self):
+        """A backfill that re-downloaded 212 videos is not a backfill, it is an outage."""
+        backfill = self.source[self.source.index("def fill_in_creators"):]
+        backfill = backfill[: backfill.index("def clock(")]
+        self.assertIn("download=False", backfill)
+        self.assertNotIn("downloader.download(", backfill)
+        self.assertNotIn("FFmpegExtractAudio", backfill)
+
+    def test_a_private_address_is_still_refused(self):
+        """This reaches out to a URL like the downloader does, so it needs the same check."""
+        backfill = self.source[self.source.index("def fill_in_creators"):]
+        backfill = backfill[: backfill.index("def clock(")]
+        self.assertIn("assert_public_host(source[", backfill)
+
+    def test_every_attempt_is_reported_even_when_nobody_is_named(self):
+        """Otherwise a video the platform will not name is asked about on every poll."""
+        backfill = self.source[self.source.index("def fill_in_creators"):]
+        backfill = backfill[: backfill.index("def clock(")]
+        self.assertIn('json={"creator": name}', backfill)
+        # The post is outside the try that catches the lookup failing, so a video with no
+        # creator is still reported.
+        self.assertLess(
+            backfill.index("except Exception as error"),
+            backfill.index("requests.post"),
+            "the report must happen after the failure is swallowed, not inside the try",
+        )
+
+
+class CreatorFromMetadata(unittest.TestCase):
+    def setUp(self):
+        self.creator_from = load_functions("creator_from")["creator_from"]
+
+    def test_the_first_field_the_platform_filled_in_wins(self):
+        self.assertEqual(self.creator_from({"uploader": "Rumee"}), "Rumee")
+        self.assertEqual(self.creator_from({"channel": "Rumee"}), "Rumee")
+        self.assertEqual(
+            self.creator_from({"uploader": "  ", "uploader_id": "@rumee"}),
+            "@rumee",
+            "a blank field is not a name",
+        )
+
+    def test_nobody_named_is_None_and_never_a_guess(self):
+        self.assertIsNone(self.creator_from({}))
+        self.assertIsNone(self.creator_from({"uploader": None, "channel": ""}))
+        self.assertIsNone(self.creator_from({"title": "Video by someone"}))
+
+    def test_an_absurd_name_is_cut_rather_than_stored_whole(self):
+        self.assertEqual(len(self.creator_from({"uploader": "x" * 5000})), 200)
+
+
 if __name__ == "__main__":
     unittest.main()

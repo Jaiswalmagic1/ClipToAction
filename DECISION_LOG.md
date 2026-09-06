@@ -1388,3 +1388,46 @@ the next look back — nothing is dropped, and one Worker request stays inside i
 and no message. The open question "weekly digest delivery" in `DECISIONS.md` is about
 getting a nudge somewhere other than the app, and it is still open. This is the in-app half,
 which is the half that can exist without a delivery channel or a privacy policy.
+
+---
+
+### D40 — The notebook knows who made each video, and can be searched by them
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "search by creator", and for the ones already saved: "fill them
+in, but slowly in the background", metadata only, never re-download.
+
+**What was missing.** `sources` held the title, the platform and the address, and nothing
+about who made the video. "That reel by the Meesho guy" is how a person actually looks for
+one, and it found nothing — the name was not in the notebook at all.
+
+**Where it lives.** `sources.creator`, on the shared row. Who made a video is a fact about
+the video, not about anybody who saved it (D10), so it is written by the Worker alone
+(D18) and every saver of the same reel gets it for free.
+
+**How new videos get it.** yt-dlp already reads it during the metadata pass the downloader
+does anyway, so it costs nothing extra: no second request, no second download. The
+platforms disagree about which field carries it — YouTube fills `uploader` and `channel`,
+Instagram and Facebook fill `uploader` for some and `uploader_id` for others and nothing
+at all for the rest — so the first one actually filled in wins, and NULL is the honest
+answer when none of them are. Nothing is guessed from the title.
+
+**How the 212 already saved get it, and why it is deliberately slow.** Its own queue,
+`GET /v1/creators`, asked for only when the worker has no real work, two at a time, with a
+twenty-second pause between each. Metadata only — `download=False`, no audio, no ffmpeg.
+
+The reason for all of that is not politeness. Facebook and Instagram rate-limit a machine
+that asks two hundred questions in two minutes, and a block would cost **transcription**,
+not just this backfill — his working system, for a nice-to-have. So this can never compete
+with a reel somebody is waiting on, and it can never run in a burst.
+
+**`creator_checked_at` is what makes it end.** Set whether a name was found or not, so a
+video the platform will not name leaves the queue. Without it, those videos come back on
+every poll for ever — which is precisely the burst the pacing exists to prevent.
+
+**Reporting a creator cannot move anything else.** It runs over reels that are already
+downloaded, transcribed and analysed. The update touches `creator`, `creator_checked_at`
+and `updated_at` and nothing else — never state, never the error, never the transcript.
+A test pins that a finished video stays finished.
+
+**In the app it is a word, never a link.** The name came out of somebody else's video, so
+one press searches this notebook. Nothing here sends a person to a stranger's page.

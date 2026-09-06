@@ -86,7 +86,10 @@ const LIMITS = {
   note: 20000,
   apiKey: 400,
   url: 2000,
-  transcript: 200000
+  transcript: 200000,
+  // A channel name. Long enough for the padded ones creators actually use, short enough
+  // that nothing else can be smuggled into a column the app draws (D40).
+  creator: 200
 };
 
 // A long video's analysis is a bigger object than a reel's, and the reel's ceilings would
@@ -713,9 +716,19 @@ async function storeTranscript(request, env, sourceId) {
        SET state = 'transcribed', title = COALESCE(?1, title),
            duration_sec = COALESCE(?2, duration_sec), error = NULL, error_detail = NULL,
            claimed_at = NULL,
+           creator = COALESCE(?5, creator),
+           creator_checked_at = COALESCE(?3, creator_checked_at),
            updated_at = ?3
        WHERE id = ?4 AND state = 'downloading'`
-    ).bind(body.title || null, body.duration_sec || null, timestamp, sourceId)
+    ).bind(
+      body.title || null,
+      body.duration_sec || null,
+      timestamp,
+      sourceId,
+      // D40. Whoever made it, as the platform reported it, alongside the title it came
+      // with. Marked as looked-for either way, so the backfill never asks about it again.
+      cleanCreator(body.creator)
+    )
   ]);
 
   // If anyone who saved this reel has a key connected, analyse it now and share the result
@@ -946,6 +959,74 @@ async function storeFailure(request, env, sourceId) {
     .run();
 
   return json(env, { ok: true, applied: Boolean(result.meta.changes) });
+}
+
+// ---------------------------------------------------------------- who made it (D40)
+
+/**
+ * A creator name, as the platform reported it, trimmed to something a row can hold.
+ *
+ * Kept as plain text and never turned into a link. It comes out of somebody else's video,
+ * and the app draws it as a word you can search by — never as an address to tap.
+ */
+export function cleanCreator(raw) {
+  const name = String(raw ?? "").replace(/\s+/g, " ").trim();
+  return name ? name.slice(0, LIMITS.creator) : null;
+}
+
+/**
+ * The videos still missing a creator, for the PC worker to fill in slowly (D40).
+ *
+ * Deliberately its own queue and not part of `/v1/queue`. Nothing here is downloaded — it
+ * is one metadata read per video — and it must never compete with a reel somebody is
+ * waiting on, so the worker only asks for these when it has no real work and puts a pause
+ * between each one. Facebook and Instagram will rate-limit a machine that asks two hundred
+ * questions in two minutes, and being blocked would cost him transcription, not just this.
+ *
+ * `creator_checked_at` and not `creator IS NULL` alone: a video whose platform will not say
+ * who made it must leave the queue, or the worker asks about it for ever.
+ */
+async function creatorQueue(request, env) {
+  const requested = Number(new URL(request.url).searchParams.get("limit"));
+  const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 2, 1), 10);
+
+  const rows = await env.DB.prepare(
+    `SELECT id, url_original, platform FROM sources
+     WHERE creator IS NULL AND creator_checked_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT ?1`
+  )
+    .bind(limit)
+    .all();
+
+  const left = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM sources WHERE creator IS NULL AND creator_checked_at IS NULL`
+  ).first();
+
+  return json(env, { sources: rows.results, remaining: Number(left?.n || 0) });
+}
+
+/**
+ * Stores who made one video, or records that the platform would not say.
+ *
+ * Either way the row is marked as looked at, so this backfill ends. Nothing else on the
+ * source is touched: this must never be able to move a video's state, its error or its
+ * transcript, because it runs over reels that are already finished.
+ */
+async function storeCreator(request, env, sourceId) {
+  const body = await readJson(request);
+  const name = cleanCreator(body.creator);
+
+  const result = await env.DB.prepare(
+    `UPDATE sources
+     SET creator = COALESCE(?1, creator), creator_checked_at = ?2, updated_at = ?2
+     WHERE id = ?3`
+  )
+    .bind(name, now(), sourceId)
+    .run();
+
+  if (!result.meta.changes) return fail(env, "No such video.", 404);
+  return json(env, { ok: true, creator: name });
 }
 
 // ---------------------------------------------------------------- tier 3: copy-paste
@@ -1673,6 +1754,10 @@ export default {
         requireService(request, env);
         return await claimQueue(request, env);
       }
+      if (segments[1] === "creators" && request.method === "GET") {
+        requireService(request, env);
+        return await creatorQueue(request, env);
+      }
       if (segments[1] === "sources" && segments[2]) {
         requireService(request, env);
         if (segments[3] === "transcript" && request.method === "POST") {
@@ -1680,6 +1765,9 @@ export default {
         }
         if (segments[3] === "error" && request.method === "POST") {
           return await storeFailure(request, env, segments[2]);
+        }
+        if (segments[3] === "creator" && request.method === "POST") {
+          return await storeCreator(request, env, segments[2]);
         }
       }
 

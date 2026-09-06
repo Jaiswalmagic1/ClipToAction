@@ -242,6 +242,8 @@
       vertical-align: top;
       white-space: nowrap;
     }
+    .pill.creator { cursor: pointer; }
+    .pill.creator:hover { text-decoration: underline; }
     table.tracker td.wrap { white-space: normal; min-width: 200px; }
     /* A prompt is only worth having if you can take it away with you, so its own column
        is scrollable rather than stretching the table, and carries a copy button. */
@@ -891,6 +893,9 @@ function searchText(clip) {
   const analysis = analysisOf(clip);
   return [
     titleOf(clip),
+    // D40. "That reel by the Meesho guy" is how a person actually looks for one, and the
+    // name was nowhere in here — so searching for it found nothing at all.
+    sourceOf(clip)?.creator,
     sourceOf(clip)?.url_original,
     transcriptOf(clip)?.text,
     analysis?.summary,
@@ -1675,6 +1680,41 @@ async function setItemDecision(row, select) {
 }
 
 /** One clip's card. Both views draw this same one, so they can never drift apart. */
+/** Who made this video, as the platform said. Empty until the backfill reaches it (D40). */
+const creatorOf = (clip) => (sourceOf(clip)?.creator || "").trim();
+
+/**
+ * Puts a creator's name on screen as something to search by (D40).
+ *
+ * A word and never an address. The name came out of somebody else's video, and one press
+ * here must search this notebook — never open a stranger's page.
+ */
+function creatorChip(clip, { stopClick = false } = {}) {
+  const name = creatorOf(clip);
+  if (!name) return null;
+  const chip = document.createElement("span");
+  chip.className = "pill creator";
+  chip.title = `Find everything by ${name}`;
+  chip.textContent = name.length > 40 ? `${name.slice(0, 40)}…` : name;
+  chip.onclick = (event) => {
+    if (stopClick) event.stopPropagation();
+    searchFor(name);
+  };
+  return chip;
+}
+
+/** Puts a phrase into the search box and shows the results, from wherever you were. */
+function searchFor(phrase) {
+  query = String(phrase).trim().toLowerCase();
+  $("search").value = phrase;
+  grouping = "list";
+  for (const button of $("views").children) {
+    button.classList.toggle("active", button.dataset.view === "list");
+  }
+  if (location.hash) location.hash = "";
+  else { show("listView"); renderList(); }
+}
+
 function clipCard(clip, { showTopic = true } = {}) {
   const progress = progressOf(clip);
   const analysis = analysisOf(clip);
@@ -1692,6 +1732,10 @@ function clipCard(clip, { showTopic = true } = {}) {
   state.className = `pill ${progress.kind}`;
   state.textContent = progress.text;
   pills.append(platform, state);
+
+  // Who made it, and one press finds everything else of theirs (D40).
+  const by = creatorChip(clip, { stopClick: true });
+  if (by) pills.append(by);
 
   // Where it is filed, visible without leaving the list. Left off inside the grouped view,
   // where the heading above the card already says it.
@@ -2274,6 +2318,8 @@ function renderClip(clipId) {
   state.className = `pill ${progress.kind}`;
   state.textContent = progress.text;
   pills.append(platform, state);
+  const by = creatorChip(clip);
+  if (by) pills.append(by);
   panel.append(pills);
 
   const saved = document.createElement("p");
