@@ -2234,6 +2234,15 @@ arrive with the share target as their referrer, so the ROUTE is what separates t
 referrer check alone would have let this straight through, which is why the first attempt
 at this fix was wrong.
 
+**Proved in a real browser, not only in tests.** The app was served locally and a page on a
+different origin was made to link straight at the share target, which is exactly the attack.
+Tapping it: nothing was written to storage and the address came out as
+`#/share-ask/…` — the route that asks him. Navigating to the share target directly, the way
+the operating system does: the link was stored and the address carried no hash at all — the
+route that saves. The same run confirmed what no test can, that the root page really is the
+app in a browser, that `/app.html` really does redirect to it, and that the page loads with
+an empty console.
+
 **What is not closed, said plainly.** A page that sends no referrer at all still looks like
 a share. Closing that completely would mean a confirmation on every capture, which is a
 press on the one path D17 says must be effortless. The residual is bounded and visible: the

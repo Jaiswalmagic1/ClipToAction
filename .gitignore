@@ -22,3 +22,7 @@ backend/.staging-assets/
 # Scratch probes a reviewer or a debugging session leaves behind. They are discovered by
 # `node --test` and would otherwise run in CI, printing debug output into the release gate.
 *.probe.test.js
+
+# Per-machine editor and agent state, including the local dev-server config. Nothing in
+# here is part of the product.
+.claude/
