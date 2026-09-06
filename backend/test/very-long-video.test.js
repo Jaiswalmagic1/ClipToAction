@@ -31,7 +31,7 @@ import {
   tooLongForAnyone,
   whatItCosts
 } from "../src/longvideo.js";
-import { isLong } from "../src/analyze.js";
+import { isLong, LONG_VIDEO_SEC } from "../src/analyze.js";
 import { createTestEnv } from "./helpers/testenv.js";
 
 const SERVICE_TOKEN = "service-token-for-tests";
@@ -119,6 +119,37 @@ describe("the figures the warning is written from", () => {
     assert.equal(read("CHARS_PER_SEC"), CHARS_PER_SEC);
     assert.equal(read("MAX_TRANSCRIPT_CHARS"), MAX_TRANSCRIPT_CHARS);
     assert.equal(read("NEAR_CEILING_FRACTION"), NEAR_CEILING_FRACTION);
+  });
+
+  // The fourth number that has to agree across three files, and the one that was left
+  // behind on the PC when the other three moved to the API. It decides whether times are
+  // written INTO the transcript there and whether the prompt ASKS for them here — so a
+  // stale value in a gitignored .env means an hour-long talk is told to copy time markers
+  // out of a transcript that has none, and comes back with no chapters and nothing saying
+  // why. Which is the one thing D33 exists to produce.
+  test("what counts as long enough for chapters travels with the work too", async () => {
+    const harness = await createTestEnv();
+    try {
+      const claimed = await harness.call(worker, "/v1/queue?limit=1", {
+        serviceToken: SERVICE_TOKEN
+      });
+      assert.equal(claimed.body.limits.long_video_sec, LONG_VIDEO_SEC);
+    } finally {
+      harness.restore();
+    }
+
+    const python = readFileSync(join(repo, "worker-pc", "worker.py"), "utf8");
+    const found = /LONG_VIDEO_SEC", "(\d+)"/.exec(python);
+    assert.ok(found, "worker.py does not default LONG_VIDEO_SEC");
+    assert.equal(Number(found[1]), LONG_VIDEO_SEC, "the two files disagree");
+    assert.ok(
+      python.includes('sent("long_video_sec", LONG_VIDEO_SEC)'),
+      "the worker does not take it from the API, so a stale .env still decides"
+    );
+    assert.ok(
+      python.includes("long_above is None else long_above"),
+      "the value from the API never reaches the place that writes the times"
+    );
   });
 
   test("the PC worker's ceiling matches this file's, or a video is refused twice over", () => {

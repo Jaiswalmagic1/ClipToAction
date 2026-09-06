@@ -117,6 +117,30 @@ describe("checking what the AI sent back", () => {
     assert.ok(validateRelook({}).length >= 2);
   });
 
+  // The one an AI actually gets wrong: a list of strings where a list of objects was
+  // asked for. The first version of this check only tested that the lists were not empty,
+  // so this passed — and a round-up of three empty headings was stored while up to sixty
+  // reels were stamped as looked-back FOR EVER, since nothing clears that mark.
+  test("a list of strings is refused, which is the mistake that actually happens", () => {
+    const strings = {
+      themes: ["Meesho selling", "AI photos"],
+      act_now: ["Switch on Sunday Pickup", "Try a jewellery prompt"],
+      note: "Mostly Meesho."
+    };
+    assert.ok(validateRelook(strings).some((problem) => problem.includes("themes")));
+    assert.ok(validateRelook(strings).some((problem) => problem.includes("act_now")));
+  });
+
+  test("and so is a list of objects with nothing in the field that matters", () => {
+    assert.ok(
+      validateRelook({ themes: [{ why: "no name" }], act_now: ROUNDUP.act_now }).length
+    );
+    assert.ok(
+      validateRelook({ themes: ROUNDUP.themes, act_now: [{ because: "no do" }] }).length
+    );
+    assert.ok(validateRelook({ themes: [null], act_now: [null] }).length);
+  });
+
   test("an enormous reply is refused rather than stored", () => {
     const huge = { ...ROUNDUP, note: "x".repeat(5000) };
     assert.ok(validateRelook(huge).includes("note is too long"));
@@ -276,6 +300,39 @@ describe("looking back over a notebook", () => {
     const delta = await harness.call(worker, "/v1/sync?since=0", { token });
     assert.equal(delta.body.relook.due, 1);
     assert.equal(delta.body.relook.ready, false, "one saved today has not been waiting");
+  });
+
+  test("a reply of strings marks nothing — sixty reels are not spent on empty headings", async () => {
+    harness.database.prepare("UPDATE clips SET relooked_at = NULL WHERE user_id = 'vish'").run();
+    harness.answerProviderWith(() =>
+      harness.geminiReplyWith({
+        themes: ["Meesho selling"],
+        act_now: ["Switch on Sunday Pickup"],
+        note: "Mostly Meesho."
+      })
+    );
+
+    const dueBefore = harness.database
+      .prepare("SELECT COUNT(*) AS n FROM clips WHERE user_id = 'vish' AND relooked_at IS NULL")
+      .get().n;
+    const storedBefore = harness.database.prepare("SELECT COUNT(*) n FROM relooks").get().n;
+    assert.ok(dueBefore > 0, "there has to be something to lose for this to prove anything");
+
+    const run = await harness.call(worker, "/v1/relook", { method: "POST", token });
+    assert.equal(run.status, 400);
+    assert.match(run.body.error, /malformed/);
+    assert.equal(
+      harness.database
+        .prepare("SELECT COUNT(*) AS n FROM clips WHERE user_id = 'vish' AND relooked_at IS NULL")
+        .get().n,
+      dueBefore,
+      "nothing may be marked — there is no route anywhere that clears it again"
+    );
+    assert.equal(
+      harness.database.prepare("SELECT COUNT(*) n FROM relooks").get().n,
+      storedBefore,
+      "and nothing may be stored"
+    );
   });
 
   test("a malformed reply marks nothing, so pressing again covers the same reels", async () => {

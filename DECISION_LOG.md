@@ -1231,11 +1231,18 @@ pointing at the right thing.
 **`start_url` is deliberately unchanged.** It stays `./index.html` rather than becoming
 `./`. A browser recognises an installed app by its manifest `id`, which defaults to
 `start_url` — so changing `start_url` on an app somebody has already installed makes it a
-different app, and his phone would have carried on opening the old page for ever. Instead
-`id` is now written down explicitly as `./index.html`, which is exactly what it has been
-implicitly all along. Nothing about the installed app changes except what the file at that
-address contains. The staging build sets `id` to `./app.html` for the same reason, because
-that is what a staging install has been recognised by.
+different app, and his phone would have carried on opening the old page for ever. Leaving
+it alone means the identity is already exactly what his phone has been using, and nothing
+about the installed app changes except what the file at that address contains.
+
+> **Corrected 2026-09-07 (D46).** This paragraph originally went on to say that `id` was
+> "now written down explicitly as `./index.html`". It was, and that was a bug: `id` is
+> resolved against the ORIGIN, not against the manifest's folder, so on GitHub Pages it
+> pointed at `https://jaiswalmagic1.github.io/index.html` — a *different* app from the one
+> he has installed. **`manifest.json` now carries no `id` at all**, and a test asserts it
+> stays that way. The staging build sets `id` to the absolute `/app.html`, which is what a
+> staging install has been recognised by. Left visible rather than rewritten, because the
+> reasoning that produced the wrong answer is worth reading.
 
 **The service worker is now network first, and that is not cosmetic.** The old one was
 cache first with a fixed cache name and no cleanup, which means the page a phone installed
@@ -2276,3 +2283,98 @@ that the referrer meta does what it claims, that `cameFromShareTarget` cannot be
 does not wrongly refuse a real share, and that the service worker's share skip does not cost
 the offline fallback. What it found instead was older than any of the review rounds: a
 premise stated in D48 that had never been true.
+
+---
+
+### D51 — Round six, second pass: does each of the eight jobs actually work?
+**Date:** 2026-09-07
+**Amends:** D33, D38, D41, and corrects D37.
+
+The second round-six reviewer was pointed somewhere different on purpose: not at what the
+previous rounds had covered, but at **whether the eight jobs he asked for are genuinely
+delivered end to end**. It ran the real app module against a real-shaped notebook and
+confirmed every one of the eight draws — the root-page swap, the two new tables with their
+copy button, the backfill offer, the look-back banner, creator chips and search, the four
+home sections, the 69-minute warning with its real arithmetic, and the connector's new
+columns. Nothing is a stub.
+
+It then found three things that would have cost him data or silently failed.
+
+#### A wrongly-shaped look back burnt sixty reels, permanently
+
+`validateRelook` checked that `themes` and `act_now` were non-empty arrays inside a size
+cap. It never checked that the entries were the SHAPE that was asked for — so a reply of
+`{themes: ["Meesho selling"], act_now: ["Switch on Sunday Pickup"]}`, which is the single
+commonest thing a model gets wrong about a JSON contract, passed with zero problems.
+
+The round-up was then stored, `users.relooked_at` was stamped, and **up to sixty reels were
+marked as looked-back for ever** — nothing anywhere clears `clips.relooked_at`. In exchange
+he got a panel with three empty headings, and those reels could never be in another look
+back. The empty-state line that should have taken their place was suppressed too, because
+it counted the raw list rather than the usable entries.
+
+That directly contradicts D41's promise that "a malformed reply leaves every reel exactly as
+due as it was". The guard caught unparseable JSON and empty arrays; it did not catch the
+failure that actually happens. It does now, and the test that missed it used
+`{themes: [], act_now: []}` — which the "is empty" check caught by accident.
+
+#### A table that could never be filled, and nothing saying so
+
+`cleanItems` drops rows that are not objects, so a tactic video coming back as
+`items: ["Sunday Pickup", "Open Box Delivery"]` ends up with no rows at all. `shapes_version`
+was then stamped anyway — "written whatever came back" — which took that reel out of the
+"read these again" queue **for ever**. Empty table, invisible to the offer, indistinguishable
+from a reel that genuinely had nothing to track, and no signal anywhere.
+
+D38's whole value is 52 tactic videos finally getting rows, and it rested on the model
+returning objects every time. A reply whose rows were ALL unusable is now left behind the
+current version, so the offer can pick it up again. A reply that was asked and honestly had
+nothing is still recorded as asked — that distinction is the whole point of the column.
+
+#### The fourth number that has to agree across three files
+
+D45 moved the threshold, the ceiling and the transcript limit out of the PC's gitignored
+`.env` and into the claim response, because a stale value there had already cost him three
+videos for a month. `LONG_VIDEO_SEC` was left behind — and it is the one that decides
+whether times are written INTO the transcript on the PC and whether the prompt ASKS for
+them in the Worker. A stale value between the two means an hour-long talk is told to copy
+time markers out of a transcript that contains none, and comes back with **no chapters at
+all** — which is the one thing D33 exists to produce, failing silently, because a missing
+`sections` is deliberately accepted as fine.
+
+It now travels with the work like the other three, and a test compares it across all three
+files as `very-long-video.test.js` already did for the rest.
+
+#### And a claim in D37 that stopped being true
+
+D37's body said the manifest `id` was "now written down explicitly as `./index.html`". D46
+removed it — because `id` resolves against the origin, not the manifest's folder, so on
+GitHub Pages it named a different app from the one he has installed — and D37 was never
+corrected. Read on its own it described the exact bug D46 fixed. It now carries the
+correction inline, with the wrong reasoning left visible rather than rewritten, because the
+reasoning that produced the wrong answer is the part worth reading.
+
+#### Three things that were built and reached by nothing
+
+`long_ok_mine` was computed on every sync and read nowhere — a clip's page now says whether
+it was he who agreed to a long video's length, or somebody else who saved it. `covers_from`
+and `covers_to` were stored from the first version and shown nowhere — "over 9 videos" now
+says which nine weeks they came from. And the offer to fill in the new tables was drawn only
+INSIDE a table, so anyone who never opened Prompts or Worth-trying never learned that two
+hundred reels could fill them; it is on Home now.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+| Four | 7 | 5 |
+| Five | 3 | 3 |
+| Six | 5 | 1 |
+
+**Sixty-two.** Round six is the first where a majority of what was found was NOT introduced
+by the previous round — because half of it came from asking a different question. Five
+rounds of "is this code correct" never asked "does the thing he wanted actually happen",
+and that question found a data-loss bug on its first pass.

@@ -363,6 +363,39 @@ describe("a new table never spends an allowance by itself", () => {
     assert.equal(harness.providerCalls.length, before, "a second press must spend nothing");
   });
 
+  // A tactic video whose rows come back as `["Sunday Pickup", "Open Box Delivery"]` — a
+  // list of strings where objects were asked for — has every row thrown away. Recording
+  // that as "asked and had nothing" would take it out of this queue for ever, leaving an
+  // empty table nothing can fill and no signal anywhere that it went wrong.
+  test("a reply whose rows were all unusable is left for another go", async () => {
+    harness.database
+      .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL WHERE source_id = ?")
+      .run(sourceId);
+    harness.answerProviderWith(() =>
+      harness.geminiReplyWith({
+        ...answer("tactic", []),
+        items: ["Switch on Sunday Pickup", "Turn on NDD"]
+      })
+    );
+
+    const run = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    assert.equal(run.body.done, 1, "the summary itself is still worth keeping");
+
+    const row = harness.database
+      .prepare("SELECT items, shapes_version FROM analyses WHERE source_id = ? AND user_id = ''")
+      .get(sourceId);
+    assert.equal(row.items, null, "nothing usable came back");
+    assert.equal(
+      row.shapes_version,
+      null,
+      "and it must NOT be recorded as asked, or the table can never be filled"
+    );
+
+    const again = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    assert.equal(again.body.remaining, 0);
+    assert.equal(again.body.done, 1, "it comes round again rather than being lost");
+  });
+
   test("without a key nothing is attempted, and it says so", async () => {
     harness.database.prepare("DELETE FROM ai_keys WHERE user_id = 'vish'").run();
     harness.database

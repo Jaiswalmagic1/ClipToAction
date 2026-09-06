@@ -122,7 +122,7 @@ class LongVideoSettings(unittest.TestCase):
         speech, no markers. Everything already stored was made that way."""
         source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
         self.assertIn(
-            "if duration_sec > LONG_VIDEO_SEC:",
+            "if duration_sec > (LONG_VIDEO_SEC if long_above is None else long_above):",
             source,
             "marking must be conditional, or every reel's transcript changes shape",
         )
@@ -131,9 +131,14 @@ class LongVideoSettings(unittest.TestCase):
         """The condition above is dead code if the caller never passes the duration."""
         source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
         self.assertIn(
-            "transcribe(audio_path, duration,",
+            "audio_path, duration, limits[",
             source,
             "process() must hand transcribe() the duration it just measured",
+        )
+        self.assertIn(
+            'limits["long_video_sec"]',
+            source,
+            "and the threshold the API sent, or a stale .env still decides (D50)",
         )
 
 

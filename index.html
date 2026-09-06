@@ -1398,11 +1398,19 @@ function relookPanel(row) {
 
   const when = document.createElement("p");
   when.className = "muted";
+  // The span it covered, which was stored from the start and shown nowhere: "over 9
+  // videos" says nothing about whether that was last week or last spring.
+  const span = row.covers_from && row.covers_to
+    ? ` saved between ${whenText(row.covers_from).toLowerCase()} and `
+      + `${whenText(row.covers_to).toLowerCase()}`
+    : "";
   when.textContent = `${whenText(row.created_at)} — over ${row.clip_count} `
-    + `${row.clip_count === 1 ? "video" : "videos"} you had not returned to.`;
+    + `${row.clip_count === 1 ? "video" : "videos"}${span} you had not returned to.`;
   panel.append(when);
 
-  const actions = jsonList(row.act_now);
+  const actions = jsonList(row.act_now).filter(
+    (action) => action && typeof action === "object" && String(action.do || "").trim()
+  );
   if (actions.length) {
     const h = document.createElement("h3");
     h.textContent = "Worth doing now";
@@ -1425,7 +1433,9 @@ function relookPanel(row) {
     panel.append(h, list);
   }
 
-  const themes = jsonList(row.themes);
+  const themes = jsonList(row.themes).filter(
+    (theme) => theme && typeof theme === "object" && String(theme.name || "").trim()
+  );
   if (themes.length) {
     const h = document.createElement("h3");
     h.textContent = "What it kept coming back to";
@@ -2676,6 +2686,18 @@ function renderClip(clipId) {
     panel.append(detail);
   }
 
+  // Who agreed to a long video, when there was something to agree to (D42). `long_ok_mine`
+  // is the only thing the shared row is allowed to say about that — the account id itself
+  // never leaves the Worker — and it was being computed on every sync and read by nothing.
+  if (source?.long_ok_mine !== null && source?.long_ok_mine !== undefined) {
+    const who = document.createElement("p");
+    who.className = "muted";
+    who.textContent = source.long_ok_mine
+      ? "You said yes to this one's length."
+      : "Somebody else who saved this said yes to its length.";
+    panel.append(who);
+  }
+
   if (source?.url_original) {
     const link = document.createElement("p");
     const anchor = document.createElement("a");
@@ -2690,7 +2712,12 @@ function renderClip(clipId) {
   if (source?.duration_sec) {
     const length = document.createElement("p");
     length.className = "muted";
-    length.textContent = `${source.duration_sec} seconds long`;
+    // The same words the warning uses. "4140 seconds long" sat directly under a notice
+    // correctly saying "an hour and 9 minutes" — one number, two spellings, and the
+    // unreadable one first.
+    length.textContent = source.duration_sec < 60
+      ? `${source.duration_sec} seconds long`
+      : `${spellOutMinutes(source.duration_sec / 60)} long`;
     panel.append(length);
   }
 
@@ -3088,15 +3115,17 @@ function actOnSection() {
   // The things the last look back said were worth doing. They are the closest thing in the
   // notebook to a list somebody wrote for him, so they go first (D41).
   const last = latestRelook();
-  const suggested = last ? jsonList(last.act_now) : [];
+  // Only the entries that are actually usable. Counting the raw list meant a reply that
+  // came back as a list of strings drew a heading with nothing under it AND suppressed the
+  // "nothing yet" line that should have taken its place.
+  const suggested = (last ? jsonList(last.act_now) : []).filter(
+    (action) => action && typeof action === "object" && String(action.do || "").trim()
+  );
   if (suggested.length) {
     const heading = document.createElement("h3");
     heading.textContent = "From your last look back";
     panel.append(heading);
     for (const action of suggested.slice(0, HOME_ROWS)) {
-      // A reply that came back as a list of strings rather than objects would otherwise
-      // draw a row of nothing that he could press.
-      if (!action || !String(action.do || "").trim()) continue;
       panel.append(homeRow(String(action.do), {
         detail: [action?.because, action?.from && `from “${action.from}”`]
           .filter(Boolean).join(" — ")
@@ -3459,6 +3488,18 @@ function renderHome() {
     const wrap = document.createElement("div");
     wrap.className = "panel";
     wrap.append(lookBack);
+    host.append(wrap);
+  }
+
+  // The offer to fill in the tables was drawn only INSIDE a table (D39), so somebody who
+  // never opened Prompts or Worth-trying never learned that two hundred reels could fill
+  // them. It costs his allowance, so it stays an offer with a number on it — it just has
+  // to be somewhere he will see it.
+  const behind = backfillOffer();
+  if (behind) {
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    wrap.append(behind);
     host.append(wrap);
   }
 

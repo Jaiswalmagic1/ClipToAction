@@ -96,6 +96,22 @@ export function relookLines(rows) {
 export function validateRelook(payload) {
   const problems = [];
 
+  // The entries have to be the SHAPE that was asked for, not merely present.
+  //
+  // The commonest thing an AI gets wrong about a JSON shape is returning a list of strings
+  // where a list of objects was asked for — and the first version of this checked only
+  // that the lists were non-empty. So `{themes:["Meesho"], act_now:["Do the thing"]}`
+  // passed, the round-up was stored, and up to sixty reels were stamped as looked-back
+  // FOR EVER (nothing anywhere clears `clips.relooked_at`) in exchange for a panel with
+  // three empty headings. One batch call spent, and the reels never due again.
+  //
+  // D41 promises that a malformed reply "leaves every reel exactly as due as it was".
+  // This is what makes that true of the failure that actually happens.
+  const shaped = {
+    themes: (item) => item && typeof item === "object" && String(item.name || "").trim(),
+    act_now: (item) => item && typeof item === "object" && String(item.do || "").trim()
+  };
+
   for (const [field, cap, size] of [
     ["themes", RELOOK_LIMITS.themes, RELOOK_LIMITS.theme],
     ["act_now", RELOOK_LIMITS.actions, RELOOK_LIMITS.action]
@@ -106,6 +122,8 @@ export function validateRelook(payload) {
     else if (value.length > cap) problems.push(`${field} has too many items`);
     else if (value.some((item) => JSON.stringify(item ?? "").length > size)) {
       problems.push(`${field} has an item that is too long`);
+    } else if (!value.every(shaped[field])) {
+      problems.push(`${field} is not in the shape that was asked for`);
     }
   }
 

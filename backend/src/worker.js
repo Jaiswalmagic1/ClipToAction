@@ -18,12 +18,14 @@ import {
   promptFor,
   tidyTranscript,
   isLong,
+  LONG_VIDEO_SEC,
   analyzeSource,
   parseAnalysis,
   proposeTopic,
   askOnTheirOwnKeys,
   cleanKind,
   cleanItems,
+  KINDS_WITH_ROWS,
   itemKey,
   ITEM_STATUSES,
   ITEM_SHAPES_VERSION,
@@ -781,7 +783,13 @@ async function claimQueue(request, env) {
     limits: {
       warn_above_sec: WARN_ABOVE_SEC,
       max_video_sec: MAX_VIDEO_SEC,
-      max_transcript_chars: MAX_TRANSCRIPT_CHARS
+      max_transcript_chars: MAX_TRANSCRIPT_CHARS,
+      // The fourth number that has to agree across three files, and the one D45 left
+      // behind on the PC. It decides whether times are written INTO the transcript here
+      // and whether the prompt ASKS for them there — so a stale value in a gitignored
+      // .env means an hour-long talk is asked to copy time markers out of a transcript
+      // that has none, and comes back with no chapters at all and nothing saying why.
+      long_video_sec: LONG_VIDEO_SEC
     }
   });
 }
@@ -1010,6 +1018,21 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   const kind = cleanKind(payload.kind);
   const rows = cleanItems(kind, payload.items);
 
+  // The AI sent rows and every one of them was thrown away — which is what happens when a
+  // tactic video comes back as `items: ["Sunday Pickup", "Open Box Delivery"]`, a list of
+  // strings where a list of objects was asked for.
+  //
+  // That is NOT the same as a video with nothing to track, and it must not be recorded as
+  // though it were: stamping the current shapes version would take it out of the "read
+  // these again" queue for ever, leaving an empty table nothing can ever fill and no
+  // signal anywhere that it went wrong. So the version is left behind and the offer can
+  // pick it up again (D39).
+  const rowsWereMangled =
+    KINDS_WITH_ROWS.includes(kind)
+    && Array.isArray(payload.items)
+    && payload.items.length > 0
+    && !(rows && rows.length);
+
   const statements = [
     env.DB.prepare(
       `INSERT INTO analyses
@@ -1042,8 +1065,9 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
       rows && rows.length ? JSON.stringify(rows) : null,
       // Which set of row shapes this reply was asked for. Written whatever came back,
       // including "nothing to track": the point of the number is that a reel which was
-      // ASKED and had nothing is never offered for re-reading again (D39).
-      ITEM_SHAPES_VERSION,
+      // ASKED and had nothing is never offered for re-reading again (D39). The one
+      // exception is a reply whose rows were all unusable — see above.
+      rowsWereMangled ? null : ITEM_SHAPES_VERSION,
       timestamp
     )
   ];

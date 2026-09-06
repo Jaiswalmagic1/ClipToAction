@@ -102,6 +102,7 @@ def claim_batch():
             "warn_above_sec": None,
             "max_video_sec": MAX_DURATION_SEC,
             "max_transcript_chars": MAX_TRANSCRIPT_CHARS,
+            "long_video_sec": LONG_VIDEO_SEC,
         }
 
     # `is None` rather than `or`, because 0 is a real answer to two of these -- a server
@@ -114,6 +115,11 @@ def claim_batch():
         "warn_above_sec": sent("warn_above_sec", WARN_ABOVE_SEC),
         "max_video_sec": sent("max_video_sec", MAX_DURATION_SEC),
         "max_transcript_chars": sent("max_transcript_chars", MAX_TRANSCRIPT_CHARS),
+        # Whether times go INTO the transcript. It has to match the number the API uses to
+        # decide whether the prompt ASKS for them, or an hour-long talk is told to copy
+        # time markers out of a transcript that has none -- and comes back with no
+        # chapters, which is the one thing D33 exists to produce.
+        "long_video_sec": sent("long_video_sec", LONG_VIDEO_SEC),
     }
 
 
@@ -387,7 +393,7 @@ def mark_times(segments):
     return " ".join(parts).strip()
 
 
-def transcribe(audio_path, duration_sec=0, max_chars=None):
+def transcribe(audio_path, duration_sec=0, max_chars=None, long_above=None):
     """Always task="translate" -- the transcript comes back in English whatever was spoken.
 
     Asked to write Hindi down in Hindi, whisper produces broken Devanagari on the
@@ -400,7 +406,7 @@ def transcribe(audio_path, duration_sec=0, max_chars=None):
     against it cannot be found again, which is most of the reason for saving it.
     """
     segments, info = model.transcribe(str(audio_path), task="translate", vad_filter=True)
-    if duration_sec > LONG_VIDEO_SEC:
+    if duration_sec > (LONG_VIDEO_SEC if long_above is None else long_above):
         text = mark_times(segments)
     else:
         text = " ".join(segment.text.strip() for segment in segments).strip()
@@ -503,7 +509,9 @@ def process(source, limits):
     print(f"- {source['platform']}: {source['url_canonical']}")
     try:
         audio_path, title, duration, creator = download_audio(source, limits)
-        text, lang = transcribe(audio_path, duration, limits["max_transcript_chars"])
+        text, lang = transcribe(
+            audio_path, duration, limits["max_transcript_chars"], limits["long_video_sec"]
+        )
         post_transcript(source["id"], text, lang, title, duration, creator)
         print(f"  transcribed {len(text)} chars ({lang})")
     except NeedsPermission as waiting:
