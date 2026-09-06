@@ -57,7 +57,7 @@ name = "cliptoaction-api"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "cliptoaction"
-database_id = "set-after-wrangler-d1-create-cliptoaction"
+database_id = "bef99e79-3d20-4100-a03a-82d696a8aaa0"
 
 [env.production.vars]
 FIREBASE_PROJECT_ID = "cliptoaction-ff144"
