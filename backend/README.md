@@ -181,6 +181,22 @@ To see which have landed:
 wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT name FROM pragma_table_info('sources')"
 ```
 
+### The release order, in full
+
+Getting these the wrong way round is the only way this release can look like lost data, so
+they are written out rather than left to be inferred.
+
+1. **Every unapplied migration, on staging, in order.** Safe while the old Worker is still
+   running: they are all additive and nothing reads the new columns yet.
+2. **`npm run deploy:staging`.** Never before step 1 — the new code reads columns that
+   would not exist, and `/v1/sync` then fails for everybody, which on screen is
+   indistinguishable from an empty notebook.
+3. **Restart the PC worker's scheduled task**, so it runs the code that matches.
+   `Stop-ScheduledTask ClipToActionWorker` then `Start-ScheduledTask ClipToActionWorker`.
+   This step is order-independent by design: `claim_batch` falls back to its pre-D42
+   behaviour when the API sends no limits, so an old Worker and a new worker get along.
+4. **Merge to `main`**, which is what publishes the app (D16).
+
 ## AI providers
 
 Analysis runs inside the Worker (`src/analyze.js`) so a user's API key never leaves it.

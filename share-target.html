@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Saving to ClipToAction</title>
+  <!-- The address of the next page carries the link when storage will not, and the app
+       decides whether to trust it by where it came FROM. So the referrer has to survive
+       this navigation, and the default policy would strip it down to the bare origin. -->
+  <meta name="referrer" content="same-origin">
 </head>
 <body>
   <p>Opening ClipToAction...</p>
@@ -11,7 +15,7 @@
     // This page IS the only way a reel gets in (D17), so nothing in it may throw.
     //
     // It used to write to localStorage unguarded, and then navigate. In a private window,
-    // or a browser set to block site data, or one whose quota is full, `setItem` THROWS —
+    // or a browser set to block site data, or one whose quota is full, `setItem` THROWS --
     // the script died there, the navigation never happened, and he was left looking at
     // "Opening ClipToAction..." for ever with the reel he had just shared silently gone.
     var params = new URLSearchParams(window.location.search);
@@ -26,12 +30,18 @@
       localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
       stored = true;
     } catch (error) {
-      // Storage is not available. Fall through — the address carries it instead.
+      // Storage is not available. Fall through -- the address carries it instead.
     }
 
     // When storage would not take it, the link travels in the address of the very next
     // page. Same site, and it is a public video link he has just chosen to share, so
     // nothing private is being put anywhere it was not already going.
+    //
+    // The app treats an address-carried link as somebody else's unless it arrived FROM
+    // this page -- which is what the referrer above is for. Without that marker his own
+    // share sheet would degrade, the moment his storage filled up, into "somebody shared
+    // this with you, press Save", which is both wrong and an extra press on the one path
+    // that has to be effortless.
     var found = (share.url + " " + share.text).match(/https?:\/\/\S+/);
     var carry = !stored && found ? "#/share/" + encodeURIComponent(found[0]) : "";
     window.location.replace("index.html" + carry);

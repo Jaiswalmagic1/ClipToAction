@@ -104,12 +104,16 @@ def claim_batch():
             "max_transcript_chars": MAX_TRANSCRIPT_CHARS,
         }
 
+    # `is None` rather than `or`, because 0 is a real answer to two of these -- a server
+    # saying "ask about everything" would otherwise be read as saying nothing at all.
+    def sent(name, fallback):
+        value = limits.get(name)
+        return fallback if value is None else int(value)
+
     return payload.get("sources", []), {
-        "warn_above_sec": int(limits.get("warn_above_sec") or WARN_ABOVE_SEC),
-        "max_video_sec": int(limits.get("max_video_sec") or MAX_DURATION_SEC),
-        "max_transcript_chars": int(
-            limits.get("max_transcript_chars") or MAX_TRANSCRIPT_CHARS
-        ),
+        "warn_above_sec": sent("warn_above_sec", WARN_ABOVE_SEC),
+        "max_video_sec": sent("max_video_sec", MAX_DURATION_SEC),
+        "max_transcript_chars": sent("max_transcript_chars", MAX_TRANSCRIPT_CHARS),
     }
 
 

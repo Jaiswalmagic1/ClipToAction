@@ -169,6 +169,9 @@ function makeDocument() {
     },
     createRange: () => ({ selectNodeContents() {} }),
     addEventListener() {},
+    // Where the page before this one was. The app uses it to tell its OWN share target's
+    // fallback from a link somebody pasted.
+    referrer: "",
     // Every id the app asks for exists, because in the real page every one of them does.
     // A typo would otherwise read as "this element is missing" rather than failing.
     getElementById(id) {
@@ -189,7 +192,13 @@ function makeDocument() {
  */
 export async function loadApp(
   sync,
-  { hash = "", storageBlocked = false, failAfter = null, quotaChars = null } = {}
+  {
+    hash = "",
+    storageBlocked = false,
+    failAfter = null,
+    quotaChars = null,
+    referrer = ""
+  } = {}
 ) {
   const html = readFileSync(join(repo, "index.html"), "utf8");
   const found = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
@@ -210,6 +219,7 @@ export async function loadApp(
     );
 
   const document = makeDocument();
+  document.referrer = referrer;
   document._seed(html);
   const listeners = [];
 
@@ -223,9 +233,16 @@ export async function loadApp(
    * both. A harness that cannot see a double render cannot see a missing one either.
    */
   let currentHash = hash;
+  // A real address, because the app compares the page it came FROM against this one to
+  // tell its own share target apart from a link somebody pasted.
+  const ORIGIN = "https://app.test";
   const fakeLocation = {
+    origin: ORIGIN,
     pathname: "/",
     search: "",
+    get href() {
+      return `${ORIGIN}${this.pathname}${this.search}${currentHash}`;
+    },
     get hash() {
       return currentHash;
     },
@@ -272,8 +289,18 @@ export async function loadApp(
   // A real quota, so the app's own shrinking can be watched rather than simulated. This is
   // how a browser behaves when the box is full: the write throws and nothing is stored.
   const quotaed = (key, value) => {
-    if (quotaChars !== null && String(value).length > quotaChars) {
-      throw new Error("QuotaExceededError");
+    if (quotaChars !== null) {
+      // The WHOLE box, not just the write in front of it — which is what a browser
+      // measures and what "the box is full" actually means. Measuring one value alone
+      // meant a small write could never fail, so the share target's own fallback could
+      // not be exercised by any test.
+      let held = 0;
+      for (const [name, held_value] of store) {
+        if (name !== key) held += name.length + String(held_value).length;
+      }
+      if (held + key.length + String(value).length > quotaChars) {
+        throw new Error("QuotaExceededError");
+      }
     }
     store.set(key, String(value));
   };

@@ -2120,3 +2120,82 @@ have failed however they were written. It is a real transaction now.
 which is the highest proportion yet — the code being changed is getting smaller and more
 load-bearing each time. Everything else round four looked at came back clean, including the
 fence, the release order, the migrations, cross-user isolation and CI.
+
+---
+
+### D49 — Round five, and a fix that was written down but never written
+**Date:** 2026-09-07
+**Amends:** D40, D48.
+
+#### The one that matters most, and not for its size
+
+**D48 records a fix to migration 0014 that does not exist in the file.** The entry says
+"it now drops the old one first". It did not: the patch that would have added the `DROP
+INDEX` failed partway through on an unrelated file and never reached the migration, and the
+decision log was written from the intention rather than from the result.
+
+The consequence, had it shipped: 0014 has been edited in place three times on this branch,
+always the same index name, always `CREATE INDEX IF NOT EXISTS`. Any database that ran an
+earlier revision — and staging is the first thing the release sequence touches — would
+silently no-op on the re-run and keep the wrong index, so `creatorQueue`'s
+`ORDER BY creator_tries, created_at DESC` would sort by hand on every idle poll, for ever.
+That is the D1 free-allowance burn D46 spent a migration removing.
+
+**The lesson is bigger than the bug.** Four rounds of review have been checking the code
+against what the log says, and here the log was wrong — a claim made in good faith about
+work that had silently failed. Every entry from D45 onward describes work verified by
+running it; this one was not. A patch script that stops on an assertion leaves everything
+after it undone, and saying so afterwards is not the same as checking.
+
+#### The one that would have broken the only way in
+
+**His own share sheet would have started accusing him of being sent his own reels.**
+`share-target.html` falls back to carrying the link in the address whenever `setItem`
+throws — for any reason, including a full box. D48 treats every address-carried link as
+somebody else's, so the moment his storage filled up, every reel he shared from Instagram
+would arrive with "Somebody shared this link with you. Press Save if you want it." and stop
+there. D17's only capture path, degraded to two presses and a false statement, exactly when
+the device is under pressure.
+
+And it is likelier than it sounds, because D48 removed D47's third fallback tier: a
+210-reel notebook of analyses, rows, notes and learnings with no transcripts can itself
+be too big, and then nothing is written and the box stays full permanently.
+
+Fixed with a marker only this app can produce: `share-target.html` sets
+`referrer` policy `same-origin`, and the app trusts an address-carried link only when the
+page before it was that file, on this origin. A pasted link has a different referrer or
+none, and is still filled in and left for him to press.
+
+#### And the test that could not have caught it
+
+The harness's storage quota measured only the size of the write in front of it, never the
+total held — so a small write could never fail and the share target's own fallback was
+unreachable by any test. It measures the whole box now, which is what a browser measures
+and what "full" actually means.
+
+#### Also
+
+The service worker was keeping one cached copy of `share-target.html` per distinct query
+string — which is one per reel he has ever shared, his links accumulating in a store this
+file otherwise keeps to a handful of named files. The bare copy is the one the navigate
+fallback finds, so the queried ones are simply not kept.
+
+`saveCache`'s docstring still described the three-tier scheme D48 removed, and still
+contained the sentence — "they are the one part that can always be fetched back" — that
+D48's own entry identifies as the false claim which caused the data loss.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+| Four | 7 | 5 |
+| Five | 3 | 3 |
+
+**Fifty-seven.** Round five found nothing that was not introduced by round four, and
+everything else it examined came back verified: the shrunken cache's next start traced end
+to end with no loop and no loss, both placeholder lists checked one by one, `ignoreSearch`
+proved unable to serve a wrong page, the race's rejection proved to pass through unchanged,
+and cross-user isolation, the fence, the migrations and CI all clean.

@@ -229,11 +229,40 @@ describe("a link somebody sent him", () => {
     app.restore();
   });
 
-  test("and the address is cleared, so a reload does not offer it twice", async () => {
+  test("and it lands on Home, not on a dead route", async () => {
     const app = await loadApp(payload(), {
       hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FSENTTOHIM%2F"
     });
-    assert.equal(app.$("homeView").hidden, false, "and it lands on Home, not a dead route");
+    assert.equal(app.$("homeView").hidden, false);
+    assert.equal(globalThis.location.hash, "", "the address must be cleared, or a reload offers it twice");
+    app.restore();
+  });
+
+  // His OWN share sheet also comes through the address when storage will not take the
+  // link — and it must not then accuse him of being sent it, or cost him a second press
+  // on the one path that has to be effortless (D17). What tells them apart is the page it
+  // came from, which only this app can be.
+  test("but his own share sheet still saves itself, even with the box full", async () => {
+    const app = await loadApp(payload(), {
+      hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FHISOWN%2F",
+      referrer: "https://app.test/share-target.html?url=x"
+    });
+
+    assert.ok(
+      app.calls.some((url) => url.includes("/v1/clips")),
+      "a reel he shared himself must not need a second press"
+    );
+    assert.ok(!app.text("saveMsg").includes("Somebody shared"));
+    app.restore();
+  });
+
+  test("and a page pretending to be it does not count", async () => {
+    const app = await loadApp(payload(), {
+      hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FPRETEND%2F",
+      referrer: "https://example.invalid/share-target.html"
+    });
+    assert.ok(!app.calls.some((url) => url.includes("/v1/clips")));
+    assert.match(app.text("saveMsg"), /Press Save/);
     app.restore();
   });
 });

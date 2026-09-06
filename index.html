@@ -740,14 +740,21 @@ function loadCache() {
  *
  * The transcripts are the whole problem. D42 allows a single video to be 400,000
  * characters, and a browser's storage box is only a few million — so a handful of long
- * videos and this starts failing on EVERY sync. Before, that failure was swallowed and the
- * device copy silently froze at the last snapshot that fitted: the notebook would look
- * complete and be months out of date, with nothing on screen.
+ * videos and this starts failing on EVERY sync. That failure used to be swallowed, and the
+ * device copy silently froze at the last snapshot that fitted: a notebook that looks
+ * complete and is months out of date, with nothing on screen.
  *
- * So it drops the biggest thing first. Without transcripts the notebook still opens
- * offline, still searches summaries and notes and learnings, and still shows every card —
- * only the full words of a video need the network again, and they are the one part that
- * can always be fetched back.
+ * Two rules, and both were learnt the hard way (D47, D48):
+ *
+ *   * The words come out FIRST, and the clock comes out with them. A sync only ever
+ *     returns what changed after `since`, and nothing anywhere fetches a single
+ *     transcript — so dropping the words while keeping the clock does not shrink the
+ *     notebook, it DELETES what was said in every reel, for good.
+ *   * Nothing he typed is ever dropped. His notes and his learnings exist nowhere else on
+ *     this device, and a smaller cache is not worth them.
+ *
+ * And when even that will not fit, nothing is written at all — so the last complete copy
+ * survives. Stale and whole beats current with pieces missing.
  */
 function saveCache() {
   try {
@@ -3549,20 +3556,38 @@ $("saveForm").onsubmit = (event) => {
 /**
  * A link that arrived from the share sheet, and whether it can be trusted to save itself.
  *
- * `own` means it came through our own share target's storage, which nothing but this app
- * can write. A link carried in the ADDRESS is different: anybody can send him one, so it
- * is put in the box and left for him to press. Saving it for him would let a message
- * queue his PC and spend a day of an AI key on somebody else's choosing.
+ * `own` means this app put it there. Two ways it can have: through our own share target's
+ * storage, which nothing else can write — or, when storage refused, in the ADDRESS, having
+ * come straight from that same page. An address on its own is not enough: anybody can send
+ * him a link, and saving it for him would let a message queue his PC and spend a day of an
+ * AI key on somebody else's choosing.
+ *
+ * So an address-carried link is trusted only when the page before it was our share target.
+ * Without that test his own share sheet would quietly degrade, the moment his storage
+ * filled up, into "somebody shared this with you" and an extra press — on the one path in
+ * this product that has to be effortless (D17).
  */
+const cameFromShareTarget = () => {
+  try {
+    const from = new URL(document.referrer || "", location.href);
+    return from.origin === location.origin && from.pathname.endsWith("/share-target.html");
+  } catch {
+    return false;
+  }
+};
+
 function pendingShare() {
   const carried = /^#\/share\/(.+)$/.exec(location.hash);
   if (carried) {
+    const own = cameFromShareTarget();
     // Out of the address straight away, so a reload does not offer it twice.
     history.replaceState(null, "", location.pathname + location.search);
     try {
-      return { url: decodeURIComponent(carried[1]), own: false };
+      return { url: decodeURIComponent(carried[1]), own };
     } catch {
-      return { url: "", own: false };
+      // The address is already gone, so a link that cannot be read has to say so here or
+      // it disappears without a word — on the one path a reel gets in by (D17).
+      return { url: "", own: false, broken: true };
     }
   }
 
@@ -4168,6 +4193,8 @@ onAuthStateChanged(auth, async (account) => {
   if (shared.url && shared.own) saveLink(shared.url);
   else if (shared.url) {
     say("saveMsg", "Somebody shared this link with you. Press Save if you want it.", "warn");
+  } else if (shared.broken) {
+    say("saveMsg", "Something was shared but the link could not be read. Paste it here.");
   }
 });
 </script>

@@ -350,8 +350,11 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
         for name in ("warn_above_sec", "max_video_sec", "max_transcript_chars"):
             self.assertIn(f'limits["{name}"]', self.source, f"{name} is not read from the API")
         # And the local settings are still the fallback, so an older API keeps working.
-        self.assertIn("or WARN_ABOVE_SEC", self.source)
-        self.assertIn("or MAX_DURATION_SEC", self.source)
+        self.assertIn('sent("warn_above_sec", WARN_ABOVE_SEC)', self.source)
+        self.assertIn('sent("max_video_sec", MAX_DURATION_SEC)', self.source)
+        # `is None`, not `or`: 0 is a real answer to two of these, and a server saying
+        # "ask about everything" must not be read as saying nothing at all.
+        self.assertIn("fallback if value is None else int(value)", self.source)
 
     def test_the_refusal_message_names_no_setting_and_no_machine(self):
         """It goes onto a row every saver of the reel reads."""

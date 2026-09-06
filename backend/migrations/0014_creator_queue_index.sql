@@ -15,6 +15,12 @@
 -- Partial, so it holds only the rows still waiting and shrinks to nothing as the backfill
 -- finishes -- the opposite of the scan it replaces. The columns are in the order the query
 -- reads them, so the sort comes out of the index too rather than a temporary b-tree.
+-- Dropped first, deliberately. Earlier drafts of THIS file created the same index name
+-- over different columns, and `CREATE INDEX IF NOT EXISTS` would find one of those and do
+-- nothing at all -- leaving a database quietly indexed the wrong way, with no error to
+-- notice and the query silently sorting by hand on every poll.
+DROP INDEX IF EXISTS idx_sources_creator_todo;
+
 CREATE INDEX IF NOT EXISTS idx_sources_creator_todo
   ON sources (creator_tries, created_at DESC)
   WHERE creator IS NULL AND creator_checked_at IS NULL;

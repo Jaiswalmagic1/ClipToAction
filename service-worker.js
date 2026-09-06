@@ -103,6 +103,13 @@ self.addEventListener("fetch", (event) => {
   // Authorization, and handed back to whoever opens the app on that device next.
   if (ours && (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))) return;
 
+  // A share arrives as `share-target.html?title=…&url=…`, and every share is a different
+  // address. Keeping each of them would fill the cache with copies of one static page,
+  // keyed by every reel he has ever shared — his links, sitting in a store this file
+  // otherwise keeps to a handful of named files. The copy under the bare name is the one
+  // that matters, and the navigate fallback finds it by ignoring the query.
+  const isShare = ours && url.pathname.endsWith("/share-target.html") && url.search;
+
   // Started once. The SAVE hangs off this fetch rather than off the race below, and the
   // COPY is taken synchronously the moment the answer arrives. Both of those matter, and
   // getting either wrong quietly disables the whole file:
@@ -117,7 +124,7 @@ self.addEventListener("fetch", (event) => {
   event.waitUntil(
     live
       .then((response) => {
-        if (!worthKeeping(response)) return null;
+        if (isShare || !worthKeeping(response)) return null;
         const copy = response.clone();
         return caches.open(CACHE).then((cache) => cache.put(request, copy));
       })
