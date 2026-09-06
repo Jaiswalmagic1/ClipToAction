@@ -8,14 +8,34 @@
 <body>
   <p>Opening ClipToAction...</p>
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const share = {
+    // This page IS the only way a reel gets in (D17), so nothing in it may throw.
+    //
+    // It used to write to localStorage unguarded, and then navigate. In a private window,
+    // or a browser set to block site data, or one whose quota is full, `setItem` THROWS —
+    // the script died there, the navigation never happened, and he was left looking at
+    // "Opening ClipToAction..." for ever with the reel he had just shared silently gone.
+    var params = new URLSearchParams(window.location.search);
+    var share = {
       title: params.get("title") || "",
       text: params.get("text") || "",
       url: params.get("url") || ""
     };
-    localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
-    window.location.replace("index.html");
+
+    var stored = false;
+    try {
+      localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
+      stored = true;
+    } catch (error) {
+      // Storage is not available. Fall through — the address carries it instead.
+    }
+
+    // When storage would not take it, the link travels in the address of the very next
+    // page. Same site, and it is a public video link he has just chosen to share, so
+    // nothing private is being put anywhere it was not already going.
+    var found = (share.url + " " + share.text).match(/https?:\/\/\S+/);
+    var carry = !stored && found ? "#/share/" + encodeURIComponent(found[0]) : "";
+    window.location.replace("index.html" + carry);
   </script>
+  <noscript><p><a href="index.html">Open ClipToAction</a></p></noscript>
 </body>
 </html>

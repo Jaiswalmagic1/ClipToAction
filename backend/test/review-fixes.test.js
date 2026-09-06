@@ -99,6 +99,62 @@ describe("a six-hour transcript can actually be posted", () => {
   });
 });
 
+describe("a late worker's transcript", () => {
+  let harness;
+  let token;
+  let clip;
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+    clip = await saveAndClaim(harness, token, "ALREADYDONEBYSOMEONE");
+  });
+  after(() => harness.restore());
+
+  test("cannot land after somebody else has finished the video", async () => {
+    harness.database
+      .prepare("UPDATE sources SET state = 'analyzed' WHERE id = ?")
+      .run(clip.source_id);
+
+    const posted = await harness.call(worker, `/v1/sources/${clip.source_id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "a stale machine's words", lang: "en", engine: "test" }
+    });
+    assert.equal(posted.status, 200);
+    assert.equal(posted.body.applied, false);
+
+    const rows = harness.database
+      .prepare("SELECT COUNT(*) AS n FROM transcripts WHERE source_id = ?")
+      .get(clip.source_id);
+    assert.equal(rows.n, 0, "the transcript must not be written either");
+  });
+
+  test("and the two writes move together, so nothing is left half-done", async () => {
+    // Splitting them left a hole: the state moved, the insert failed, and the reel was
+    // stuck for ever — unclaimable, no transcript, no analysis and no error.
+    harness.database
+      .prepare("UPDATE sources SET state = 'downloading' WHERE id = ?")
+      .run(clip.source_id);
+
+    const posted = await harness.call(worker, `/v1/sources/${clip.source_id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "the real words", lang: "en", engine: "test" }
+    });
+    assert.equal(posted.status, 200);
+
+    const state = harness.database
+      .prepare("SELECT state FROM sources WHERE id = ?")
+      .get(clip.source_id).state;
+    const stored = harness.database
+      .prepare("SELECT text FROM transcripts WHERE source_id = ?")
+      .get(clip.source_id);
+    assert.equal(state, "transcribed");
+    assert.equal(stored.text, "the real words", "the state moved, so the words must be there");
+  });
+});
+
 // ------------------------------------------------------------------ approver pays
 
 describe("approving a long video you cannot pay for", () => {

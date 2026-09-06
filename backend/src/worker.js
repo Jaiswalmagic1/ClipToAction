@@ -799,14 +799,29 @@ async function storeTranscript(request, env, sourceId) {
 
   const timestamp = now();
 
-  // The source moves FIRST, and whether it moved decides whether anything else happens.
+  // BOTH statements, in one batch, and BOTH carrying the same guard.
   //
-  // The guard on this UPDATE has always been here; nothing ever read its result. So a
-  // worker whose lease had expired — while a second machine was already transcribing the
-  // same video — could still write its transcript, run the analysis AGAIN on somebody's
-  // key, and REPLACE the stored rows. `item_status` is keyed on a row's flattened name
-  // (D34), so a re-run that reworded one silently orphaned a decision he had made.
-  const moved = await env.DB.prepare(
+  // The guard matters because a worker whose lease had expired — while a second machine
+  // was already transcribing the same video — could otherwise write its transcript, run
+  // the analysis AGAIN on somebody's key, and REPLACE the stored rows. `item_status` is
+  // keyed on a row's flattened name (D34), so a re-run that reworded one silently orphaned
+  // a decision he had made.
+  //
+  // And they are one batch because separating them left a hole of its own: the state moved
+  // to 'transcribed', the transcript insert then failed, and the reel was stuck for ever —
+  // no longer claimable, no transcript, no analysis, and NO ERROR, for every saver of that
+  // link. Either both land or neither does.
+  const [insert, moved] = await env.DB.batch([
+    env.DB.prepare(
+      // The same guard as below, expressed as a WHERE on a SELECT, so this cannot land
+      // without the state change beside it.
+      `INSERT INTO transcripts (source_id, text, lang, engine, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+       WHERE EXISTS (SELECT 1 FROM sources WHERE id = ?1 AND state = 'downloading')
+       ON CONFLICT (source_id) DO UPDATE SET
+         text = ?2, lang = ?3, engine = ?4, created_at = ?5`
+    ).bind(sourceId, text, body.lang || null, body.engine || "unknown", timestamp),
+    env.DB.prepare(
       // Only a source still in flight may be completed.
       `UPDATE sources
        SET state = 'transcribed', title = COALESCE(?1, title),
@@ -821,8 +836,7 @@ async function storeTranscript(request, env, sourceId) {
            creator_checked_at = CASE WHEN ?6 = 1 THEN ?3 ELSE creator_checked_at END,
            updated_at = ?3
        WHERE id = ?4 AND state = 'downloading'`
-  )
-    .bind(
+    ).bind(
       cleanTitle(body.title),
       body.duration_sec || null,
       timestamp,
@@ -832,20 +846,15 @@ async function storeTranscript(request, env, sourceId) {
       cleanCreator(body.creator),
       Object.prototype.hasOwnProperty.call(body, "creator") ? 1 : 0
     )
-    .run();
+  ]);
 
   if (!moved.meta.changes) {
-    // Somebody else finished this one. Nothing is written and nothing is spent.
+    // Somebody else finished this one. Nothing was written and nothing is spent.
     return json(env, { ok: true, applied: false });
   }
-
-  await env.DB.prepare(
-    `INSERT INTO transcripts (source_id, text, lang, engine, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5)
-     ON CONFLICT (source_id) DO UPDATE SET text = ?2, lang = ?3, engine = ?4, created_at = ?5`
-  )
-    .bind(sourceId, text, body.lang || null, body.engine || "unknown", timestamp)
-    .run();
+  // Belt and braces: the two guards are identical, so this cannot happen — and if it ever
+  // did, an analysis over a transcript that is not there would be worse than saying so.
+  if (!insert.meta.changes) return fail(env, "Could not store that transcript.", 409);
 
   // If anyone who saved this reel has a key connected, analyse it now and share the result
   // with everyone else who saved it. If nobody has one, the source stays at 'transcribed'
@@ -1151,8 +1160,12 @@ async function reportTooLong(request, env, sourceId) {
   // to be downloaded normally, which is what should have happened in the first place.
   if (!needsPermission(durationSec)) {
     await env.DB.prepare(
+      // `attempts = 0` for the same reason the branch below resets them: this is not a
+      // failed try, it is a machine and this Worker disagreeing about a threshold. Left
+      // counting, three rounds of that disagreement would retire the reel as "gave up
+      // after 3 attempts" — which is the outcome this branch exists to prevent.
       `UPDATE sources
-       SET state = 'pending', claimed_at = NULL,
+       SET state = 'pending', attempts = 0, claimed_at = NULL,
            duration_sec = COALESCE(?1, duration_sec), updated_at = ?2
        WHERE id = ?3 AND state = 'downloading'`
     )
@@ -1254,18 +1267,22 @@ async function parkLongVideo(env, userId, clipId) {
 // ---------------------------------------------------------------- who made it (D40)
 
 /**
- * A creator name, as the platform reported it, trimmed to something a row can hold.
+ * A video's own title, trimmed to something a row can hold.
  *
- * Kept as plain text and never turned into a link. It comes out of somebody else's video,
- * and the app draws it as a word you can search by — never as an address to tap.
+ * Third-party text, like the creator name below, so it is capped rather than trusted to be
+ * a sensible length — Facebook hands back the whole caption as the title.
  */
-/** A video's own title, trimmed to something a row can hold. Third-party text, like the
- * creator name, so it is capped rather than trusted to be a sensible length. */
 export function cleanTitle(raw) {
   const title = String(raw ?? "").replace(/\s+/g, " ").trim();
   return title ? title.slice(0, LIMITS.title) : null;
 }
 
+/**
+ * A creator name, as the platform reported it, trimmed to something a row can hold.
+ *
+ * Kept as plain text and never turned into a link. It comes out of somebody else's video,
+ * and the app draws it as a word you can search by — never as an address to tap.
+ */
 export function cleanCreator(raw) {
   const name = String(raw ?? "").replace(/\s+/g, " ").trim();
   return name ? name.slice(0, LIMITS.creator) : null;
@@ -2069,12 +2086,19 @@ async function retryClip(env, userId, clipId) {
 
   const timestamp = now();
   await env.DB.prepare(
+    // `long_ok_at` is kept — the length was already agreed to and asking again would be
+    // asking a question that has been answered. `long_ok_by` moves to whoever pressed
+    // this: retrying is asking for the work, and asking for the work is what volunteers an
+    // allowance (D42). Leaving it would spend the original approver's key because somebody
+    // else pressed a button.
     `UPDATE sources
      SET state = 'pending', attempts = 0, error = NULL, error_detail = NULL,
-         claimed_at = NULL, updated_at = ?1
+         claimed_at = NULL,
+         long_ok_by = CASE WHEN long_ok_at IS NULL THEN long_ok_by ELSE ?3 END,
+         updated_at = ?1
      WHERE id = ?2 AND state = 'failed'`
   )
-    .bind(timestamp, clip.source_id)
+    .bind(timestamp, clip.source_id, userId)
     .run();
 
   return json(env, { ok: true });

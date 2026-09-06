@@ -1895,3 +1895,138 @@ Round one's reviewers found fourteen problems. Fixing them created three more, a
 sixteen. **The bar he set — loop until a full independent review returns nothing that
 breaks correctness, security or his data — is doing real work**, and a single pass would
 not have been enough. This entry is written before the third round, not after it.
+
+---
+
+### D47 — Round three, and the release sequence it settled
+**Date:** 2026-09-07
+**Amends:** D40, D42, D45, D46.
+
+Two more independent reviewers, told what rounds one and two had found and asked to check
+those fixes and find what was still missed. **Fourteen more, four of them created by round
+two's own fixes.** Same pattern as round two, and the same conclusion: a single pass would
+have shipped every one of these.
+
+#### The fix that was a no-op
+
+**The service worker still cached nothing on the fast path.** D46 moved the cache write off
+the race and onto the fetch — correctly — and then took the copy of the response *after*
+`await caches.open(...)`. By then the same response has been handed to `respondWith` and the
+browser has locked its body, so the clone throws and the `.catch` swallows it. The result
+inverted the feature: the only answers ever saved were the ones **too slow to be served**,
+because those alone never reached `respondWith`. Everything the app needs offline answers in
+well under three seconds, so nothing was cached at all — including the Firebase modules
+D46 added the whole `LIBRARY_ORIGIN` exception for. The copy is now taken synchronously,
+before any await, which is the one line that makes the file do what three rounds of comments
+have claimed it does.
+
+**And the test written to catch that bug passed against a version without the fix.** All
+three assertions were `indexOf(a) < indexOf(b)`, and `indexOf` returns −1 for a string that
+is not there — so an ordering check on a **missing** string passes. Every one of them now
+proves both halves exist before comparing where they are.
+
+#### The hole that splitting a batch opened
+
+**A transcript could be lost with no error, permanently.** D46 split one atomic
+`DB.batch` into a guarded `UPDATE` and then a separate `INSERT`, to read whether the guard
+had matched. If the update landed and the insert did not, the source was `transcribed` with
+no transcript row: no longer claimable, no analysis, and **no error**, for every saver of
+that link — and `retryClip` could not help, because it only accepts `failed`. Both
+statements are one batch again, and the insert carries the same guard as a `WHERE EXISTS`,
+so either both land or neither does.
+
+#### The guard that never fired
+
+**`refreshQuietly` rebuilt the notebook every forty-five seconds regardless.** Its new
+"has anything changed?" test included `store.since`, which is the server's clock and moves
+on every sync whether or not a single row came back — so the comparison always differed
+from itself. He would have been thrown back to the top of the page every forty-five
+seconds, and on every switch away to WhatsApp and back. It now compares what a person would
+notice: the counts, and the newest `updated_at`, which moves when a video's state or error
+moves even though the count does not.
+
+#### The deploy sequence, which was wrong
+
+**Restarting the PC worker before deploying the Worker was NOT safe, and the branch's own
+note said it was.** Reverting `worker-pc/.env` was beside the point: the checkout is on this
+branch, so the scheduled task's next start runs the **new** `worker.py` whatever the `.env`
+says — and the new worker posts to `/v1/sources/:id/too-long`, which the deployed Worker
+does not have. Every video over thirty minutes would 404, the report would be lost, and the
+reel would be retired as "gave up after 3 attempts": a video he was meant to be *asked*
+about, thrown away.
+
+Fixed in the code rather than in a runbook. An API that sends no `limits` at the claim is
+one from before any of this existed, and the worker now behaves against it exactly as it did
+before D42: no question, its own ceiling. **Restarting the worker is safe at any point, in
+either order.** The correct sequence is still recorded, because order matters for the other
+half:
+
+1. **Migrations 0009–0014 on staging** — safe while the old Worker is still live; all
+   additive, and `long_ok_by` is NULL everywhere so the old code leaks nothing.
+2. **Deploy the Worker.** Never before step 1: the new code reads columns that would not
+   exist, and `/v1/sync` would fail for everyone, which looks exactly like a lost notebook.
+3. **Restart the PC worker's scheduled task.**
+4. **Merge to `main`**, which publishes the app.
+
+#### The ones about somebody else's words, again
+
+**`sources.error` could still carry a stranger's paths.** D46 fixed the *ordering* of
+`classify_failure` so `requests`' exceptions stopped being treated as ours. The general case
+stayed open: the `ValueError` branch caught **any** ValueError, and ValueError is the base
+class of half of yt-dlp's and ctranslate2's errors too — whose messages routinely quote a
+filesystem path or a model cache location, onto a row every saver of that reel reads. Our
+own refusals now have their own class, `Refused`, and everything else is generic.
+
+**The fence was closed by `Math.random()`.** The whole argument for the nonce is "a number
+the attacker cannot know", and V8's is a recoverable xorshift — this file already uses
+`crypto.getRandomValues` nine lines below. It also assumed `toString(36)` always yields ten
+characters, which for a value like exactly 0.5 gives `"0.i"` and a one-character fence.
+
+**`runFetch` handed the model video-derived text outside the fence.** The `title` is the
+first sentence of the AI's summary; `metadata.topic`, `sub_topic` and `creator` are
+AI-written or platform-supplied. All four arrive as unlabelled structured fields a model has
+every reason to read as the server's own. They now carry the same warning `runSearch` got.
+
+#### And the smaller ones
+
+**The only way a reel gets in could die silently.** `share-target.html` wrote to
+localStorage unguarded and then navigated: in a private window, or with a full quota,
+`setItem` throws, the script stops, and he is left on "Opening ClipToAction..." for ever
+with the reel gone. It is guarded now, and when storage refuses, the link travels in the
+address of the very next page instead.
+
+**A full storage box silently froze the device copy.** `saveCache` writes the whole
+notebook, transcripts included, and D42 allows a single video to be 400,000 characters
+against a browser quota of a few million. A handful of long videos and every sync's save
+would fail, swallowed, leaving a notebook that looks complete and is months stale. It now
+drops the transcripts first and the analyses second — the notebook still opens, still
+searches, still shows every card; only the full words of a video need the network again,
+and those can always be fetched back.
+
+**Retrying a failed video spent the wrong person's key.** `retryClip` left `long_ok_by`
+alone, so any saver's retry re-spent the original approver's allowance. Retrying is asking
+for the work, and asking for the work is what volunteers an allowance (D42) — so it moves
+to whoever pressed.
+
+**A private address paused the whole creator backfill for half an hour** and burned one of
+that video's three tries, as though the platform had throttled us. It can never succeed on
+retry, so it is settled instead.
+
+**`reportTooLong`'s not-long path did not reset `attempts`**, so three rounds of a machine
+and the Worker disagreeing about a threshold retired the reel — the outcome that branch was
+added to prevent.
+
+**Pressing a subject on Home still did not open that subject.** D46 recorded which folder
+was pressed and then read it nowhere. It scrolls to that folder and marks it now.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+
+**Forty-seven problems, across three rounds, in code that passed its own tests every time.**
+The bar he set — loop until a full independent review returns nothing that breaks
+correctness, security or his data — is the only reason any of this was found.

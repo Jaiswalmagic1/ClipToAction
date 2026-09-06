@@ -103,15 +103,23 @@ self.addEventListener("fetch", (event) => {
   // Authorization, and handed back to whoever opens the app on that device next.
   if (ours && (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))) return;
 
-  // Started once, and the SAVE hangs off this rather than off the race below. A slow
-  // answer still updates the copy, even when the cached one was served meanwhile.
+  // Started once. The SAVE hangs off this fetch rather than off the race below, and the
+  // COPY is taken synchronously the moment the answer arrives. Both of those matter, and
+  // getting either wrong quietly disables the whole file:
+  //
+  //   * off the race — a phone on a slow connection times out every time, never refreshes
+  //     its saved copy, and stays on an old build for ever;
+  //   * after an await — `caches.open` is a real storage call, and by the time it resolves
+  //     the browser has handed this same response to respondWith and locked its body, so
+  //     the clone throws and nothing is saved on the fast path at all. Which inverts the
+  //     feature: only answers too SLOW to be served ever get cached.
   const live = fetch(request);
   event.waitUntil(
     live
-      .then(async (response) => {
-        if (!worthKeeping(response)) return;
-        const cache = await caches.open(CACHE);
-        await cache.put(request, response.clone());
+      .then((response) => {
+        if (!worthKeeping(response)) return null;
+        const copy = response.clone();
+        return caches.open(CACHE).then((cache) => cache.put(request, copy));
       })
       .catch(() => {})
   );

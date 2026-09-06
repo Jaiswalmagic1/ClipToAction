@@ -86,7 +86,24 @@ def claim_batch():
     )
     response.raise_for_status()
     payload = response.json()
-    limits = payload.get("limits") or {}
+    limits = payload.get("limits")
+
+    # An API that sends no limits at all is one from before any of this existed, and it has
+    # no route to ask him about a long video either. Asking anyway would post to an address
+    # that answers 404, the report would be lost, and the video would sit claimed until its
+    # attempts ran out and it was retired as "gave up after 3 attempts" -- a video he was
+    # meant to be ASKED about, thrown away.
+    #
+    # So against an older API this behaves exactly as it did before D42: no question, and
+    # this machine's own ceiling. That makes restarting this worker safe at any point in a
+    # deploy, in either order.
+    if not limits:
+        return payload.get("sources", []), {
+            "warn_above_sec": None,
+            "max_video_sec": MAX_DURATION_SEC,
+            "max_transcript_chars": MAX_TRANSCRIPT_CHARS,
+        }
+
     return payload.get("sources", []), {
         "warn_above_sec": int(limits.get("warn_above_sec") or WARN_ABOVE_SEC),
         "max_video_sec": int(limits.get("max_video_sec") or MAX_DURATION_SEC),
@@ -126,12 +143,12 @@ def assert_public_host(url):
     """
     host = urlparse(url).hostname
     if not host:
-        raise ValueError("Link has no host.")
+        raise Refused("Link has no host.")
 
     try:
         resolved = socket.getaddrinfo(host, None)
     except socket.gaierror as error:
-        raise ValueError(f"Could not resolve {host}.") from error
+        raise Refused(f"Could not resolve {host}.") from error
 
     for entry in resolved:
         address = ipaddress.ip_address(entry[4][0])
@@ -142,7 +159,17 @@ def assert_public_host(url):
             or address.is_reserved
             or address.is_multicast
         ):
-            raise ValueError(f"{host} resolves to a private address; refusing to fetch it.")
+            raise Refused(f"{host} resolves to a private address; refusing to fetch it.")
+
+
+class Refused(ValueError):
+    """A refusal this file decided on, with a message written to be READ.
+
+    It exists to separate our own sentences from everybody else's. `sources.error` is shown
+    to every user who saved the reel, so it must never carry a third-party exception --
+    yt-dlp's and faster-whisper's ValueErrors routinely quote a filesystem path or a URL,
+    and "isinstance(error, ValueError)" could not tell those from ours.
+    """
 
 
 class NeedsPermission(Exception):
@@ -168,7 +195,7 @@ def download_audio(source, limits):
     point is that a two-hour download does not start behind his back.
     """
     if not UUID_PATTERN.match(source["id"]):
-        raise ValueError("Source id is not a UUID; refusing to build a path from it.")
+        raise Refused("Source id is not a UUID; refusing to build a path from it.")
 
     assert_public_host(source["url_original"])
 
@@ -197,7 +224,8 @@ def download_audio(source, limits):
         # from this report. The ceiling below is only a guard for a video somebody has
         # already approved, so a stale value in this machine's gitignored .env can no
         # longer quietly refuse videos the app has just told him it would ask about.
-        if duration > limits["warn_above_sec"] and not source.get("long_ok"):
+        ask_above = limits["warn_above_sec"]
+        if ask_above is not None and duration > ask_above and not source.get("long_ok"):
             raise NeedsPermission(duration, info.get("title"), creator_from(info))
 
         # Approved, and still past what this machine will take on. The message is written
@@ -206,7 +234,7 @@ def download_audio(source, limits):
         # unreachable; it is here so that a machine which genuinely cannot take the job
         # says so rather than starting it.
         if duration > limits["max_video_sec"]:
-            raise ValueError(
+            raise Refused(
                 f"This video is {duration // 60} minutes long, which is more than can be "
                 "processed in one go."
             )
@@ -298,7 +326,16 @@ def fill_in_creators():
 
     for index, source in enumerate(pending):
         try:
-            assert_public_host(source["url_original"])
+            # A private address is this URL's own problem and will be next time too, so it
+            # is settled rather than counted -- pausing the whole backfill for half an hour
+            # over something that can never succeed would be the wrong shape of caution.
+            try:
+                assert_public_host(source["url_original"])
+            except Refused:
+                print(f"  . {source['id']} does not resolve publicly; leaving it alone")
+                report_creator(source["id"], None, asked=True)
+                continue
+
             with YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as reader:
                 name = creator_from(reader.extract_info(source["url_original"], download=False))
         # Deliberately broad, and deliberately not reported as a failure of the video:
@@ -364,12 +401,12 @@ def transcribe(audio_path, duration_sec=0, max_chars=None):
     else:
         text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text:
-        raise ValueError("No speech found in this video.")
+        raise Refused("No speech found in this video.")
     ceiling = max_chars or MAX_TRANSCRIPT_CHARS
     if len(text) > ceiling:
         # Said plainly rather than silently cut. A transcript with its last hour missing
         # would be worse than none: the summary would look complete and be wrong.
-        raise ValueError(
+        raise Refused(
             f"This video produced {len(text) // 1000}k characters of speech, more than the "
             f"{ceiling // 1000}k a single video can hold."
         )
@@ -409,8 +446,12 @@ def classify_failure(error):
     """
     if isinstance(error, requests.RequestException):
         return "Could not reach ClipToAction while processing this video."
-    if isinstance(error, ValueError):
-        # Our own checks -- the messages are written to be shown (too long, private host).
+    if isinstance(error, Refused):
+        # OUR OWN refusals only, and only because their messages were written to be shown.
+        # This used to be `ValueError`, which is the base class of half of yt-dlp's and
+        # ctranslate2's errors as well -- their messages quote filesystem paths, model
+        # cache locations and URLs, and every one of those went onto a row that every
+        # saver of the reel can read.
         return str(error)[:200]
     if isinstance(error, FileNotFoundError):
         return "The audio could not be extracted from this video."

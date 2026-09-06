@@ -221,6 +221,8 @@ export async function loadApp(sync, { hash = "", storageBlocked = false, failAft
    */
   let currentHash = hash;
   const fakeLocation = {
+    pathname: "/",
+    search: "",
     get hash() {
       return currentHash;
     },
@@ -236,6 +238,7 @@ export async function loadApp(sync, { hash = "", storageBlocked = false, failAft
   const previous = {
     document: globalThis.document,
     window: globalThis.window,
+    history: globalThis.history,
     localStorage: globalThis.localStorage,
     location: globalThis.location,
     fetch: globalThis.fetch,
@@ -251,6 +254,13 @@ export async function loadApp(sync, { hash = "", storageBlocked = false, failAft
     location: fakeLocation
   };
   globalThis.location = fakeLocation;
+  // The share target puts a link in the address when storage refuses it, and the app takes
+  // it straight back out so a reload cannot save it twice.
+  globalThis.history = {
+    replaceState: () => {
+      currentHash = "";
+    }
+  };
   // A browser in a private window, or one set to block site data, THROWS on every one of
   // these rather than returning null. Every use in the app is supposed to survive that.
   const blocked = () => {

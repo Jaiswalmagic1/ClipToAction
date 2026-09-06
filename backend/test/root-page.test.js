@@ -57,9 +57,19 @@ describe("the root page is the app", () => {
     );
   });
 
-  test("a shared link lands on the app", () => {
+  test("a shared link lands on the app, whatever storage does", () => {
     const target = read("share-target.html");
-    assert.ok(target.includes('replace("index.html")'), "the share target points elsewhere");
+    assert.ok(target.includes('replace("index.html"'), "the share target points elsewhere");
+    // This page is the only way a reel gets in (D17), so nothing in it may throw. It used
+    // to write to localStorage unguarded and then navigate — in a private window, or with
+    // a full quota, it died there and he was left on "Opening ClipToAction..." for ever
+    // with the reel silently gone.
+    assert.ok(target.includes("try {"), "the storage write is unguarded");
+    assert.ok(target.includes("#/share/"), "there is no fallback when storage refuses");
+    assert.ok(
+      target.indexOf("catch") < target.indexOf('window.location.replace'),
+      "the navigation must happen whether or not the write worked"
+    );
   });
 
   test("the old address still opens the notebook", () => {
@@ -73,8 +83,17 @@ describe("the root page is the app", () => {
     const sw = read("service-worker.js");
     // Network first: the fetch handler must ASK the network before it looks in the cache.
     const handler = sw.slice(sw.indexOf('addEventListener("fetch"'));
-    assert.ok(
-      handler.indexOf("fetch(request)") < handler.indexOf("caches.match"),
+    // `indexOf` returns -1 for something that is not there, and -1 is less than every
+    // index — so an ordering assertion on a MISSING string passes. Every one of these
+    // checks that both halves exist before it compares where they are.
+    const before = (first, second, why) => {
+      assert.ok(handler.includes(first), `${first} is missing`);
+      assert.ok(handler.includes(second), `${second} is missing`);
+      assert.ok(handler.indexOf(first) < handler.indexOf(second), why);
+    };
+    before(
+      "fetch(request)",
+      "caches.match",
       "the service worker is cache first again — an installed app would never update"
     );
     assert.ok(sw.includes("caches.delete"), "older caches are never cleaned up");
@@ -90,9 +109,19 @@ describe("the root page is the app", () => {
     // Giving up on WAITING is not giving up on the REQUEST. Hanging the save off the race
     // means a phone on a slow connection times out every time, never refreshes its copy,
     // and stays on an old build for ever — the exact bug this file exists to kill.
-    assert.ok(
-      handler.indexOf("const live = fetch(request)") < handler.indexOf("cache.put"),
+    before(
+      "const live = fetch(request)",
+      "cache.put",
       "the saved copy must be updated by the fetch, not by the race"
+    );
+    // And the clone must be taken BEFORE any await. `caches.open` is a real storage call;
+    // by the time it resolves the browser has handed the same response to respondWith and
+    // locked its body, so a clone after it throws and nothing is ever saved on the fast
+    // path — which inverts the feature, caching only what was too slow to be served.
+    before(
+      "const copy = response.clone()",
+      "caches.open(CACHE)",
+      "the clone must be taken synchronously, before caches.open"
     );
     // Nor the API, even where the app and the API share an address (D26) — a cached sync
     // response is somebody's whole notebook, served back to whoever opens the app next.

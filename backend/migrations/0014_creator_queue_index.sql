@@ -13,7 +13,8 @@
 -- has to stay free to run; at a few hundred more videos it would not be.
 --
 -- Partial, so it holds only the rows still waiting and shrinks to nothing as the backfill
--- finishes -- which is the opposite of the scan it replaces.
+-- finishes -- the opposite of the scan it replaces. The columns are in the order the query
+-- reads them, so the sort comes out of the index too rather than a temporary b-tree.
 CREATE INDEX IF NOT EXISTS idx_sources_creator_todo
-  ON sources (created_at)
+  ON sources (creator_tries, created_at)
   WHERE creator IS NULL AND creator_checked_at IS NULL;

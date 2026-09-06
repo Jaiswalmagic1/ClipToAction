@@ -735,12 +735,39 @@ function loadCache() {
   }
 }
 
+/**
+ * Keeps the notebook on the device, and gives up in a useful order when it will not fit.
+ *
+ * The transcripts are the whole problem. D42 allows a single video to be 400,000
+ * characters, and a browser's storage box is only a few million — so a handful of long
+ * videos and this starts failing on EVERY sync. Before, that failure was swallowed and the
+ * device copy silently froze at the last snapshot that fitted: the notebook would look
+ * complete and be months out of date, with nothing on screen.
+ *
+ * So it drops the biggest thing first. Without transcripts the notebook still opens
+ * offline, still searches summaries and notes and learnings, and still shows every card —
+ * only the full words of a video need the network again, and they are the one part that
+ * can always be fetched back.
+ */
 function saveCache() {
-  try {
-    localStorage.setItem(cacheKey(), JSON.stringify(store));
-  } catch {
-    // A full storage box must not take the app down — the next sync just fetches more.
+  const attempts = [
+    () => store,
+    // The words themselves, which are most of the size and the least of the value here.
+    () => ({ ...store, transcripts: [] }),
+    // Last resort: the shape of the notebook, so it opens rather than looking empty.
+    () => ({ ...store, transcripts: [], analyses: [], notes: [], learnings: [] })
+  ];
+
+  for (const shrink of attempts) {
+    try {
+      localStorage.setItem(cacheKey(), JSON.stringify(shrink()));
+      return;
+    } catch {
+      // Try a smaller one. Storage that refuses everything is handled below.
+    }
   }
+  // Nothing would fit, or storage is unavailable altogether. The app carries on against
+  // the network exactly as it does on a device it has never run on before.
 }
 
 /** Merge one delta batch in by primary key, newest wins. */
@@ -1037,10 +1064,10 @@ async function retryClip(clip, button) {
     await api(`/v1/clips/${clip.id}/retry`, { method: "POST" });
     await sync();
     render();
-    say($("clipMsg") ? "clipMsg" : "syncMsg",
+    say("clipMsg",
       "Back in the queue. It will be picked up within a minute or two.", "ok");
   } catch (error) {
-    say($("clipMsg") ? "clipMsg" : "syncMsg", error.message);
+    say("clipMsg", error.message);
     button.disabled = false;
     button.textContent = "Try it again";
   }
@@ -1052,13 +1079,13 @@ async function answerLongVideo(clip, action, button) {
     await api(`/v1/clips/${clip.id}/${action}`, { method: "POST" });
     await sync();
     render();
-    say($("clipMsg") ? "clipMsg" : "syncMsg",
+    say("clipMsg",
       action === "long-ok"
         ? "Started. It will take a while — you can close this and come back."
         : "Parked. It is not lost — open it any time and press go ahead.",
       "ok");
   } catch (error) {
-    say($("clipMsg") ? "clipMsg" : "syncMsg", error.message);
+    say("clipMsg", error.message);
     button.disabled = false;
   }
 }
@@ -1906,7 +1933,7 @@ async function setItemDecision(row, select) {
   } catch (error) {
     // The two pages this can be used from have different places to put a message. A
     // failure with nowhere to appear is a silent failure (Golden Rule 29).
-    say($("clipMsg") ? "clipMsg" : "syncMsg", `Could not save that: ${error.message}`);
+    say("clipMsg", `Could not save that: ${error.message}`);
     select.value = row.status;
     select.disabled = false;
   }
@@ -2870,14 +2897,23 @@ function renderClip(clipId) {
 const REFRESH_MS = 45 * 1000;
 let refreshTimer = null;
 
-/** A cheap description of what is on screen, so a refresh that changed nothing draws nothing. */
+/**
+ * A cheap description of what is on screen, so a refresh that changed nothing draws nothing.
+ *
+ * Deliberately NOT `store.since`. That is the server's clock and it moves on every sync
+ * whether or not a single row came back — so including it made this always differ from
+ * itself and the guard never fired once. What is here instead is what a person would
+ * notice: how many of each thing there are, and the newest change to any of them, which
+ * moves when a video's state or error moves even though the count does not.
+ */
+const newest = (rows) => rows.reduce((most, row) => Math.max(most, row.updated_at || 0), 0);
+
 const notebookShape = () =>
   [
-    store.since,
-    store.clips.length,
-    store.sources.length,
+    store.clips.length, newest(store.clips),
+    store.sources.length, newest(store.sources),
     store.analyses.length,
-    store.item_status.length,
+    store.item_status.length, newest(store.item_status),
     store.relooks.length,
     store.relook && store.relook.due,
     store.relook && store.relook.ready
@@ -3493,6 +3529,19 @@ $("saveForm").onsubmit = (event) => {
 
 /** A link handed over by the Android share sheet (D17). */
 function pendingShare() {
+  // The share target could not write to storage — a private window, or a full quota — so
+  // it put the link in the address instead. Taken first, and taken out of the address
+  // straight away so a reload does not save it twice.
+  const carried = /^#\/share\/(.+)$/.exec(location.hash);
+  if (carried) {
+    history.replaceState(null, "", location.pathname + location.search);
+    try {
+      return decodeURIComponent(carried[1]);
+    } catch {
+      return "";
+    }
+  }
+
   // Every other use of localStorage in this file is guarded and this one was not — and it
   // sits between the first render and the first sync. In a private window, or a browser
   // set to block site data, `getItem` THROWS: the sign-in handler stopped there, the sync

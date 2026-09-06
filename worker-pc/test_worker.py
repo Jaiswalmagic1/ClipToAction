@@ -285,18 +285,61 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
     def setUp(self):
         self.source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
 
-    def test_a_failure_reaching_the_api_is_never_pasted_onto_a_shared_row(self):
-        """InvalidURL, MissingSchema, InvalidSchema and InvalidHeader all inherit from BOTH
-        RequestException and ValueError. With ValueError tested first their raw text went
-        onto sources.error -- and InvalidHeader's message QUOTES the offending header, which
-        here is the service token."""
+    def test_only_our_own_refusals_are_pasted_onto_a_shared_row(self):
+        """sources.error is read by every user who saved the reel, so it may only ever carry
+        a sentence this file wrote.
+
+        It used to pass through any ValueError, which is the base class of half of yt-dlp's
+        and ctranslate2's errors as well -- their messages quote filesystem paths, model
+        cache locations and URLs. And four of `requests`' own exceptions are ValueErrors
+        too, one of which (InvalidHeader) QUOTES the offending header value: this worker's
+        only header is the service token.
+        """
         body = self.source[self.source.index("def classify_failure"):]
         body = body[: body.index("def cleanup")]
+        self.assertIn("isinstance(error, Refused)", body)
+        self.assertNotIn(
+            "isinstance(error, ValueError)",
+            body,
+            "a bare ValueError branch lets third-party messages onto a shared row",
+        )
         self.assertLess(
             body.index("requests.RequestException"),
-            body.index("isinstance(error, ValueError)"),
-            "a requests exception must be classified before the ValueError branch",
+            body.index("isinstance(error, Refused)"),
+            "a requests exception must be classified before our own refusals",
         )
+
+    def test_every_refusal_this_file_writes_uses_that_class(self):
+        """A refusal raised as a plain ValueError would come back as the generic
+        "could not be downloaded or transcribed" and its careful wording would be lost."""
+        for message in (
+            "Link has no host.",
+            "resolves to a private address",
+            "Source id is not a UUID",
+            "No speech found in this video.",
+            "more than can be",
+            "characters of speech",
+        ):
+            where = self.source.index(message)
+            raiser = self.source.rfind("raise ", 0, where)
+            self.assertIn(
+                "raise Refused",
+                self.source[raiser : raiser + 20],
+                f"'{message}' is not raised as a Refused",
+            )
+
+    def test_an_older_api_gets_the_behaviour_it_can_handle(self):
+        """An API from before D42 has no route to ask him about a long video. Asking anyway
+        posts to an address that answers 404, the report is lost, and the video sits claimed
+        until its attempts run out and it is retired as "gave up after 3 attempts" -- a
+        video he was meant to be ASKED about, thrown away. So against an older API this
+        does not ask at all, which makes restarting this worker safe at any point in a
+        deploy, in either order."""
+        body = self.source[self.source.index("def claim_batch"):]
+        body = body[: body.index("def report_failure")]
+        self.assertIn("if not limits:", body)
+        self.assertIn('"warn_above_sec": None', body)
+        self.assertIn("ask_above is not None", self.source)
 
     def test_the_rules_come_from_the_api_not_from_this_machine(self):
         """MAX_DURATION_SEC and WARN_ABOVE_SEC live in a gitignored .env that overrides the
