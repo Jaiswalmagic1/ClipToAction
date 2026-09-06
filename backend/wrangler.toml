@@ -47,7 +47,10 @@ html_handling = "none"
 
 [env.staging.vars]
 FIREBASE_PROJECT_ID = "cliptoaction-ff144"
-APP_ORIGIN = "http://localhost:8788"
+# The GitHub Pages copy of the app, so that address works too. The Worker's own /app.html
+# is same-origin and needs no permission from this, so both addresses work at once.
+# localhost is not lost by this: `wrangler dev` is same-origin as well.
+APP_ORIGIN = "https://jaiswalmagic1.github.io"
 
 # ---------------------------------------------------------------- production
 
