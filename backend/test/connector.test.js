@@ -430,7 +430,7 @@ describe("what a long video and a creator look like through the connector", () =
     const found = structured(await callTool(amysSecret, "fetch", { id: longClip.id }));
     assert.match(found.text, /Made by: Ecom Guruji/);
     assert.equal(found.metadata.creator, "Ecom Guruji");
-    assert.equal(found.metadata.duration_sec, 69 * 60);
+    assert.equal(found.metadata.duration_sec, String(69 * 60));
 
     const results = structured(await callTool(amysSecret, "search", { query: "ecom guruji" })).results;
     assert.equal(results.length, 1);
@@ -502,6 +502,27 @@ describe("what a long video and a creator look like through the connector", () =
       found.text.indexOf("THEIR OWN NOTES") > endFence,
       "what he wrote must not sit inside the fence for what a stranger said"
     );
+  });
+
+  // A field a schema does not declare is a field a strict client may drop — and these two
+  // are the only guard the structured half of the reply carries.
+  test("every field the reply actually carries is declared", async () => {
+    const listed = await mcp(amysSecret, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const tools = Object.fromEntries(listed.body.result.tools.map((one) => [one.name, one]));
+
+    const fetched = structured(await callTool(amysSecret, "fetch", { id: amysClip.id }));
+    for (const field of Object.keys(fetched)) {
+      assert.ok(tools.fetch.outputSchema.properties[field], `fetch returns undeclared ${field}`);
+    }
+    // Its metadata is declared as string-valued, so every value in it must be a string.
+    for (const [name, value] of Object.entries(fetched.metadata)) {
+      assert.equal(typeof value, "string", `metadata.${name} is not a string`);
+    }
+
+    const found = structured(await callTool(amysSecret, "search", { query: "keyword" }));
+    for (const field of Object.keys(found)) {
+      assert.ok(tools.search.outputSchema.properties[field], `search returns undeclared ${field}`);
+    }
   });
 
   test("a search result says whose words it is showing", async () => {

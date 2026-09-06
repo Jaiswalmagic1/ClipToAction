@@ -165,7 +165,10 @@ const TOOLS = [
             },
             required: ["id", "title", "url"]
           }
-        }
+        },
+        // Declared, because a field a schema does not mention is a field a strict client
+        // is entitled to drop — and this one says whose words the results are (D46).
+        note: { type: "string" }
       },
       required: ["results"]
     },
@@ -193,9 +196,13 @@ const TOOLS = [
         title: { type: "string" },
         text: { type: "string" },
         url: { type: "string" },
+        // The warning that the title and the metadata are the video's words too (D47). A
+        // field a schema does not mention is a field a strict client may drop, and this is
+        // the only guard those fields carry.
+        note: { type: "string" },
         metadata: { type: "object", additionalProperties: { type: "string" } }
       },
-      required: ["id", "title", "text", "url"]
+      required: ["id", "title", "text", "url", "note"]
     },
     annotations: { readOnlyHint: true }
   },
@@ -535,7 +542,9 @@ async function runFetch(env, userId, args) {
       sub_topic: clip.sub_topic || "",
       // D40 and D33. Both were already stored and neither was reachable from here.
       creator: clip.creator || "",
-      duration_sec: Number(clip.duration_sec || 0)
+      // A string, like every other value here: this object is declared as string-valued,
+      // and a number in it makes the reply fail its own schema for a strict client.
+      duration_sec: String(Number(clip.duration_sec || 0))
     }
   };
 }
