@@ -4,7 +4,7 @@ Running list of what is settled and what is still open. Updated every session.
 **Why each decision was made — options considered, factors weighed — is in
 [DECISION_LOG.md](DECISION_LOG.md).** That file is binding; this one is its index.
 
-Last updated: 2026-08-30
+Last updated: 2026-09-07
 
 ---
 
@@ -56,6 +56,7 @@ The reel is a seed, not the destination.
 | D34 | Kinds and trackers | Each video is labelled with what KIND it is, and a product or tool video also comes back as rows you can sort and tick off. Top-level folders now merge instead of multiplying. A failed analysis stores a reason code, and a one-off is retried once. |
 | D35 | Several AI keys | A list, not one key, spent in order. Only a spent allowance moves to the next; every other refusal stops and is shown against the key that gave it. Whose keys pay is D10 unchanged — the first saver's whole list, then the next saver's. |
 | D36 | When production may be touched | Never offered or started until Jaiswal says the app is open to the public - "release", "deploy" and "go ahead" are not the trigger. And his staging data is carried over in every scenario, no exception. |
+| D37 | The root page | `index.html` IS the app. The old capture page is retired to git history, `app.html` stays as a redirect so old links work, and the service worker is network-first so an installed phone app can never be pinned to a page that was replaced. |
 
 ---
 

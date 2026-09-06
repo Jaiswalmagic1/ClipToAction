@@ -118,5 +118,5 @@ Never fill the checklist in as a formality. It is a claim that Review actually h
 |---|---|
 | `backend/` | Cloudflare Worker + D1 schema. The API for both the app and the PC worker. |
 | `worker-pc/` | Python worker: downloads audio, transcribes it, posts the transcript back. |
-| `index.html` | The PWA — the only capture path (D17). Still on the old GitHub-token sync, being replaced (D3 → D6). |
+| `index.html` | The app itself, and the root page (D37). The only capture path (D17). `app.html` is a redirect kept for links people already have. |
 | `.githooks/` | PM Discipline gate. Not active until `core.hooksPath` is set. |

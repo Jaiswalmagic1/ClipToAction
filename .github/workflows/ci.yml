@@ -32,9 +32,9 @@ jobs:
 
       - name: PWA syntax check
         run: |
-          # index.html is the file main actually serves. app.html is the rewrite that will
-          # replace it (D21) and was going unchecked entirely — a typo in it reached
-          # staging before CI had anything to say about it.
+          # index.html is the app itself since the D21 swap (D37). app.html is the
+          # redirect kept for old links; it is checked too, because a typo in a redirect
+          # is a page that opens nothing.
           node -e "
             const fs = require('fs');
             const os = require('os');

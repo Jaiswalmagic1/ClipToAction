@@ -1205,3 +1205,53 @@ deployed to production, no schema is loaded. It costs nothing sitting there.
 
 **Supersedes nothing.** D16 and D20 still describe how a release works when there is one.
 This says when there may be one.
+
+---
+
+### D37 — The app is the root page. The old page is retired.
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "make the app the root page", asked for as the first of eight jobs.
+**Completes:** D21, which built the new app beside the live page precisely so this swap
+could happen in one commit rather than by degrees.
+
+**What changed.** `index.html` is now the app. What used to be there — the 2026 capture
+page with its GitHub-token sync (D3, superseded by D6) — is gone from the working tree and
+kept in git history, which is where D21 said it would be kept. `app.html` remains as a
+one-line redirect to the root, carrying the `#/clip/...` part of the address across, so
+that every bookmark, pinned tab and link anybody already holds still opens the notebook.
+
+**The bug this fixes, and why it was invisible.** His installed phone app opened the old
+page. `manifest.json` says `start_url: "./index.html"` and `share-target.html` hands off to
+`index.html` — both correct, both pointing at the wrong file, because the app was still
+living at `app.html`. Staging looked right only because `build-staging-assets.mjs` rewrote
+those two on the way through; nothing rewrites anything on GitHub Pages. Making
+`index.html` the app fixes it at the source: every path that already pointed there is now
+pointing at the right thing.
+
+**`start_url` is deliberately unchanged.** It stays `./index.html` rather than becoming
+`./`. A browser recognises an installed app by its manifest `id`, which defaults to
+`start_url` — so changing `start_url` on an app somebody has already installed makes it a
+different app, and his phone would have carried on opening the old page for ever. Instead
+`id` is now written down explicitly as `./index.html`, which is exactly what it has been
+implicitly all along. Nothing about the installed app changes except what the file at that
+address contains. The staging build sets `id` to `./app.html` for the same reason, because
+that is what a staging install has been recognised by.
+
+**The service worker is now network first, and that is not cosmetic.** The old one was
+cache first with a fixed cache name and no cleanup, which means the page a phone installed
+was the page it kept: the app could be rebuilt any number of times and an installed copy
+would never see one of them. It is the second half of the same bug. The new one asks the
+network first, falls back to its saved copy when there is no signal, and deletes every
+older cache when it activates. Requests to anywhere but this address — the API, Firebase
+sign-in, the modules the app imports — are not touched at all, so no part of anybody's
+notebook is written into a cache the app does not control.
+
+**One consequence worth expecting rather than discovering.** A phone with the old service
+worker already installed may serve the old page once more, on the first open after this
+ships, because the old worker answers that load before the new one takes over. The second
+open is the new app, and it stays the new app. Nothing needs to be uninstalled.
+
+**`API_BASE` does not change.** D21 imagined this swap being the moment the production URL
+went in. D36 came later and says production is not raised until the app is open to the
+public, so the app keeps talking to staging — where his notebook actually is. The swap
+changes which page opens, not which backend it talks to.
