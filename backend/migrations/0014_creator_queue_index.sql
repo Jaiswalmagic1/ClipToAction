@@ -16,5 +16,5 @@
 -- finishes -- the opposite of the scan it replaces. The columns are in the order the query
 -- reads them, so the sort comes out of the index too rather than a temporary b-tree.
 CREATE INDEX IF NOT EXISTS idx_sources_creator_todo
-  ON sources (creator_tries, created_at)
+  ON sources (creator_tries, created_at DESC)
   WHERE creator IS NULL AND creator_checked_at IS NULL;

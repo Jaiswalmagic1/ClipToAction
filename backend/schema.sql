@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_sources_state ON sources (state, updated_at);
 -- "anything left?" is a full table scan, which on a free D1 allowance is a quarter of the
 -- daily read budget spent on a question whose answer is usually zero.
 CREATE INDEX IF NOT EXISTS idx_sources_creator_todo
-  ON sources (creator_tries, created_at)
+  ON sources (creator_tries, created_at DESC)
   WHERE creator IS NULL AND creator_checked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS transcripts (

@@ -46,10 +46,25 @@ function d1(database) {
       };
       return statement;
     },
+    /**
+     * All or nothing, like D1's own batch — and that matters to at least one test.
+     *
+     * This used to run the statements one after another with no transaction, so a test
+     * asserting that two writes move TOGETHER could not fail however they were written.
+     * A shim that is more forgiving than the thing it stands in for is a test that proves
+     * nothing.
+     */
     async batch(statements) {
-      const out = [];
-      for (const statement of statements) out.push(await statement.run());
-      return out;
+      database.exec("BEGIN");
+      try {
+        const out = [];
+        for (const statement of statements) out.push(await statement.run());
+        database.exec("COMMIT");
+        return out;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     }
   };
 }

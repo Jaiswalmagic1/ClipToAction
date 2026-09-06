@@ -1137,7 +1137,12 @@ async function reportTooLong(request, env, sourceId) {
        SET state = 'failed',
            error = ?1, error_detail = 'refused too_long', claimed_at = NULL,
            duration_sec = COALESCE(?2, duration_sec), title = COALESCE(?3, title),
-           creator = COALESCE(?4, creator), creator_checked_at = ?5, updated_at = ?5
+           creator = COALESCE(?4, creator),
+           -- Only when the worker actually looked, exactly as storeTranscript does: a
+           -- machine running the code from before D40 sends no creator field, and
+           -- marking those settled would put them permanently beyond the backfill.
+           creator_checked_at = CASE WHEN ?7 = 1 THEN ?5 ELSE creator_checked_at END,
+           updated_at = ?5
        WHERE id = ?6 AND state = 'downloading'`
     )
       .bind(
@@ -1146,7 +1151,8 @@ async function reportTooLong(request, env, sourceId) {
         cleanTitle(body.title),
         cleanCreator(body.creator),
         timestamp,
-        sourceId
+        sourceId,
+        Object.prototype.hasOwnProperty.call(body, "creator") ? 1 : 0
       )
       .run();
     return json(env, { ok: true, refused: true });
@@ -1182,10 +1188,22 @@ async function reportTooLong(request, env, sourceId) {
      SET state = 'needs_ok', error = NULL, error_detail = NULL, claimed_at = NULL,
          attempts = 0,
          duration_sec = COALESCE(?1, duration_sec), title = COALESCE(?2, title),
-         creator = COALESCE(?3, creator), creator_checked_at = ?4, updated_at = ?4
+         creator = COALESCE(?3, creator),
+         -- Only when the worker actually looked, exactly as storeTranscript does: a
+         -- machine running the code from before D40 sends no creator field, and marking
+         -- those settled would put them permanently beyond the backfill (D46).
+         creator_checked_at = CASE WHEN ?6 = 1 THEN ?4 ELSE creator_checked_at END,
+         updated_at = ?4
      WHERE id = ?5 AND state = 'downloading'`
   )
-    .bind(durationSec || null, cleanTitle(body.title), cleanCreator(body.creator), timestamp, sourceId)
+    .bind(
+      durationSec || null,
+      cleanTitle(body.title),
+      cleanCreator(body.creator),
+      timestamp,
+      sourceId,
+      Object.prototype.hasOwnProperty.call(body, "creator") ? 1 : 0
+    )
     .run();
 
   return json(env, { ok: true, applied: Boolean(result.meta.changes) });
@@ -1308,7 +1326,7 @@ async function creatorQueue(request, env) {
     `SELECT id, url_original, platform FROM sources
      WHERE creator IS NULL AND creator_checked_at IS NULL
      ORDER BY creator_tries, created_at DESC
-     LIMIT ?1`
+     LIMIT ?1`  /* matches idx_sources_creator_todo, so the sort is free */
   )
     .bind(limit)
     .all();

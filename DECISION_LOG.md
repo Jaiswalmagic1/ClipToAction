@@ -2030,3 +2030,93 @@ was pressed and then read it nowhere. It scrolls to that folder and marks it now
 **Forty-seven problems, across three rounds, in code that passed its own tests every time.**
 The bar he set — loop until a full independent review returns nothing that breaks
 correctness, security or his data — is the only reason any of this was found.
+
+---
+
+### D48 — Round four
+**Date:** 2026-09-07
+**Amends:** D40, D42, D46, D47.
+
+Two more independent reviewers. **Both found the same three blocking problems, independently
+of each other**, and all three were in code D47 had just written. That agreement is worth
+recording: these were not marginal readings.
+
+#### The one that deleted his notebook's contents
+
+**`saveCache`'s tiered fallback destroyed data that nothing can fetch back.** D47 made a
+full storage box drop the transcripts rather than fail — and kept `store.since` while doing
+it. A sync is a pure delta from `since`, and **there is no route anywhere that re-fetches
+one transcript.** So the next open would read a copy with no transcripts, ask only for what
+changed after that moment, and every one of his 210 reels would lose what was said in it,
+for ever, with nothing on screen. Its third tier did the same to his own typed notes and
+learnings. It compounds, because the gutted copy then fits and `since` keeps advancing.
+
+D47 turned "stale but complete" into "current but gutted", which is the worse of the two,
+and its own docstring claimed the dropped part "can always be fetched back". It cannot.
+
+Now: the words are dropped **and the clock is wound back to zero**, so the next sync fetches
+the notebook whole. His notes, learnings and analyses are never dropped at all — they exist
+nowhere else on the device. And when nothing will fit, nothing is written, so whatever was
+there before survives.
+
+#### The one that threw away the only way a reel gets in
+
+**An offline or merely slow share lost the reel silently.** The share target is a GET target,
+so Android navigates to `share-target.html?title=…&url=…` — and `caches.match` compares the
+query string by default, so the copy saved under the bare name could never be found. It fell
+through to the navigate fallback and was served `index.html`: the share script never ran,
+nothing was written, nothing was carried in the address, and the app opened on Home looking
+entirely normal with the reel gone.
+
+Three rounds missed it, and D46 had put `share-target.html` into the cache **specifically**
+to prevent this, with a comment saying so. On `main` this case at least failed loudly with a
+browser error; this branch made it silent. It needs only a page load slower than three
+seconds, which is the patchy-signal case the whole timeout exists for.
+
+#### The one that let anybody save a reel into his notebook
+
+**`#/share/<url>` was an unauthenticated auto-save.** D47 added it as a fallback for when
+storage refuses, and the app saved whatever it found there without asking. A link in an
+email or a WhatsApp message would then queue his PC, spend a day of an AI key, and put
+content of the sender's choosing into the notebook his AI later reads — with no decision
+from him. Before D47 the only way in was the OS share sheet.
+
+A link that arrives in the **address** is now filled into the box and left for him to press,
+with a line saying somebody shared it. A link that came through this app's own share target,
+which nothing else can write, still saves itself as it always has.
+
+#### The smaller ones
+
+**A migration was edited in place.** D46 shipped 0014 indexing `(created_at)`; D47 changed
+the same file, same index name, still `IF NOT EXISTS` — so on a database where the first had
+already run, the second is a silent no-op and the wrong index stays. Nothing has run it yet,
+but it is a landmine in D47's own release sequence, so it now drops the old one first.
+
+**`notebookShape` fired too rarely.** D47 fixed it from "never fires" to "misses things": it
+counted clips, sources, analyses and tracker rows, and not notes, learnings, topics, tasks
+or questions. A learning written by his AI app through the connector changed none of them,
+so Home would sit stale until he navigated by hand.
+
+**`reportTooLong` still settled the creator question unconditionally**, the pattern D46
+deliberately removed from `storeTranscript` — so a video asked about by a machine running
+older code would have been put permanently beyond the creator backfill.
+
+**The race's timer was never cleared**, leaving a three-second timeout per request.
+
+**The test harness's `batch` was more forgiving than D1**, running statements one after
+another with no transaction — so the test asserting that two writes move together could not
+have failed however they were written. It is a real transaction now.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+| Four | 7 | 5 |
+
+**Fifty-four problems.** Five of round four's seven were introduced by round three's fixes,
+which is the highest proportion yet — the code being changed is getting smaller and more
+load-bearing each time. Everything else round four looked at came back clean, including the
+fence, the release order, the migrations, cross-user isolation and CI.

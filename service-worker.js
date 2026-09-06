@@ -76,12 +76,12 @@ function worthKeeping(response) {
 
 /** The network's answer, or a rejection once the wait is up, so the cache can answer. */
 function orGiveUpWaiting(live) {
-  return Promise.race([
-    live,
-    new Promise((_, giveUp) =>
-      setTimeout(() => giveUp(new Error("the network took too long")), NETWORK_WAIT_MS)
-    )
-  ]);
+  let timer;
+  const waited = new Promise((_, giveUp) => {
+    timer = setTimeout(() => giveUp(new Error("the network took too long")), NETWORK_WAIT_MS);
+  });
+  // Cleared either way, so a page of requests does not leave a timer each.
+  return Promise.race([live, waited]).finally(() => clearTimeout(timer));
 }
 
 self.addEventListener("fetch", (event) => {
@@ -128,9 +128,19 @@ self.addEventListener("fetch", (event) => {
     orGiveUpWaiting(live).catch(async () => {
       const cached = await caches.match(request);
       if (cached) return cached;
-      // A deep link opened with no signal still has to land on the app, which then reads
-      // the notebook it already holds on the device.
+
       if (request.mode === "navigate") {
+        // The share target is a GET target (manifest.json), so Android navigates to
+        // `share-target.html?title=…&text=…&url=…` — and `caches.match` compares the query
+        // string by default, so the copy saved under the bare name could NEVER be found.
+        // Every offline share therefore fell through to the app below, the share script
+        // never ran, and the reel was silently gone: exactly the loss this file's own
+        // comment says caching that page prevents.
+        const sameName = await caches.match(request, { ignoreSearch: true });
+        if (sameName) return sameName;
+
+        // A deep link opened with no signal still has to land on the app, which then reads
+        // the notebook it already holds on the device.
         const shell = await caches.match("./index.html");
         if (shell) return shell;
       }

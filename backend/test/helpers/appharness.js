@@ -187,7 +187,10 @@ function makeDocument() {
  * Loads the app with `sync` as the answer to every sync request, signs a fake person in,
  * and returns the document so a test can read what was drawn.
  */
-export async function loadApp(sync, { hash = "", storageBlocked = false, failAfter = null } = {}) {
+export async function loadApp(
+  sync,
+  { hash = "", storageBlocked = false, failAfter = null, quotaChars = null } = {}
+) {
   const html = readFileSync(join(repo, "index.html"), "utf8");
   const found = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
   if (!found) throw new Error("index.html has no module script");
@@ -266,11 +269,19 @@ export async function loadApp(sync, { hash = "", storageBlocked = false, failAft
   const blocked = () => {
     throw new Error("SecurityError: the operation is insecure");
   };
+  // A real quota, so the app's own shrinking can be watched rather than simulated. This is
+  // how a browser behaves when the box is full: the write throws and nothing is stored.
+  const quotaed = (key, value) => {
+    if (quotaChars !== null && String(value).length > quotaChars) {
+      throw new Error("QuotaExceededError");
+    }
+    store.set(key, String(value));
+  };
   globalThis.localStorage = storageBlocked
     ? { getItem: blocked, setItem: blocked, removeItem: blocked }
     : {
         getItem: (key) => (store.has(key) ? store.get(key) : null),
-        setItem: (key, value) => store.set(key, String(value)),
+        setItem: quotaed,
         removeItem: (key) => store.delete(key)
       };
   // Node defines `navigator` as a getter-only global, so it has to be redefined rather

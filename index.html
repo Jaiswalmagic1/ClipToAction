@@ -750,24 +750,33 @@ function loadCache() {
  * can always be fetched back.
  */
 function saveCache() {
-  const attempts = [
-    () => store,
-    // The words themselves, which are most of the size and the least of the value here.
-    () => ({ ...store, transcripts: [] }),
-    // Last resort: the shape of the notebook, so it opens rather than looking empty.
-    () => ({ ...store, transcripts: [], analyses: [], notes: [], learnings: [] })
-  ];
-
-  for (const shrink of attempts) {
-    try {
-      localStorage.setItem(cacheKey(), JSON.stringify(shrink()));
-      return;
-    } catch {
-      // Try a smaller one. Storage that refuses everything is handled below.
-    }
+  try {
+    localStorage.setItem(cacheKey(), JSON.stringify(store));
+    return;
+  } catch {
+    // Almost always the transcripts. D42 allows a single video to be 400,000 characters
+    // and a browser's box is a few million, so a handful of long videos and every save
+    // from here on fails.
   }
-  // Nothing would fit, or storage is unavailable altogether. The app carries on against
-  // the network exactly as it does on a device it has never run on before.
+
+  try {
+    // Dropped, AND `since` wound back to zero — which is the whole of why this is safe.
+    //
+    // A delta sync only ever returns what changed after `since`, and there is no route
+    // anywhere that re-fetches a transcript on its own. So keeping the clock while
+    // dropping the words would have DESTROYED them: the next open would read a cache with
+    // no transcripts, ask only for changes since that moment, and every reel would lose
+    // what was said in it, for good, with nothing on screen. Winding the clock back means
+    // the next sync fetches the notebook whole again.
+    //
+    // Nothing he typed is ever dropped. His notes and his learnings are the one thing in
+    // here that exists nowhere else on the device, and a smaller cache is not worth them.
+    localStorage.setItem(cacheKey(), JSON.stringify({ ...store, since: 0, transcripts: [] }));
+  } catch {
+    // Storage will not take it at all. Nothing is written, so WHATEVER WAS THERE BEFORE
+    // survives — a complete copy that is a little stale, which is better than a current
+    // one with pieces missing. The app carries on against the network meanwhile.
+  }
 }
 
 /** Merge one delta batch in by primary key, newest wins. */
@@ -2914,6 +2923,15 @@ const notebookShape = () =>
     store.sources.length, newest(store.sources),
     store.analyses.length,
     store.item_status.length, newest(store.item_status),
+    // Everything a person can change from somewhere else. A learning written by his AI
+    // app through the connector (D29), or a note added on his phone, changes none of the
+    // counts above — so leaving these out made the guard fire too rarely instead of too
+    // often, and Home's "what I'm learning about" would sit stale until he navigated.
+    store.notes.length, newest(store.notes),
+    store.learnings.length, newest(store.learnings),
+    store.topics.length, newest(store.topics),
+    store.tasks.length, newest(store.tasks),
+    store.questions.length, newest(store.questions),
     store.relooks.length,
     store.relook && store.relook.due,
     store.relook && store.relook.ready
@@ -3528,17 +3546,23 @@ $("saveForm").onsubmit = (event) => {
 };
 
 /** A link handed over by the Android share sheet (D17). */
+/**
+ * A link that arrived from the share sheet, and whether it can be trusted to save itself.
+ *
+ * `own` means it came through our own share target's storage, which nothing but this app
+ * can write. A link carried in the ADDRESS is different: anybody can send him one, so it
+ * is put in the box and left for him to press. Saving it for him would let a message
+ * queue his PC and spend a day of an AI key on somebody else's choosing.
+ */
 function pendingShare() {
-  // The share target could not write to storage — a private window, or a full quota — so
-  // it put the link in the address instead. Taken first, and taken out of the address
-  // straight away so a reload does not save it twice.
   const carried = /^#\/share\/(.+)$/.exec(location.hash);
   if (carried) {
+    // Out of the address straight away, so a reload does not offer it twice.
     history.replaceState(null, "", location.pathname + location.search);
     try {
-      return decodeURIComponent(carried[1]);
+      return { url: decodeURIComponent(carried[1]), own: false };
     } catch {
-      return "";
+      return { url: "", own: false };
     }
   }
 
@@ -3553,15 +3577,15 @@ function pendingShare() {
     raw = localStorage.getItem("cliptoaction-pending-share");
     if (raw) localStorage.removeItem("cliptoaction-pending-share");
   } catch {
-    return "";
+    return { url: "", own: false };
   }
-  if (!raw) return "";
+  if (!raw) return { url: "", own: false };
   try {
     const share = JSON.parse(raw);
     const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
-    return found ? found[0] : "";
+    return { url: found ? found[0] : "", own: true };
   } catch {
-    return "";
+    return { url: "", own: false };
   }
 }
 
@@ -4128,7 +4152,7 @@ onAuthStateChanged(auth, async (account) => {
   render();
 
   const shared = pendingShare();
-  if (shared) $("saveUrl").value = shared;
+  if (shared.url) $("saveUrl").value = shared.url;
 
   try {
     await sync();
@@ -4139,7 +4163,12 @@ onAuthStateChanged(auth, async (account) => {
   }
   render();
   startRefreshing();
-  if (shared) saveLink(shared);
+  // Only a link this app's own share target handed over saves itself. One that arrived in
+  // the address is filled in and waits for him — see pendingShare.
+  if (shared.url && shared.own) saveLink(shared.url);
+  else if (shared.url) {
+    say("saveMsg", "Somebody shared this link with you. Press Save if you want it.", "warn");
+  }
 });
 </script>
 </body>

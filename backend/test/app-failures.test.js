@@ -170,6 +170,74 @@ describe("a video that could not be read is not a dead end", () => {
   });
 });
 
+describe("when the device will not hold the whole notebook", () => {
+  test("the words are dropped and the clock is wound back, so nothing is lost", async () => {
+    // The words of a video are only ever sent by a DELTA sync. There is no route anywhere
+    // that fetches one on its own — so a saved copy that drops the transcripts while
+    // KEEPING the clock does not shrink the notebook, it deletes what was said in every
+    // reel, permanently, with nothing on screen. Winding the clock back is the whole of
+    // why the smaller copy is safe.
+    const big = payload();
+    big.transcripts = [
+      { source_id: "s1", text: "a".repeat(5000), lang: "en", engine: "test", created_at: now }
+    ];
+
+    // Big enough for the notebook without its words, too small for it with them.
+    const app = await loadApp(big, { quotaChars: 3000 });
+
+    const cached = JSON.parse(app.localStore.get("cliptoaction-notebook-vish"));
+    assert.ok(cached, "nothing was saved at all — the smaller copy must still be written");
+    assert.deepEqual(cached.transcripts, [], "the words are the thing that is dropped");
+    assert.equal(cached.since, 0, "and the clock MUST be wound back, or they are gone");
+    // What he typed exists nowhere else on the device and is never dropped.
+    assert.ok("notes" in cached && "learnings" in cached && "analyses" in cached);
+    app.restore();
+  });
+
+  test("and when nothing will fit, the last complete copy is left alone", async () => {
+    const app = await loadApp(payload(), { quotaChars: 100000 });
+    const key = "cliptoaction-notebook-vish";
+    const complete = app.localStore.get(key);
+    assert.ok(complete);
+    app.restore();
+
+    // Now the box refuses everything. The previous copy must survive: stale and whole
+    // beats current and gutted.
+    const tiny = await loadApp(payload(), { quotaChars: 1 });
+    tiny.localStore.set(key, complete);
+    assert.equal(tiny.localStore.get(key), complete);
+    tiny.restore();
+  });
+});
+
+describe("a link somebody sent him", () => {
+  test("is filled in and waits, rather than saving itself", async () => {
+    // A link that arrives in the ADDRESS can be sent by anybody — an email, a message. If
+    // it saved itself it would queue his PC and spend a day of an AI key on somebody
+    // else's choosing, with no decision from him. The share sheet's own path, which only
+    // this app can write, still saves itself.
+    const app = await loadApp(payload(), {
+      hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FSENTTOHIM%2F"
+    });
+
+    assert.equal(app.$("saveUrl").value, "https://www.instagram.com/reel/SENTTOHIM/");
+    assert.ok(
+      !app.calls.some((url) => url.includes("/v1/clips")),
+      "a link he did not choose must not save itself"
+    );
+    assert.match(app.text("saveMsg"), /Press Save/);
+    app.restore();
+  });
+
+  test("and the address is cleared, so a reload does not offer it twice", async () => {
+    const app = await loadApp(payload(), {
+      hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FSENTTOHIM%2F"
+    });
+    assert.equal(app.$("homeView").hidden, false, "and it lands on Home, not a dead route");
+    app.restore();
+  });
+});
+
 describe("a parked video never claims he parked it", () => {
   test("because on a shared pipeline somebody else may have", async () => {
     const parked = payload();
