@@ -243,6 +243,14 @@
       white-space: nowrap;
     }
     table.tracker td.wrap { white-space: normal; min-width: 200px; }
+    /* A prompt is only worth having if you can take it away with you, so its own column
+       is scrollable rather than stretching the table, and carries a copy button. */
+    table.tracker td.longtext { white-space: pre-wrap; min-width: 240px; max-width: 420px;
+      max-height: 160px; overflow: auto; font-size: 13px; }
+    table.tracker button.copy {
+      margin: 6px 0 0; padding: 4px 9px; font-size: 12px; width: auto;
+      background: var(--chip-bg); color: var(--body-soft); border: 1px solid var(--line);
+    }
     table.tracker th {
       font-size: 12px;
       color: var(--muted);
@@ -414,6 +422,8 @@
           <button data-view="topics">By topic</button>
           <button data-view="product">Products</button>
           <button data-view="tool">Tools</button>
+          <button data-view="prompt">Prompts</button>
+          <button data-view="tactic">Worth trying</button>
         </div>
         <div id="syncMsg"></div>
         <div id="clipList"></div>
@@ -653,9 +663,17 @@ let user = null;
 let signedIn = false;
 let filter = "all";
 let query = "";
-// "list" | "topics" | "product" | "tool" — D22: all of them are views OVER the list,
-// never instead of it. The list is what opens, and is always one press away.
+// "list" | "topics" | one of the tracker kinds — D22: all of them are views OVER the
+// list, never instead of it. The list is what opens, and is always one press away.
 let grouping = "list";
+
+/**
+ * Which set of row shapes this app knows how to draw. It must match ITEM_SHAPES_VERSION in
+ * backend/src/analyze.js — a test compares the two files, because the number is what
+ * decides whether the app offers to re-read older reels, and an app one version behind
+ * would offer that for ever (D39).
+ */
+const SHAPES_VERSION = 2;
 // Which column a tracker is sorted by, and which way (D34).
 let trackerSort = { column: "saved", ascending: false };
 
@@ -991,7 +1009,7 @@ function renderList() {
 
   // New/Keeping/Done describe a clip, and a tracker's rows are the things inside clips.
   // Leaving the chips on screen there would look like a filter that does nothing.
-  $("filters").hidden = grouping === "product" || grouping === "tool";
+  $("filters").hidden = Boolean(TRACKERS[grouping]);
 
   const health = workerNotice();
   if (health) $("clipList").append(health);
@@ -1036,7 +1054,7 @@ function renderList() {
   // The trackers are not a filtered list of clips, they are a list of the ROWS inside
   // them, so they answer to the search box and not to the New/Keeping/Done chips — those
   // describe a clip, and one clip can hold three products.
-  if (grouping === "product" || grouping === "tool") {
+  if (TRACKERS[grouping]) {
     renderTracker(grouping);
     return;
   }
@@ -1103,6 +1121,49 @@ const TRACKERS = {
       ["done", "Using it"],
       ["no", "Not for me"]
     ]
+  },
+  // D38. Read across all 202 summaries in the notebook, the videos whose whole substance
+  // is wording you paste into an AI kept arriving as tools — and a tool's columns are the
+  // wrong questions to ask a prompt, so they came back empty. Twenty-odd of them, and the
+  // wording repeats: "five prompt codes", "33 ChatGPT commands", "slash botanical leaf".
+  prompt: {
+    blank: "Nothing here yet. Save a video that hands you wording to paste into an AI — a "
+      + "prompt, a slash command, an instructions file — and each one appears here.",
+    columns: [
+      { key: "name", label: "Prompt", wrap: true },
+      { key: "does", label: "What it makes", wrap: true },
+      { key: "app", label: "Which AI" },
+      { key: "needs", label: "You supply", wrap: true },
+      { key: "text", label: "The wording", copy: true }
+    ],
+    statuses: [
+      ["", "Not decided"],
+      ["want", "Want to try"],
+      ["doing", "Trying it"],
+      ["done", "Using it"],
+      ["no", "Not for me"]
+    ]
+  },
+  // D38. Half his notebook teaches a method, and until now none of it could be ticked off.
+  // A row here is one THING TO TRY, never one step of a procedure — the steps are already
+  // the main points, and repeating them here would be the same list twice.
+  tactic: {
+    blank: "Nothing here yet. Save a video that teaches a method, a setting to switch on "
+      + "or something to check, and each separate thing to try appears here.",
+    columns: [
+      { key: "name", label: "Worth trying", wrap: true },
+      { key: "does", label: "What it should get you", wrap: true },
+      { key: "where", label: "Where" },
+      { key: "effort", label: "How much work" },
+      { key: "note", label: "Note", wrap: true }
+    ],
+    statuses: [
+      ["", "Not decided"],
+      ["want", "Want to try"],
+      ["doing", "Trying it"],
+      ["done", "Done it"],
+      ["no", "Not for me"]
+    ]
   }
 };
 
@@ -1160,39 +1221,65 @@ function sortRows(rows, columns) {
   });
 }
 
-/** Clips that were summarised before kinds existed, so are in no tracker yet. */
-const unkindedClips = () =>
+/**
+ * Clips whose summary was written before a table they might belong in existed (D39).
+ *
+ * Two sorts. One was read before kinds existed at all and has no kind. The other was read
+ * against an older set of row shapes — a video full of prompts, read when there was no
+ * prompt table, was filed as a tool and its rows came back empty.
+ *
+ * `shapes_version` is what keeps this from nagging for ever: a reel that WAS asked under
+ * the current shapes and genuinely had nothing to track never appears here again.
+ */
+const behindClips = () =>
   store.clips.filter((clip) => {
     if (clip.deleted_at) return false;
     const analysis = analysisOf(clip);
-    return analysis && analysis.summary && !analysis.kind;
+    if (!analysis || !analysis.summary) return false;
+    return !analysis.kind || Number(analysis.shapes_version || 1) < SHAPES_VERSION;
   });
+
+/**
+ * "This table could cover N older videos — read them again?" and then it waits (D39).
+ *
+ * Nothing expensive happens while he is not watching. Reading a video again spends his own
+ * AI allowance, so it is a question with a number in it and a button, never something that
+ * starts by itself — the same rule as summarising one clip on demand, and the same rule as
+ * the fortnightly re-look.
+ *
+ * Returns null when there is nothing behind, which is what makes the offer go away instead
+ * of becoming furniture.
+ */
+function backfillOffer() {
+  const older = behindClips();
+  if (!older.length) return null;
+
+  const offer = document.createElement("div");
+  offer.className = "notice";
+  offer.style.background = "var(--pill-topic-bg)";
+  offer.style.color = "var(--pill-topic-text)";
+  offer.append(document.createTextNode(
+    `${older.length} ${older.length === 1 ? "video was" : "videos were"} read before these `
+    + "tables existed, so nothing has been picked out of them for them yet. Reading them "
+    + "again fills the tables in. It runs on your own AI account, a few at a time, and "
+    + "nothing starts until you press. "
+  ));
+  const button = document.createElement("button");
+  button.textContent = older.length === 1
+    ? "Read that one again"
+    : `Read those ${older.length} again`;
+  button.style.marginTop = "8px";
+  button.onclick = () => fillInTrackers(button);
+  offer.append(document.createElement("br"), button);
+  return offer;
+}
 
 function renderTracker(kind) {
   const spec = TRACKERS[kind];
   const host = $("clipList");
 
-  // A tracker holding four rows out of a notebook of eighty-six is a demonstration, not a
-  // feature. Offered as a press rather than done automatically: it runs on their own AI
-  // allowance, and spending it without being asked looks like the app breaking.
-  const older = unkindedClips();
-  if (older.length) {
-    const offer = document.createElement("div");
-    offer.className = "notice";
-    offer.style.background = "var(--pill-topic-bg)";
-    offer.style.color = "var(--pill-topic-text)";
-    offer.append(document.createTextNode(
-      `${older.length} ${older.length === 1 ? "video was" : "videos were"} saved before `
-      + "this existed, so nothing has been picked out of them yet. Reading them again fills "
-      + "these tables in — it runs on your own AI account and takes a minute. "
-    ));
-    const button = document.createElement("button");
-    button.textContent = "Fill in my trackers";
-    button.style.marginTop = "8px";
-    button.onclick = () => fillInTrackers(button);
-    offer.append(document.createElement("br"), button);
-    host.append(offer);
-  }
+  const offer = backfillOffer();
+  if (offer) host.append(offer);
 
   const rows = trackerRows(kind).filter((row) => {
     if (!query) return true;
@@ -1282,6 +1369,37 @@ function trackerTable(items, spec, clip) {
   return wrap;
 }
 
+/**
+ * Takes a piece of wording away with you. A prompt you cannot copy is a prompt you have to
+ * retype, which is most of the reason for saving it in the first place.
+ *
+ * Falls back to selecting the text when the browser refuses the clipboard — which it does
+ * on any address that is not HTTPS, and in some in-app browsers — so the button always
+ * leads somewhere rather than doing nothing.
+ */
+function copyButton(text, holder) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "copy";
+  button.textContent = "Copy";
+  button.onclick = async (event) => {
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = "Copied";
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(holder);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      button.textContent = "Selected — copy it";
+    }
+    setTimeout(() => { button.textContent = "Copy"; }, 2500);
+  };
+  return button;
+}
+
 function trackerRow(row, spec, { withSource = true } = {}) {
   const line = document.createElement("tr");
   if (row.status === "no") line.className = "decided-no";
@@ -1290,13 +1408,21 @@ function trackerRow(row, spec, { withSource = true } = {}) {
     const cell = document.createElement("td");
     if (column.wrap) cell.className = "wrap";
     const value = row.item[column.key];
+    const empty = value === null || value === undefined || value === "";
 
     // An address the video read out is shown as text and never as something to tap. It
     // came out of somebody else's video, and nothing here should send a person to a
     // stranger's address on one press.
-    cell.textContent = value === null || value === undefined || value === ""
-      ? "—"
-      : String(value);
+    if (column.copy && !empty) {
+      cell.className = "longtext";
+      // Its own element, so the fallback below can select the wording and nothing else —
+      // selecting the cell would drag the word "Copy" along with it.
+      const words = document.createElement("span");
+      words.textContent = String(value);
+      cell.append(words, copyButton(String(value), words));
+    } else {
+      cell.textContent = empty ? "—" : String(value);
+    }
     line.append(cell);
   }
 
@@ -1497,9 +1623,11 @@ async function tidyFolders(button) {
 }
 
 /**
- * "Fill in my trackers" (D34). Reads the videos saved before kinds existed again, a few
- * at a time, until there are none left. Stops the moment a pass achieves nothing, so it
- * can never sit there spending an allowance on the same failure.
+ * Reads the videos that are behind again (D34, D39), a few at a time, until there are none
+ * left. Stops the moment a pass achieves nothing, so it can never sit there spending an
+ * allowance on the same failure.
+ *
+ * Only ever reached from a press on the offer above, which says how many first.
  */
 async function fillInTrackers(button) {
   button.disabled = true;
@@ -1524,14 +1652,14 @@ async function fillInTrackers(button) {
     await sync();
     render();
     say("syncMsg", filled
-      ? `Read ${filled} ${filled === 1 ? "video" : "videos"} again. Anything with products `
-        + "or tools in it is in these tables now."
+      ? `Read ${filled} ${filled === 1 ? "video" : "videos"} again. Anything worth buying, `
+        + "trying, pasting into an AI or testing is in these tables now."
       : "Nothing more could be read.", filled ? "ok" : "warn");
   } catch (error) {
     say("syncMsg", error.message);
   } finally {
     button.disabled = false;
-    button.textContent = "Fill in my trackers";
+    button.textContent = "Read them again";
   }
 }
 
@@ -2055,9 +2183,12 @@ function renderClip(clipId) {
     const rowSpec = TRACKERS[analysis.kind];
     if (rows.length && rowSpec) {
       const rowsHeading = document.createElement("h3");
-      rowsHeading.textContent = analysis.kind === "product"
-        ? "What it showed, one by one"
-        : "What it introduced";
+      rowsHeading.textContent = {
+        product: "What it showed, one by one",
+        tool: "What it introduced",
+        prompt: "The wording it gave you",
+        tactic: "What it says is worth trying"
+      }[analysis.kind] || "What it introduced";
       panel.append(rowsHeading, trackerTable(rows, rowSpec, clip));
     }
 

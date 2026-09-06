@@ -710,11 +710,16 @@ describe("asking what kind of video it is", () => {
     for (const kind of KINDS) assert.equal(cleanKind(kind.toUpperCase()), kind);
   });
 
-  test("only the two kinds with a row shape may carry rows", () => {
+  // D34 allowed rows to product and tool alone, and refused tactic because a tactic's
+  // steps are already `key_points`. D38 gave tactic rows anyway — but for one THING WORTH
+  // TRYING rather than one step, which is a different list, and it is what makes "tactics
+  // to test, with my status" possible at all. D34's reason survives as the rule inside the
+  // prompt, and is pinned in new-tables.test.js. Opinion and other are unchanged.
+  test("only the kinds with a row shape may carry rows", () => {
     const rows = [{ name: "hook set", cost: "Rs. 22" }];
     assert.deepEqual(cleanItems("product", rows), rows);
     assert.deepEqual(cleanItems("tool", rows), rows);
-    for (const kind of ["tactic", "opinion", "other", null]) {
+    for (const kind of ["opinion", "other", null]) {
       assert.equal(cleanItems(kind, rows), null, `${kind} has no agreed row shape`);
     }
   });

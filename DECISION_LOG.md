@@ -1255,3 +1255,81 @@ open is the new app, and it stays the new app. Nothing needs to be uninstalled.
 went in. D36 came later and says production is not raised until the app is open to the
 public, so the app keeps talking to staging — where his notebook actually is. The swap
 changes which page opens, not which backend it talks to.
+
+---
+
+### D38 — Two new tables, and only two, because that is what his reels support
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "research all my saved reels and add the new table types they
+clearly support"; "only what the reels clearly support"; "do not pad".
+**Amends:** D34, which gave rows to `product` and `tool` alone.
+
+**How this was decided.** Every analysed video in the notebook was read — 202 of them, out
+of 212 saved — straight from the staging database, not from memory of what people save.
+The counts by kind were: tool 82, tactic 52, none 36, product 23, opinion 8, other 1.
+
+**What was added, and the evidence for each.**
+
+| New table | Evidence |
+|---|---|
+| **`prompt`** — a new kind | Videos whose whole substance is wording you paste into an AI. Twenty-odd of them, and they were arriving as **`tool`**, where the columns — how popular, free or paid, how to install — are all null for a prompt. The wording repeats across the notebook: "five prompt codes: L99, Slash Ghost, OODA", "33 ChatGPT commands for jewellery", "slash botanical leaf, slash tropical", "a master prompt", "five AI image prompt commands in Google Flow". This is a **wrong home, not a missing one**, which is what makes it worth its own kind. |
+| **`tactic` gets rows** | 52 videos, the second-largest kind, and until now not one of them carried anything that could be ticked off. He asked for a home screen showing "tactics to test, **with my status**", and there was nothing for a status to hang on. |
+
+**Why `tactic` now, when D34 refused it.** D34's reason was that a tactic's steps are
+already `key_points`, and that is still true — of the steps. So the row is defined as one
+THING WORTH TRYING, never one step: a video teaching one method is one row however many
+steps it has, and a video listing "3 settings to switch on" or "12 mistakes to check" is
+one row for each. The prompt says this in as many words, and a test pins that it does. If
+that rule ever slips, the table becomes the main points printed twice, which is exactly
+what D34 was protecting against.
+
+**What was considered and rejected, so nobody re-proposes it.**
+
+| Rejected | Why |
+|---|---|
+| `setting` — a switch to turn on in a platform's own panel | About twelve videos support it (Meesho Sunday Pickup and NDD, Flipkart Open Box Delivery, Shopsy Promise, Amazon's AI-content tagging, Google Business Profile services). But every one of those is already one `tactic` row, with the same columns and the same status. A second, emptier home for the same thing is D34's own objection. |
+| `place` — suppliers, markets, manufacturing hubs | Nine videos, and in almost all of them the fact is already the `where` column of a product row. The one genuine exception is a video listing India's textile hubs. One video is not a table. |
+| `fee` — commissions, rate cards, fixed fees | Twelve videos mention them, but never as the video's subject; they are facts inside a tactic, which is what `key_points` is for. |
+| `channel` — creators or accounts worth following | **Zero** videos in the notebook recommend accounts to follow. Searching by creator is a different job (D40) and is being built. |
+| `course` / `resource` | Eight videos, and `learn_more` already carries them on every kind. |
+
+**Two, not the three to five he expected.** He said to expect three to five and not to pad
+to eight. The evidence carried two. Padding would have filled his new home screen with
+tables that are empty for most of his notebook, which is the failure he named.
+
+**Nothing downstream changed shape.** The two new kinds use the row list that already
+exists — same `items` column, same `item_status` table, same statuses, same per-user
+decision rule (D10, D18). The connector, the topic filing and the learning loop are
+untouched. A prompt's wording is the one thing that had to gain something in the app: a
+prompt you cannot copy is a prompt you have to retype, so that column carries a copy
+button with a select-the-text fallback for browsers that refuse the clipboard.
+
+---
+
+### D39 — A new table asks before it re-reads anything
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "ask me before each backfill".
+
+**The rule.** When a new kind of table appears, the reels saved before it existed were
+never asked the new question, so their rows are empty and the table looks broken. Filling
+them in means re-reading them, and re-reading spends his own AI allowance. So the app
+**counts them, says the number, and waits**: "N videos were read before these tables
+existed — read them again?" Nothing starts until he presses. This is the same principle as
+`summariseOnDemand`, as the fortnightly re-look (D41), and as the warning before a very
+long video (D42): **nothing expensive happens while he is not watching.**
+
+**How it is counted, and why it needed a column.** `analyses.shapes_version` records which
+set of row shapes an analysis was written against. NULL means the first set — product and
+tool only — which is every analysis in the notebook today, and the migration deliberately
+rewrites nothing. Version 2 adds prompt and tactic.
+
+Without that column there is no way to tell a reel that has **nothing to track** from one
+that was **never asked**. Both have `items` NULL. The offer would then never go away: every
+press would re-read the same reels, find nothing again, and offer them again tomorrow. The
+version is written whatever comes back, including "nothing", which is what makes the queue
+shrink to zero and stay there.
+
+**Bumping it is the whole mechanism.** A future table type raises `ITEM_SHAPES_VERSION` in
+`backend/src/analyze.js` and the offer appears by itself, with the right number in it. The
+app carries the same number and a test compares the two files — an app one version behind
+would offer to re-read the same reels for ever.

@@ -57,6 +57,8 @@ The reel is a seed, not the destination.
 | D35 | Several AI keys | A list, not one key, spent in order. Only a spent allowance moves to the next; every other refusal stops and is shown against the key that gave it. Whose keys pay is D10 unchanged — the first saver's whole list, then the next saver's. |
 | D36 | When production may be touched | Never offered or started until Jaiswal says the app is open to the public - "release", "deploy" and "go ahead" are not the trigger. And his staging data is carried over in every scenario, no exception. |
 | D37 | The root page | `index.html` IS the app. The old capture page is retired to git history, `app.html` stays as a redirect so old links work, and the service worker is network-first so an installed phone app can never be pinned to a page that was replaced. |
+| D38 | New tables | Two, from reading all 202 analysed videos: `prompt` (wording you paste into an AI, which was arriving as a tool) and rows for `tactic` (one thing worth trying, never one step). `setting`, `place`, `fee`, `channel` and `course` were considered and rejected for thin evidence. |
+| D39 | Backfilling | A new table counts the reels read before it existed, says the number, and waits to be pressed. `analyses.shapes_version` is what makes that queue shrink to zero instead of asking for ever. |
 
 ---
 

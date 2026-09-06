@@ -25,6 +25,7 @@ import {
   cleanItems,
   itemKey,
   ITEM_STATUSES,
+  ITEM_SHAPES_VERSION,
   AnalysisError
 } from "./analyze.js";
 import {
@@ -834,12 +835,13 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
     env.DB.prepare(
       `INSERT INTO analyses
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
-          suggested_task, topic, sub_topic, sections, kind, items, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+          suggested_task, topic, sub_topic, sections, kind, items, shapes_version,
+          created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?15)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
          claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, sections = ?12,
-         kind = ?13, items = ?14, created_at = ?15`
+         kind = ?13, items = ?14, shapes_version = ?16, created_at = ?15`
     ).bind(
       sourceId,
       ownerId,
@@ -859,7 +861,11 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
         : null,
       kind,
       rows && rows.length ? JSON.stringify(rows) : null,
-      timestamp
+      timestamp,
+      // Which set of row shapes this reply was asked for. Written whatever came back,
+      // including "nothing to track": the point of the number is that a reel which was
+      // ASKED and had nothing is never offered for re-reading again (D39).
+      ITEM_SHAPES_VERSION
     )
   ];
 
@@ -1367,16 +1373,23 @@ async function sortOldClips(request, env, userId) {
 }
 
 /**
- * "Fill in my trackers" (D34) — for everything saved before kinds existed.
+ * "Fill in my trackers" (D34), and since D38 also "read these again for the new table".
  *
  * A tracker holding four rows out of a notebook of eighty-six is a demonstration, not a
  * feature. This runs the analysis again over the transcript already stored, so a video
  * that showed three products at three prices ends up as three rows.
  *
+ * Two sorts of reel qualify. One was read before kinds existed at all and has no kind.
+ * The other was read before a table it belongs in existed — a video full of prompts, read
+ * when there was no prompt table, was filed as a tool and its rows came back empty. That
+ * is what `shapes_version` counts, and it is why a reel which WAS asked and genuinely had
+ * nothing to track never appears here twice (D39).
+ *
  * It runs on the presser's own key, like "Summarise this one" does: they volunteered
  * their allowance by pressing, and quietly spending an earlier saver's would be wrong.
  * And it is a press rather than something automatic, because eighty-six calls that nobody
- * asked for look exactly like the app breaking.
+ * asked for look exactly like the app breaking. D39 makes that a rule rather than a
+ * habit: the app must say how many reels it would re-read and wait to be told yes.
  *
  * A few at a time, and the app presses again while anything is left — one Worker request
  * has a hard ceiling on how many calls out it may make. It stops on the first failure
@@ -1391,10 +1404,10 @@ async function fillInKinds(request, env, userId) {
      JOIN sources s ON s.id = c.source_id
      WHERE c.user_id = ?1
        AND c.deleted_at IS NULL
-       AND a.kind IS NULL
+       AND (a.kind IS NULL OR COALESCE(a.shapes_version, 1) < ?3)
      ORDER BY c.created_at DESC`
   )
-    .bind(userId, SHARED)
+    .bind(userId, SHARED, ITEM_SHAPES_VERSION)
     .all();
 
   const queue = pending.results;

@@ -96,12 +96,18 @@ CREATE TABLE IF NOT EXISTS analyses (
                                            -- video. NULL for a reel, which is never asked
                                            -- for chapters, and for a long one that came
                                            -- back without them
-  kind          TEXT,                      -- D34: product | tool | tactic | opinion |
-                                           -- other. NULL where none was named
-  items         TEXT,                      -- D34: JSON rows, only for 'product' and
-                                           -- 'tool'. NULL, never '[]', so a row written
+  kind          TEXT,                      -- D34/D38: product | tool | prompt | tactic |
+                                           -- opinion | other. NULL where none was named
+  items         TEXT,                      -- D34/D38: JSON rows, for the kinds that have
+                                           -- a row shape -- product, tool, prompt and
+                                           -- tactic. NULL, never '[]', so a row written
                                            -- before kinds existed is indistinguishable
                                            -- from one that tracks nothing
+  -- D38/D39. Which version of those row shapes this was written against. NULL means the
+  -- first one, where only product and tool had rows -- so a reel read before a new table
+  -- existed is countable, and the app can OFFER to re-read it instead of quietly
+  -- spending somebody's AI allowance on a backfill nobody asked for.
+  shapes_version INTEGER,
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (source_id, user_id)
 );

@@ -156,16 +156,48 @@ export async function withOneRetry(attempt) {
 /**
  * What kind of video this is. Everything is one of these — "other" is the honest answer,
  * not a failure, and it behaves exactly as every video behaved before kinds existed.
+ *
+ * "prompt" was added after reading all 202 analysed videos in the notebook (D38). Videos
+ * whose whole substance is text you paste into an AI were arriving as "tool" and filling
+ * a tool row whose columns — how popular, free or paid, how to install — are all null for
+ * a prompt. Twenty-odd of them, with the wording repeating: "five prompt codes", "33
+ * ChatGPT commands", "slash botanical leaf", "a master prompt". A wrong home, not a
+ * missing one, which is why it earns its own kind.
  */
-export const KINDS = ["product", "tool", "tactic", "opinion", "other"];
+export const KINDS = ["product", "tool", "tactic", "prompt", "opinion", "other"];
+
+/**
+ * Which version of the row shapes an analysis was written against.
+ *
+ * A new kind of table is worthless over a notebook that was read before it existed: the
+ * rows were never asked for, so the column is empty and the table looks broken. This is
+ * what lets the app say "this new table could cover 140 older reels — re-read them?" and
+ * WAIT to be told yes, rather than quietly spending an allowance nobody offered (D39).
+ *
+ *   1 — product and tool carried rows; nothing else did. Stored as NULL, because that is
+ *       every analysis written before this existed and nothing had to be rewritten.
+ *   2 — tactic and prompt carry rows too (D38).
+ *
+ * Bump this whenever a kind gains or changes a row shape, and the offer appears by itself.
+ */
+export const ITEM_SHAPES_VERSION = 2;
+
+/** Kinds whose rows are a table. Everything else is prose, and deliberately so. */
+export const KINDS_WITH_ROWS = ["product", "tool", "tactic", "prompt"];
 
 /**
  * The rules that turn a kind into columns.
  *
- * Only "product" and "tool" earn a row shape, because only those two carry facts that a
- * person wants to sort, compare and tick off. A tactic's steps are already what
- * `key_points` is, and an opinion's substance is already what `claims` is — giving them a
- * second, emptier home would be a worse notebook, not a better one.
+ * Four kinds earn a row shape, and two deliberately do not. An opinion's substance is
+ * already what `claims` is, and "other" has nothing shared to put in a column — giving
+ * either a second, emptier home would be a worse notebook, not a better one.
+ *
+ * "tactic" was the one that changed its mind (D38). D34 refused it rows because a
+ * tactic's steps are already `key_points`, and that is still true of the steps. What is
+ * NOT in key_points is a status: he asked for a screen of "tactics to test, with my
+ * status", and there was nothing for a status to hang on. So the row is one THING TO TRY,
+ * never one step of a procedure — the rule below is what keeps the two apart, and it is
+ * the whole reason this is not the same list twice.
  *
  * Written once and used by both prompts, so a long video and a reel can never disagree
  * about what a product is.
@@ -175,10 +207,13 @@ Rules for "kind" and "items":
 - "kind" is what sort of video this is:
   - "product" — it shows things to buy, sell or source, with prices, suppliers or shops.
   - "tool" — it introduces an app, a website, a service or a code project.
-  - "tactic" — it teaches a method or steps for doing something.
+  - "prompt" — its substance is wording you type into an AI: prompts, slash commands,
+    instruction files. Choose this over "tool" when the video's real content is the
+    WORDING, even if it names the app you type it into.
+  - "tactic" — it teaches a method, steps, settings to change, or things to check.
   - "opinion" — it argues a point, busts myths, or warns about something.
   - "other" — anything else. Use it whenever you are unsure. It is not a failure.
-- "items" is a list, and it is EMPTY ([]) unless the kind is "product" or "tool".
+- "items" is a list, and it is EMPTY ([]) when the kind is "opinion" or "other".
 - When the kind is "product", each item is:
   {"name": "the item", "cost": "what it costs to buy, as said", "sell_price": "what it
    sells for, as said, or null", "where": "the shop, supplier or market named, or null",
@@ -187,6 +222,21 @@ Rules for "kind" and "items":
   {"name": "the tool", "does": "one line on what it does", "popularity": "stars, users or
    downloads as said, or null", "price": "free, paid, open-source — as said, or null",
    "link": "the address given, or null", "install": "the command or step given, or null"}
+- When the kind is "prompt", each item is:
+  {"name": "what it is called or what you type to start it, e.g. /botanical leaf", "does":
+   "one line on what it produces", "app": "the AI app it is for, as said, or null",
+   "text": "the wording itself, copied word for word ONLY if the video actually gave it,
+   or null", "needs": "what you must supply with it — a product photo, a link — or null"}
+- When the kind is "tactic", each item is ONE THING WORTH TRYING, not one step:
+  {"name": "the thing to try, in a few words", "does": "what it is supposed to get you",
+   "where": "the site, app or panel it is done in, as said, or null", "effort": "how long
+   or how much work it is, as said, or null", "note": "one short line of detail"}
+  - A video teaching ONE method is ONE item, however many steps that method has. The steps
+    belong in "key_points" and must not be repeated here.
+  - A video listing several separate things — "3 settings to switch on", "12 mistakes to
+    check" — is one item for each of them.
+  - If you cannot name a thing a person would decide to do or not do, return [] rather
+    than turning the steps into rows.
 - One entry per thing named. Three products mentioned means three items, never one.
 - NEVER invent a value. Anything the video did not say is null.
 - Copy prices and figures exactly as they were said, currency and all — "Rs. 22", not 22.
@@ -205,7 +255,7 @@ Reply with ONE fenced json code block and nothing else — no preamble, no expla
   "suggested_task": "one concrete action worth taking, or null",
   "topic": "the broad subject this belongs under",
   "sub_topic": "the narrower subject inside that topic, or null",
-  "kind": "product | tool | tactic | opinion | other",
+  "kind": "product | tool | prompt | tactic | opinion | other",
   "items": []
 }
 \`\`\`
@@ -243,7 +293,7 @@ Reply with ONE fenced json code block and nothing else — no preamble, no expla
   "suggested_task": "one concrete action worth taking, or null",
   "topic": "the broad subject this belongs under",
   "sub_topic": "the narrower subject inside that topic, or null",
-  "kind": "product | tool | tactic | opinion | other",
+  "kind": "product | tool | prompt | tactic | opinion | other",
   "items": []
 }
 \`\`\`
@@ -280,12 +330,12 @@ export function cleanKind(raw) {
  * The rows a kind is allowed to carry.
  *
  * A kind with no row shape gets none, however many the AI volunteered: there is no agreed
- * meaning for a "tactic" row, so storing one would put shapeless objects into a table
+ * meaning for an "opinion" row, so storing one would put shapeless objects into a table
  * people read. Null and not "[]", for the same reason `sections` is null — a video with
  * nothing to track is then identical to every video stored before items existed.
  */
 export function cleanItems(kind, raw) {
-  if (kind !== "product" && kind !== "tool") return null;
+  if (!KINDS_WITH_ROWS.includes(kind)) return null;
   if (!Array.isArray(raw) || !raw.length) return null;
   return raw.filter((item) => item && typeof item === "object" && !Array.isArray(item));
 }
