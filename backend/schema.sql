@@ -14,10 +14,36 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT,
   display_name  TEXT,
   ai_provider   TEXT,                      -- gemini | groq | openai | anthropic | xai | manual
+  -- D35: no longer read. The keys live in ai_keys below; this is kept only so a rollback
+  -- to the pre-D35 Worker finds a working key rather than an empty account.
   ai_key_cipher TEXT,                      -- AES-GCM ciphertext, never returned to client
   created_at    INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL
 );
+
+-- D35. One key became a list, because a free allowance runs out. Spent in `position`
+-- order, and the next one is reached ONLY when the current is out of allowance -- every
+-- other refusal stops and is shown, so a key that has gone bad is noticed rather than
+-- silently stepped over. Per-user, so it carries updated_at like the rest (D6). The
+-- ciphertext is decrypted only inside the Worker and never returned to a client (D11).
+CREATE TABLE IF NOT EXISTS ai_keys (
+  id                TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  label             TEXT,                   -- what the person calls it, e.g. "work gmail"
+  provider          TEXT NOT NULL,          -- gemini | groq | openai | anthropic | xai
+  key_cipher        TEXT NOT NULL,          -- never returned to any client
+  position          INTEGER NOT NULL,       -- the order this person's keys are spent in
+  state             TEXT NOT NULL DEFAULT 'ready',  -- ready | exhausted | rejected
+  last_error        TEXT,                   -- the sentence shown to its owner
+  last_error_detail TEXT,                   -- status + allowlisted name, never free text
+  last_error_at     INTEGER,
+  exhausted_at      INTEGER,                -- when the allowance ran out; drives the retry
+  last_used_at      INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_keys_user ON ai_keys (user_id, position);
 
 -- ---------------------------------------------------------------- shared layer
 
@@ -30,6 +56,10 @@ CREATE TABLE IF NOT EXISTS sources (
   duration_sec  INTEGER,
   state         TEXT NOT NULL,             -- pending | downloading | transcribed | analyzed | failed
   error         TEXT,                      -- surfaced in the UI, never swallowed
+  -- Why, in a form that cannot carry a key: the HTTP status and a name from a fixed list
+  -- in src/analyze.js, or "unrecognised". `error` stays the sentence people read; this is
+  -- what makes a failure diagnosable instead of guessable (D34).
+  error_detail  TEXT,
   attempts      INTEGER NOT NULL DEFAULT 0,
   claimed_at    INTEGER,                   -- lease: a claim older than the timeout is retryable
   created_at    INTEGER NOT NULL,
@@ -62,6 +92,16 @@ CREATE TABLE IF NOT EXISTS analyses (
   suggested_task TEXT,
   topic         TEXT,                      -- D27: proposed by the AI from the reel alone,
   sub_topic     TEXT,                      -- so one analysis still serves everyone (D10)
+  sections      TEXT,                      -- D33: JSON [{at, heading, detail}] for a long
+                                           -- video. NULL for a reel, which is never asked
+                                           -- for chapters, and for a long one that came
+                                           -- back without them
+  kind          TEXT,                      -- D34: product | tool | tactic | opinion |
+                                           -- other. NULL where none was named
+  items         TEXT,                      -- D34: JSON rows, only for 'product' and
+                                           -- 'tool'. NULL, never '[]', so a row written
+                                           -- before kinds existed is indistinguishable
+                                           -- from one that tracks nothing
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (source_id, user_id)
 );
@@ -192,6 +232,27 @@ CREATE TABLE IF NOT EXISTS learnings (
 
 CREATE INDEX IF NOT EXISTS idx_learnings_sync ON learnings (user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_learnings_clip ON learnings (clip_id);
+
+-- The user's own decision about one row of a product or tool tracker (D34). Per-user,
+-- because "I ordered this" is the one part of a tracker that is about the person rather
+-- than the video (D10, D18).
+--
+-- Keyed by item_key -- the row's name flattened -- and never by its position in the list.
+-- A re-run analysis returns the rows in a different order, and a position would then move
+-- somebody's "ordered" onto a different product.
+CREATE TABLE IF NOT EXISTS item_status (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  source_id  TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+  item_key   TEXT NOT NULL,                 -- the row's name, flattened for matching
+  status     TEXT NOT NULL,                 -- want | doing | done | no
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  UNIQUE (user_id, source_id, item_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_status_sync ON item_status (user_id, updated_at);
 
 -- The address a user gives their AI app so it can read their notebook itself (D29).
 --

@@ -32,14 +32,33 @@ jobs:
 
       - name: PWA syntax check
         run: |
-          # index.html is the file main actually serves; its script block was unchecked.
+          # index.html is the file main actually serves. app.html is the rewrite that will
+          # replace it (D21) and was going unchecked entirely — a typo in it reached
+          # staging before CI had anything to say about it.
           node -e "
             const fs = require('fs');
-            const html = fs.readFileSync('index.html', 'utf8');
-            const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)];
-            if (!blocks.length) throw new Error('no inline script found in index.html');
-            for (const [, code] of blocks) new Function(code);
-            console.log(blocks.length + ' inline script block(s) parsed.');
+            const os = require('os');
+            const path = require('path');
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-'));
+            let total = 0;
+            for (const file of ['index.html', 'app.html']) {
+              const html = fs.readFileSync(file, 'utf8');
+              const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/g)];
+              if (!blocks.length) throw new Error('no inline script found in ' + file);
+              blocks.forEach(([, attrs, code], i) => {
+                // A module cannot be parsed by new Function — it has import statements —
+                // so it goes through node --check as a .mjs instead.
+                if (/type\s*=\s*[\"']module[\"']/.test(attrs)) {
+                  const out = path.join(dir, file.replace('.', '-') + i + '.mjs');
+                  fs.writeFileSync(out, code);
+                  require('child_process').execFileSync(process.execPath, ['--check', out]);
+                } else {
+                  new Function(code);
+                }
+                total += 1;
+              });
+            }
+            console.log(total + ' inline script block(s) parsed.');
           "
 
       - uses: actions/setup-python@v5

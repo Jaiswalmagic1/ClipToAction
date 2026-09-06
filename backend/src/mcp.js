@@ -266,7 +266,8 @@ async function ownRows(env, userId) {
     `SELECT c.id, c.created_at, c.status,
             s.url_original, s.platform,
             t.text AS transcript,
-            a.summary, a.key_points, a.claims, a.learn_more, a.topic, a.sub_topic
+            a.summary, a.key_points, a.claims, a.learn_more, a.topic, a.sub_topic,
+            a.kind, a.items
      FROM clips c
      JOIN sources s ON s.id = c.source_id
      LEFT JOIN transcripts t ON t.source_id = c.source_id
@@ -371,6 +372,21 @@ async function runFetch(env, userId, args) {
 
   const learn = jsonList(clip.learn_more);
   if (learn.length) lines.push("", "WORTH STUDYING:", ...learn.map((item) => `- ${item}`));
+
+  // The rows a product or tool video carries (D34). Handed over as named facts rather
+  // than as prose, so the AI can be asked "which of these is under thirty rupees" and
+  // answer from the notebook instead of re-reading the transcript and guessing.
+  const rows = jsonList(clip.items);
+  if (rows.length) {
+    lines.push("", clip.kind === "product" ? "THINGS IT SHOWED:" : "TOOLS IT NAMED:");
+    for (const row of rows) {
+      const said = Object.entries(row || {})
+        .filter(([, value]) => value !== null && value !== undefined && value !== "")
+        .map(([field, value]) => `${field}: ${value}`)
+        .join("; ");
+      if (said) lines.push(`- ${said}`);
+    }
+  }
 
   const mine = notes.filter((note) => note.clip_id === clip.id);
   if (mine.length) lines.push("", "THEIR OWN NOTES:", ...mine.map((note) => `- ${note.body}`));

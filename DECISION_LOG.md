@@ -821,3 +821,347 @@ number of milliseconds, no zone baked in. Only what is displayed moved. That is 
 
 **Pinned by a test.** `connector.test.js` — a clip saved at 19:00 UTC on the 15th is
 reported as saved on the 16th, because in India it was 00:30 on the 16th.
+
+---
+
+### D32 — Dark mode follows the device, until the person says otherwise
+**Date:** 2026-08-27
+**Options considered:** (a) a switch in the header, and follow the phone or laptop until it
+is used; (b) follow the phone or laptop only, with no switch at all; (c) a setting on the
+Settings page.
+**Decided:** (a).
+
+**Why.** (b) is the smallest change and it is wrong for this app. A notebook is read at
+night, in bed, after the phone has already been put in dark mode for the night — and it is
+also read in daylight on the same phone, where the person may still want the darker page
+because it is easier on their eyes. Tying it to the device takes the choice away.
+
+(c) buries it. The moment somebody wants dark mode is the moment they are looking at a page
+that is too bright, and a switch two screens away is a switch they will not find. It goes
+in the header, next to the page they are complaining about.
+
+So there are three states and only two are stored: **dark** and **light** are the person's
+own choice and are remembered in the browser; **nothing stored** means follow the device,
+and keeps following it as the device changes through the day. An explicit choice always
+beats the device — somebody who picks light on a dark phone gets light.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `app.html` — the style block | Every colour in the file is now a variable. There were 30-odd colours written straight into rules — header, pills, notices, chips, input backgrounds — and each one would have stayed light forever. The dark values are written once, in one block. |
+| `app.html` — `:root` | `color-scheme` is declared for both. Without it the scrollbars, dropdowns and the on-screen keyboard stay light on a dark page, and Chrome force-darkens the light page itself. |
+| `app.html` — `<head>` | A plain script, not the module, so it runs **before the page is painted**. A module is deferred, and a deferred theme is a white flash on every load for a dark-mode user. |
+| `app.html` — the header | The signed-in details and the new switch share one box, so the header stays two columns whether or not somebody is signed in. |
+| `<meta name="theme-color">` | Moves with the theme, so the phone's status bar matches the page instead of staying navy over a dark page. |
+
+**The one thing that is deliberately not stored on the server.** The choice lives in the
+browser, not in the user's account, so it does not sync between their phone and their
+laptop. That is the right default — the device the page is being read on is exactly what
+this is about — and it costs nothing to revisit. It also means every read and write is
+wrapped: a private window and a browser set to block site data both throw, and the page
+falls back to following the device rather than breaking.
+
+**Not pinned by a test.** This is colour and a stored preference, not the analysis
+contract, canonicalisation, or auth — the three things `CLAUDE.md` requires a test for. It
+was proven in a browser instead: light on a dark device, dark on a light device, the choice
+surviving a reload, and the switch, its label, and the status-bar colour all moving together.
+
+---
+
+### D33 — A long video gets a different question, not just a bigger allowance
+**Date:** 2026-08-27
+**Options considered:** (a) raise `MAX_DURATION_SEC` and change nothing else;
+(b) break a long transcript into pieces, summarise each, then summarise the summaries;
+(c) keep one prompt but ask for chapters when the video is long, and let the length choose
+between two prompts.
+**Decided:** (c), with the ceiling raised to 3 hours.
+
+**Why not (a).** It is one line and it produces something worse than the refusal it
+replaces. The prompt says "a **short** social-media video" and asks for a 3-4 sentence
+summary. Pointed at a ninety-minute interview that is not a short answer, it is a useless
+one — and the person is left believing the video was handled.
+
+**Why not (b).** Chunking is the standard answer and it is not needed here, which took
+measuring rather than assuming. Ninety minutes of speech is about 70,000 characters, well
+inside what every provider in `OPENAI_COMPATIBLE`, Gemini and Anthropic take in one
+request; the 200,000-character ceiling on a stored transcript is about four and a half
+hours, so it is not the binding constraint either. What chunking would have cost is the
+thing the feature exists for: summarising before analysing throws away the detail, and the
+detail is the point. It stays available if a six-hour video ever has to be handled.
+
+**Why the second prompt is the first one plus a field.** Three things already read this
+shape — the app, the connector an AI app uses (D29), and topic filing (D27). A different
+shape for long videos would have meant changing all three and keeping two paths alive in
+each. The long prompt asks for every field the short one does, in the same names, and adds
+`sections`. Everything downstream carries on not knowing this happened, and gains chapters
+when they are there.
+
+**What "long" means, and why the unknown is short.** Over ten minutes, decided in one place
+(`isLong`). Instagram reports no duration at all, so a great many real reels arrive with
+nothing — those count as short. Guessing "long" on a missing number would send every
+Instagram reel the wrong prompt and ask for chapters of a sixty-second clip.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `worker-pc/worker.py` | Ceiling 30 min → 3 hours. Over `LONG_VIDEO_SEC` the transcript carries `[h:mm:ss]` every half minute; a reel's is one block of speech exactly as before |
+| `backend/src/analyze.js` | `LONG_ANALYSIS_PROMPT`, `promptFor`, `isLong`, `tidyTranscript`, and a larger output budget for a chaptered reply |
+| `backend/src/worker.js` | Limits and validation take the length; `sections` stored; both the automatic run and the copy-paste tier pick the prompt by length |
+| `backend/migrations/0006_long_video_sections.sql` | One nullable column on `analyses` |
+| `app.html` | "What happens when" — the chapters, with the time on each |
+
+**The times are the reason this is worth building.** Without them a long video's summary is
+something to read instead of the video. With them it is a way back into it: the point is at
+0:41:12 and can be found. That is why the markers are in the transcript rather than a
+separate table — the AI is told to copy a time it can see, never to invent one, and a
+marker it cannot see is a time it will make up.
+
+**Why the output budget moved too, and this is not cosmetic.** 24 chapters of a few
+sentences each, on top of everything the short reply already carries, does not fit in 4096
+tokens. A cut-off reply is not a shorter analysis — it is unparseable JSON, which reaches
+the person as "the AI's reply was not in the expected format" with no clue why. Long
+replies get 16384.
+
+**The tidying is deliberately timid.** It removes hesitation noises and whisper's own
+stutter and nothing else — perhaps a tenth of the text, not the 80% the reel that prompted
+it claims for shell output. Shell output is machine noise; a transcript is a person
+talking, and almost all of it means something. It runs on the way to the AI only: what is
+stored is word for word what was said, and there is a test that says so. The first
+implementation used a back-reference to find repeated sentences, passed every correctness
+test, and then took longer than the analysis itself on an hour of speech — it walks the
+sentences now, and a test pins that.
+
+**The cost, stated plainly.** A three-hour video holds the one PC for the best part of an
+hour and every reel shared meanwhile waits behind it. That is a real regression in
+responsiveness for a queue of one machine, accepted knowingly, and it is documented in
+`worker-pc/README.md` rather than left to be discovered. It is also another reason the
+open "get the work off the PC" question matters.
+
+**Not carried to the connector yet.** `backend/src/mcp.js` names its columns, so an AI app
+reading the notebook gets the summary and the points but not the chapters. Deliberately
+left: that file is live on `main` and shipping a fortnight ago, and touching it was not in
+what was agreed.
+
+**Pinned by tests.** 30 new ones in `backend/test/long-video.test.js` and 9 in
+`worker-pc/test_worker.py`, including the three that matter most: a reel gets the old
+prompt and stores a row with no chapters, the stored transcript is never the tidied one,
+and the copy-paste tier is handed exactly what a connected key would have sent.
+
+### D34 — Different kinds of video get organised differently, and a failure says why
+**Date:** 2026-08-30
+**Raised by:** Jaiswal, after living in the staging notebook. Three things at once:
+product videos arriving as prose instead of a tracker; an error appearing on some videos;
+and "how else can it be organised so the data is used properly".
+**Grounded in the real notebook, not in theory.** 86 analysed videos on staging: 28 about
+a tool or a code project, 26 carrying a price, roughly 20 selling tactics, the rest
+opinion. Every one of them was getting the same seven boxes.
+
+**Options considered:** (a) leave the shape alone and build the trackers by parsing prose
+out of `key_points`; (b) a separate analysis shape per kind; (c) one new label — what kind
+of video this is — plus one extra block whose shape depends on it.
+**Decided:** (c), which is D33's move again. The new shape is the old shape plus fields.
+
+**Why not (a).** The facts are not in the text in a reliable form. "6-piece hook set priced
+at Rs. 22, capable of holding 1-2 kg" is one sentence with four facts in it, and a parser
+that pulls them out is a parser that gets them wrong on the next video. The AI already has
+the transcript; asking it for the fields is free and asking a regular expression for them
+is not.
+**Why not (b).** Three things read the analysis — the app, the connector (D29) and topic
+filing (D27). A shape per kind means every one of them grows a branch per kind. D33 settled
+this argument already.
+
+**Only two kinds carry rows, and that is deliberate.** `product` and `tool`. A tactic's
+steps are already what `key_points` is for, and an opinion's substance is already what
+`claims` is for — a second, emptier home for them would be a worse notebook. `other` is an
+honest answer the AI is told to reach for, and a video filed there behaves exactly as every
+video behaved before any of this existed.
+
+**Storage.** `analyses.kind` and `analyses.items`, both nullable, both shared like the rest
+of the analysis (D10) — what a video said about a product is a fact about the video.
+`items` is NULL and never `'[]'` when there is nothing, so a row written today that tracks
+nothing is indistinguishable from one written last week. Nothing is backfilled.
+
+**What the person decides is theirs, and is keyed by name.** `item_status` is per-user
+(D18) and carries `updated_at` (D6). It is keyed by the row's flattened name, never by its
+position in the list: re-running an analysis returns the rows in a different order, and a
+position would move somebody's "ordered" onto a different product.
+
+**"Fill in my trackers", because nothing is backfilled.** A notebook of 86 videos would
+otherwise have had four rows in it — a demonstration, not a feature. The button reads the
+videos again from the transcripts already stored, ten to a press, and the app presses
+again while anything is left. It runs on the presser's own key, exactly as "Summarise this
+one" does: they volunteered their allowance by pressing, and quietly spending an earlier
+saver's would be wrong. It is a press and not something automatic for the same reason 86
+calls nobody asked for look exactly like the app breaking. A pass that achieves nothing
+ends the run, which is what guarantees it terminates.
+
+---
+
+**The filing was the bigger problem, and it was our own rule causing it.** 86 videos across
+45 topics. Seven top-level folders for AI (`AI tools`, `AI development`,
+`AI development tools`, `AI coding assistants`, `AI coding tools`, `AI Agents`,
+`artificial intelligence`) and nine for e-commerce. A folder per video is the same as no
+folders.
+
+**The cause is D27's own prompt line:** *"Name them from this video alone. You have not
+been shown anyone's existing topics."* That line is right and it stays. Showing the AI
+somebody's topic list would make the analysis personal to them, and one analysis serving
+everyone who saved the reel is the whole cost model (D10).
+
+**So the matching moved to where it always belonged** — per-user, at filing time, which is
+exactly where `topics.js` already does its work. Two names are the same broad subject when
+they share their first significant word, after a tiny fold of true spelling variants
+(`artificial intelligence` to `ai`, `e commerce` to `ecommerce`) and with head words that
+name no subject (`best`, `top`, `content`, `business`, `product`, `tool`…) refusing to
+anchor anything.
+
+**First word, and nothing cleverer.** D27 already says a topic is the broad subject and a
+sub-topic narrows it — and the broad subject is what a name leads with. Matching on shared
+words instead would put "product listings" and "product research" in one place.
+
+**Top level only.** Sub-topics are meant to be narrow, and are left completely alone. That
+line is what keeps "product research" and "product listings" apart while "AI tools" and
+"AI coding assistants" come together.
+
+**"Tidy my folders" is user-triggered, never automatic.** It moves clips between folders,
+and a notebook rearranging itself while nobody asked would be alarming. It costs nothing
+and calls no AI — it is the same rule, applied to what a notebook grew before the rule
+existed. Pressing it twice does nothing, which is what makes it safe to press. Clips the
+user filed by hand move too, because the folder they chose is going away, but keep
+`topic_set_by = 'user'` so the sort button still will not touch them (D27).
+
+---
+
+**The error, and why the fix is not a guess.** Three of 86 videos failed with
+*"Analysis failed: the AI provider refused the request"* — 27, 28 and 29 August, one a day,
+62s / 26s / 28s long, transcripts of 399 to 1,108 characters. Nothing in common, and far
+longer videos went through on the same days.
+
+**Nobody could say why, by design.** `classify()` maps any status that is not 401, 403, 429
+or 5xx to that one sentence and drops the provider's own reply. That is correct for the
+sentence — `sources.error` is read by everyone who saved the reel, and a rejection body can
+carry a fragment of the key that failed and the account it belongs to. But it left a real
+failure with no cause anyone could name, and **guessing at it is exactly what Golden Rule 1
+exists to stop.**
+
+**What is stored instead:** `sources.error_detail` — the HTTP status, and a name only if the
+provider sent one already on a fixed list in `analyze.js`. Anything else becomes
+`unrecognised`.
+
+**An allowlist and not a character filter, and this is the whole safety argument.** An API
+key is plain letters, digits, hyphen and underscore. A filter that permitted "safe
+characters" would pass `AIzaSyD-1234…` straight through into a shared row. Only a name
+already written down in this repo can ever be stored. The list was checked against
+Gemini's (ai.google.dev/gemini-api/docs/api-errors) and Anthropic's
+(platform.claude.com/docs/en/api/errors) own docs on 2026-08-29 (D13); the
+OpenAI-compatible names on it are marked in the source as not doc-verified, and nothing
+depends on them.
+
+**Retry once, and only where trying again could work.** Never 401, 402, 403, 413 or 429 —
+a rejected key stays rejected, a billing problem needs a person, and asking again after a
+rate limit is what the limit is there to stop. Everything else, including the unexplained
+400s and an unparseable reply, gets exactly one more go after a short pause. One-a-day
+failures with nothing in common are a passing blip, and a blip belongs retried, not shown
+to somebody as a video that cannot be summarised.
+
+**Two statuses came out of the "refused" bucket while we were in there.** 402 is now "the AI
+account has a billing problem" and 404 is "the provider does not have that model" — both
+documented, both things the person can act on, both previously indistinguishable from
+everything else.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `backend/src/analyze.js` | `KINDS`, `KIND_RULES` in both prompts, `cleanKind`, `cleanItems`, `itemKey`, `ITEM_STATUSES`, `safeDetail` + its allowlist, `withOneRetry`, 402/404 in `classify` |
+| `backend/src/topics.js` | `headKey`, `findByHead`, top-level reuse in `findOrCreateTopic`, `tidyTopics` |
+| `backend/src/worker.js` | `error_detail` written and cleared, `kind`/`items` validated and stored, `PUT /v1/clips/:id/item`, `POST /v1/topics/tidy`, `POST /v1/kinds`, `item_status` in delta sync |
+| `backend/src/mcp.js` | The rows handed to the AI app as named facts, so it can be asked which product is cheapest |
+| `backend/migrations/0007_kinds_items_and_error_detail.sql` | Two columns on `analyses`, one on `sources`, one new per-user table |
+| `app.html` | Products and Tools tracker views, the rows on a clip's own page, "Tidy my folders", the reason code in small print |
+| `.github/workflows/ci.yml` | `app.html` is syntax-checked now. It was not, and it is the app being built |
+
+**An address a video read out is shown as text and never as something to tap.** It came out
+of a stranger's video, and one press is too cheap a way to end up somewhere on their say-so.
+
+**Pinned by tests.** 51 new ones in `backend/test/organise.test.js`, including the three
+that matter most: a key-shaped string cannot get through `safeDetail`; the AI is still never
+shown anyone's topic list; and sub-topics are never merged by head word.
+
+---
+
+### D35 — Several AI keys, and only a spent allowance moves to the next one
+**Date:** 2026-08-29
+**Options considered:** (a) one key, as now, and stop when it runs out; (b) several keys,
+moving to the next on any failure; (c) several keys, moving to the next ONLY when the
+current one is out of allowance, with every other refusal stopping and being shown.
+**Decided:** (c). Jaiswal's own framing, and the reasoning behind it is the decision.
+
+**Why not (b), which is what "failover" normally means.** A rotation that steps past any
+failure hides the failures that matter. A key that has been revoked, or whose account
+cannot pay, returns a refusal for ever — and under (b) the other keys quietly carry the
+load while the dead one sits in the list looking fine. The first time anyone finds out is
+when the last good key runs out too. His words: any reason other than the limit being
+reached "should not go silent, it should come back and be shown to me".
+
+So the split is by what the refusal says about the key:
+
+| What came back | What happens | Why |
+|---|---|---|
+| 429 — allowance spent | Marked, and the next key is tried | Expected and temporary. This is the whole point of a list |
+| 401 / 403 — key rejected | Marked, and the run STOPS with the reason on the reel | A dead key has to be noticed. Waiting does not fix it |
+| 402 — account cannot pay | Same as rejected | Needs a person, not another attempt |
+| 5xx, or a reply that would not parse | Run stops, and NO key is marked | Not the key's fault. Blaming a good key for somebody else's outage takes it out of the rotation for nothing |
+
+That last row is not a detail. Without it, one bad afternoon at a provider would mark every
+key in the list as broken.
+
+**Whose keys, and in what order — D10 is untouched.** The first person to save the reel
+pays, and now their whole list is spent before it moves to the next saver, and so on down
+until somebody's key works. Everybody it reaches saved that reel and receives the analysis
+their key paid for, so nobody is paying for a stranger. It also introduces no new
+principle: the automatic run already spent the first saver's allowance the moment a
+transcript landed. This extends that from one person to a queue of them.
+
+**The one place the fall-through must never reach.** "Summarise this one" spends only the
+presser's keys. They pressed a button to volunteer their own allowance; falling through to
+another saver there would quietly spend somebody else's on a reel they were not thinking
+about. The `payerId` branch already drew that line and it is now pinned by a test.
+
+**An exhausted key comes back on its own after an hour.** A free tier gives the same 429
+for "too many this minute" and "too many today", and the two want opposite waits. An hour
+is chosen against the worse mistake: locking a key out for a day after a momentary rate
+limit leaves a perfectly good key idle while reels go unanalysed. Retrying a genuinely
+spent daily quota costs one refused call an hour and heals itself when the day rolls over.
+A rejected key never comes back on its own — only replacing it, or saying "try it again",
+clears it.
+
+**What changed:**
+
+| Where | What |
+|---|---|
+| `backend/migrations/0008_many_ai_keys.sql` | The `ai_keys` table, and every existing key carried across as first in its owner's list |
+| `backend/src/keys.js` | Which keys may be spent and in what order, and the recording of what each was refused for |
+| `backend/src/analyze.js` | `categoryOf`, and `spendKeys` — the rotation rule, written once so the automatic run and the topic button cannot drift apart |
+| `backend/src/worker.js` | `/v1/keys` add, list, change, remove; `has_key` now means "holds at least one"; sync carries the list |
+| `app.html` | "Your keys" — the order, the state of each, and why one stopped working |
+
+**`users.ai_key_cipher` is deliberately not cleared.** Nothing reads it any more. It is
+left in place so that rolling the Worker back finds a working key rather than a signed-in
+account with nothing connected. Clearing it is a separate migration once a rollback is off
+the table — and until then it is the one piece of this that is half-migrated, which D21
+would normally forbid. Logged rather than done quietly.
+
+**Choosing "copy and paste" now removes several keys, not one.** That is the same meaning
+it always had — it is the statement that no key is in use — but it destroys more, and a
+key is never shown again. The endpoint does as it is told; the app asks first, naming how
+many will go.
+
+**Pinned by tests.** 32 new ones in `backend/test/ai-keys.test.js`. The three that matter:
+a rejected key stops the run even though the next key would have worked; an outage marks
+nobody's key; and "summarise this one" never reaches another person's keys. `api.test.js`
+and `organise.test.js` were updated where they looked for a key in the old column, or
+expected the provider's wording for an exhausted list — the promises they make are
+unchanged.

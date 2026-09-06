@@ -8,7 +8,13 @@
   <link rel="apple-touch-icon" href="icon.svg">
   <title>ClipToAction</title>
   <style>
+    /* Every colour in this file is a variable, so the dark palette below is the only
+       place a dark value is ever written. Light is defined on bare :root, so it is the
+       fallback whatever the browser reports. */
     :root {
+      /* Tells the browser this page handles both, so scrollbars, dropdowns and the
+         on-screen keyboard match, and Chrome does not force-darken it itself. */
+      color-scheme: light;
       --bg: #f5f7fb;
       --panel: #ffffff;
       --text: #17202a;
@@ -19,6 +25,116 @@
       --warn: #a16207;
       --danger: #b91c1c;
       --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      --header-bg: #102a43;
+      --header-text: #ffffff;
+      --header-muted: #d9e2ec;
+      --heading: #243b53;
+      --body-soft: #334e68;
+      --input-bg: #ffffff;
+      --btn-text: #ffffff;
+      --chip-bg: #e5edf5;
+      --chip-text: #243b53;
+      --pill-bg: #edf2f7;
+      --pill-text: #334e68;
+      --pill-topic-bg: #e0e7ff;
+      --pill-topic-text: #3730a3;
+      --pill-wait-bg: #fef3c7;
+      --pill-wait-text: #92400e;
+      --pill-good-bg: #d1fae5;
+      --pill-good-text: #065f46;
+      --pill-bad-bg: #fee2e2;
+      --pill-bad-text: #991b1b;
+      --notice-err-bg: #fee2e2;
+      --notice-err-text: #7f1d1d;
+      --notice-ok-bg: #d1fae5;
+      --notice-ok-text: #065f46;
+      --notice-warn-bg: #fef3c7;
+      --notice-warn-text: #78350f;
+    }
+    /* Dark, written once for the person who chose it. */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0f151d;
+      --panel: #16202b;
+      --text: #e6edf5;
+      --muted: #93a4b8;
+      --line: #263241;
+      --accent: #2dd4bf;
+      --accent-dark: #14b8a6;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      --header-bg: #0b1220;
+      --header-text: #e6edf5;
+      --header-muted: #93a4b8;
+      --heading: #cbd8e6;
+      --body-soft: #b6c4d4;
+      --input-bg: #0f1821;
+      --btn-text: #06231f;
+      --chip-bg: #22303f;
+      --chip-text: #cbd8e6;
+      --pill-bg: #22303f;
+      --pill-text: #cbd8e6;
+      --pill-topic-bg: #2a2f52;
+      --pill-topic-text: #c7d2fe;
+      --pill-wait-bg: #3d2f10;
+      --pill-wait-text: #fcd34d;
+      --pill-good-bg: #10322a;
+      --pill-good-text: #6ee7b7;
+      --pill-bad-bg: #3c1b1b;
+      --pill-bad-text: #fca5a5;
+      --notice-err-bg: #3c1b1b;
+      --notice-err-text: #fca5a5;
+      --notice-ok-bg: #10322a;
+      --notice-ok-text: #6ee7b7;
+      --notice-warn-bg: #3d2f10;
+      --notice-warn-text: #fcd34d;
+    }
+    /* And again for the person who has chosen nothing and whose phone is set to dark.
+       Guarded, so an explicit choice of light still wins on a dark phone. */
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bg: #0f151d;
+        --panel: #16202b;
+        --text: #e6edf5;
+        --muted: #93a4b8;
+        --line: #263241;
+        --accent: #2dd4bf;
+        --accent-dark: #14b8a6;
+        --warn: #fbbf24;
+        --danger: #f87171;
+        --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        --header-bg: #0b1220;
+        --header-text: #e6edf5;
+        --header-muted: #93a4b8;
+        --heading: #cbd8e6;
+        --body-soft: #b6c4d4;
+        --input-bg: #0f1821;
+        --btn-text: #06231f;
+        --chip-bg: #22303f;
+        --chip-text: #cbd8e6;
+        --pill-bg: #22303f;
+        --pill-text: #cbd8e6;
+        --pill-topic-bg: #2a2f52;
+        --pill-topic-text: #c7d2fe;
+        --pill-wait-bg: #3d2f10;
+        --pill-wait-text: #fcd34d;
+        --pill-good-bg: #10322a;
+        --pill-good-text: #6ee7b7;
+        --pill-bad-bg: #3c1b1b;
+        --pill-bad-text: #fca5a5;
+        --notice-err-bg: #3c1b1b;
+        --notice-err-text: #fca5a5;
+        --notice-ok-bg: #10322a;
+        --notice-ok-text: #6ee7b7;
+        --notice-warn-bg: #3d2f10;
+        --notice-warn-text: #fcd34d;
+      }
+    }
+    /* Only the colours cross over, never the layout. */
+    body, input, textarea, select, button, .card, .panel {
+      transition: background-color .18s ease, color .18s ease, border-color .18s ease;
     }
     * { box-sizing: border-box; }
     body {
@@ -28,8 +144,8 @@
       color: var(--text);
     }
     header {
-      background: #102a43;
-      color: white;
+      background: var(--header-bg);
+      color: var(--header-text);
       padding: 16px 20px;
       display: flex;
       gap: 12px;
@@ -38,7 +154,8 @@
       flex-wrap: wrap;
     }
     header h1 { margin: 0; font-size: 22px; cursor: pointer; }
-    header .who { color: #d9e2ec; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+    header .headright { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    header .who { color: var(--header-muted); font-size: 13px; display: flex; gap: 10px; align-items: center; }
     main { max-width: 860px; margin: 0 auto; padding: 18px; }
     .panel {
       background: var(--panel);
@@ -49,7 +166,7 @@
       margin-bottom: 16px;
     }
     h2 { margin: 0 0 12px; font-size: 18px; }
-    h3 { margin: 18px 0 8px; font-size: 15px; color: #243b53; }
+    h3 { margin: 18px 0 8px; font-size: 15px; color: var(--heading); }
     label { display: block; margin: 12px 0 6px; font-size: 13px; color: var(--muted); font-weight: 700; }
     input, textarea, select {
       width: 100%;
@@ -58,7 +175,7 @@
       padding: 10px;
       font: inherit;
       color: var(--text);
-      background: white;
+      background: var(--input-bg);
     }
     textarea { min-height: 80px; resize: vertical; }
     button {
@@ -68,54 +185,94 @@
       font-weight: 700;
       cursor: pointer;
       background: var(--accent);
-      color: white;
+      color: var(--btn-text);
     }
     button:hover { background: var(--accent-dark); }
     button:disabled { opacity: .55; cursor: default; }
-    button.secondary { background: #e5edf5; color: #243b53; }
-    button.link { background: none; color: #d9e2ec; padding: 4px 6px; font-weight: 400; text-decoration: underline; }
+    button.secondary { background: var(--chip-bg); color: var(--chip-text); }
+    button.link { background: none; color: var(--header-muted); padding: 4px 6px; font-weight: 400; text-decoration: underline; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .row > input { flex: 1 1 220px; width: auto; }
     .filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
-    .filters button { background: #e5edf5; color: #243b53; padding: 7px 11px; font-size: 13px; }
-    .filters button.active { background: var(--accent); color: white; }
+    .filters button { background: var(--chip-bg); color: var(--chip-text); padding: 7px 11px; font-size: 13px; }
+    .filters button.active { background: var(--accent); color: var(--btn-text); }
     .card {
       border: 1px solid var(--line);
       border-left: 4px solid var(--accent);
       border-radius: 8px;
       padding: 12px;
       margin-bottom: 10px;
-      background: #fff;
+      background: var(--panel);
       cursor: pointer;
     }
     .card:hover { border-color: var(--accent); }
     .card h4 { margin: 0 0 6px; font-size: 15px; }
-    .card p { margin: 6px 0; color: #334e68; font-size: 14px; }
+    .card p { margin: 6px 0; color: var(--body-soft); font-size: 14px; }
     .pill {
       display: inline-block;
       border-radius: 999px;
       padding: 3px 9px;
-      background: #edf2f7;
-      color: #334e68;
+      background: var(--pill-bg);
+      color: var(--pill-text);
       font-size: 12px;
       margin-right: 6px;
     }
-    .pill.topic { background: #e0e7ff; color: #3730a3; }
-    .pill.wait { background: #fef3c7; color: #92400e; }
-    .pill.good { background: #d1fae5; color: #065f46; }
-    .pill.bad  { background: #fee2e2; color: #991b1b; }
+    .pill.topic { background: var(--pill-topic-bg); color: var(--pill-topic-text); }
+    .pill.wait { background: var(--pill-wait-bg); color: var(--pill-wait-text); }
+    .pill.good { background: var(--pill-good-bg); color: var(--pill-good-text); }
+    .pill.bad  { background: var(--pill-bad-bg); color: var(--pill-bad-text); }
     .muted { color: var(--muted); font-size: 13px; }
-    .group { margin: 18px 0 8px; font-size: 15px; color: #243b53; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+    .group { margin: 18px 0 8px; font-size: 15px; color: var(--heading); border-bottom: 1px solid var(--line); padding-bottom: 5px; }
     .subgroup { margin: 12px 0 6px 2px; font-size: 13px; color: var(--muted); font-weight: 700; }
     .notice { border-radius: 6px; padding: 10px 12px; margin: 10px 0; font-size: 14px; }
-    .notice.err { background: #fee2e2; color: #7f1d1d; }
-    .notice.ok  { background: #d1fae5; color: #065f46; }
-    .notice.warn { background: #fef3c7; color: #78350f; }
+    .notice.err { background: var(--notice-err-bg); color: var(--notice-err-text); }
+    .notice.ok  { background: var(--notice-ok-bg); color: var(--notice-ok-text); }
+    .notice.warn { background: var(--notice-warn-bg); color: var(--notice-warn-text); }
     ul.plain { margin: 6px 0; padding-left: 20px; }
     ul.plain li { margin: 5px 0; font-size: 14px; }
+    /* The trackers (D34). A table is the point of them — the whole complaint was that
+       three products with three prices arrived as a paragraph. It scrolls inside its own
+       box so a phone never ends up scrolling the page sideways. */
+    .tablewrap { overflow-x: auto; margin: 10px 0; }
+    table.tracker { border-collapse: collapse; width: 100%; font-size: 14px; }
+    table.tracker th, table.tracker td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    table.tracker td.wrap { white-space: normal; min-width: 200px; }
+    table.tracker th {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+    }
+    table.tracker th:hover { color: var(--heading); }
+    table.tracker tbody tr:hover { background: var(--chip-bg); }
+    table.tracker td.from { cursor: pointer; color: var(--muted); font-size: 13px; }
+    table.tracker td.from:hover { text-decoration: underline; }
+    table.tracker select { width: auto; min-width: 130px; padding: 5px 7px; font-size: 13px; margin: 0; }
+    tr.decided-no { opacity: .5; }
     details { margin: 10px 0; }
     summary { cursor: pointer; font-weight: 700; font-size: 14px; }
-    .transcript { white-space: pre-wrap; font-size: 14px; color: #334e68; margin-top: 8px; }
+    .transcript { white-space: pre-wrap; font-size: 14px; color: var(--body-soft); margin-top: 8px; }
+    .chapter { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; font-size: 14px; }
+    .chapter .at {
+      display: inline-block;
+      background: var(--chip-bg);
+      color: var(--chip-text);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 12px;
+      margin-right: 6px;
+      font-variant-numeric: tabular-nums;
+    }
     .claim { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; font-size: 14px; }
     .claim.low { border-left-color: var(--danger); }
     .claim.medium { border-left-color: var(--warn); }
@@ -134,16 +291,85 @@
       header h1 { font-size: 19px; }
     }
   </style>
+  <script>
+    // Dark mode. Three states, only two of them stored: "dark" and "light" are the
+    // person's own choice, and nothing stored means follow the phone or laptop.
+    (function () {
+      var KEY = "cliptoaction-theme";
+      var root = document.documentElement;
+
+      function stored() {
+        try {
+          var value = localStorage.getItem(KEY);
+          return value === "dark" || value === "light" ? value : null;
+        } catch (e) {
+          // Private windows and blocked site data both throw. Follow the device instead.
+          return null;
+        }
+      }
+
+      function systemIsDark() {
+        return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      }
+
+      function showing() {
+        return root.getAttribute("data-theme") || (systemIsDark() ? "dark" : "light");
+      }
+
+      function apply(choice) {
+        if (choice) root.setAttribute("data-theme", choice);
+        else root.removeAttribute("data-theme");
+
+        // The browser paints the phone's status bar from this, so it has to move too.
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) {
+          var header = getComputedStyle(root).getPropertyValue("--header-bg").trim();
+          if (header) meta.setAttribute("content", header);
+        }
+
+        var button = document.getElementById("themeToggle");
+        if (button) {
+          var next = showing() === "dark" ? "Light" : "Dark";
+          button.textContent = next + " mode";
+          button.setAttribute("aria-label", "Switch to " + next.toLowerCase() + " mode");
+        }
+      }
+
+      apply(stored());
+
+      document.addEventListener("DOMContentLoaded", function () {
+        apply(stored());
+        var button = document.getElementById("themeToggle");
+        if (!button) return;
+        button.addEventListener("click", function () {
+          var next = showing() === "dark" ? "light" : "dark";
+          try { localStorage.setItem(KEY, next); } catch (e) { /* choice lasts this visit only */ }
+          apply(next);
+        });
+      });
+
+      // Someone who has never chosen follows their device, so follow it as it changes.
+      if (window.matchMedia) {
+        var watch = window.matchMedia("(prefers-color-scheme: dark)");
+        var onChange = function () { if (!stored()) apply(null); };
+        if (watch.addEventListener) watch.addEventListener("change", onChange);
+        else if (watch.addListener) watch.addListener(onChange);
+      }
+    })();
+  </script>
 </head>
 <body>
 
 <header>
   <h1 id="home">ClipToAction</h1>
-  <div class="who" id="who" hidden>
-    <span id="whoEmail"></span>
-    <button class="link" id="navGuide">How it works</button>
-    <button class="link" id="navSettings">Settings</button>
-    <button class="link" id="signOut">Sign out</button>
+  <div class="headright">
+    <div class="who" id="who" hidden>
+      <span id="whoEmail"></span>
+      <button class="link" id="navGuide">How it works</button>
+      <button class="link" id="navSettings">Settings</button>
+      <button class="link" id="signOut">Sign out</button>
+    </div>
+    <button class="link" id="themeToggle" type="button"></button>
   </div>
 </header>
 
@@ -186,6 +412,8 @@
         <div class="filters" id="views">
           <button data-view="list" class="active">List</button>
           <button data-view="topics">By topic</button>
+          <button data-view="product">Products</button>
+          <button data-view="tool">Tools</button>
         </div>
         <div id="syncMsg"></div>
         <div id="clipList"></div>
@@ -226,6 +454,32 @@
         <div class="row" style="margin-top:12px">
           <button id="saveSettings">Save</button>
           <button class="secondary" id="settingsBack">Back to notebook</button>
+        </div>
+      </div>
+
+      <div class="panel" id="keysPanel">
+        <h2>Your keys</h2>
+        <p class="muted">Free allowances run out. Add more than one key — different AIs, or
+          more than one account on the same AI — and the app moves down the list when one
+          runs out of allowance for the day. It only moves on for that reason: if a key is
+          refused for anything else, it stops and tells you which key and why, so a key
+          that has stopped working never sits there unnoticed.</p>
+        <div id="keyList"></div>
+        <div id="keysMsg"></div>
+        <h3>Add another key</h3>
+        <div class="row">
+          <select id="newKeyProvider" style="flex:1 1 180px;width:auto">
+            <option value="gemini">Google Gemini — free key</option>
+            <option value="groq">Groq — free key</option>
+            <option value="openai">OpenAI — paid</option>
+            <option value="anthropic">Anthropic — paid</option>
+            <option value="xai">xAI — paid</option>
+          </select>
+          <input id="newKeyLabel" placeholder="What to call it, e.g. work gmail" style="flex:1 1 180px;width:auto">
+        </div>
+        <input type="password" id="newKeyValue" placeholder="Paste the key" autocomplete="off">
+        <div class="row" style="margin-top:12px">
+          <button id="addKey">Add this key</button>
         </div>
       </div>
 
@@ -388,14 +642,20 @@ if ("serviceWorker" in navigator) {
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
 const EMPTY = {
   since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
-  tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: []
+  tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: [],
+  aiKeys: [],
+  item_status: []
 };
 let store = structuredClone(EMPTY);
 let user = null;
 let signedIn = false;
 let filter = "all";
 let query = "";
-let grouping = "list";   // "list" | "topics" — D22: a view over the list, never instead of it
+// "list" | "topics" | "product" | "tool" — D22: all of them are views OVER the list,
+// never instead of it. The list is what opens, and is always one press away.
+let grouping = "list";
+// Which column a tracker is sorted by, and which way (D34).
+let trackerSort = { column: "saved", ascending: false };
 
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
@@ -432,6 +692,7 @@ function applyDelta(delta) {
   store.topics = mergeRows(store.topics, delta.topics || [], byId);
   store.tasks = mergeRows(store.tasks, delta.tasks || [], byId);
   store.learnings = mergeRows(store.learnings, delta.learnings || [], byId);
+  store.item_status = mergeRows(store.item_status, delta.item_status || [], byId);
   store.sources = mergeRows(store.sources, delta.sources || [], byId);
   store.transcripts = mergeRows(store.transcripts, delta.transcripts || [], bySource);
   store.analyses = mergeRows(
@@ -440,6 +701,7 @@ function applyDelta(delta) {
   // Not merged by key like the rest: this is the whole current list every time, so a
   // connector turned off elsewhere disappears here instead of lingering for ever.
   if (delta.connectors) store.connectors = delta.connectors;
+  if (delta.ai_keys) store.aiKeys = delta.ai_keys;
   if (delta.settings) store.settings = delta.settings;
   if (delta.worker) store.worker = delta.worker;
   store.since = delta.now || store.since;
@@ -725,6 +987,10 @@ function renderList() {
 
   $("clipList").innerHTML = "";
 
+  // New/Keeping/Done describe a clip, and a tracker's rows are the things inside clips.
+  // Leaving the chips on screen there would look like a filter that does nothing.
+  $("filters").hidden = grouping === "product" || grouping === "tool";
+
   const health = workerNotice();
   if (health) $("clipList").append(health);
 
@@ -751,8 +1017,8 @@ function renderList() {
   if (unsorted.length) {
     const offer = document.createElement("div");
     offer.className = "notice";
-    offer.style.background = "#e0e7ff";
-    offer.style.color = "#3730a3";
+    offer.style.background = "var(--pill-topic-bg)";
+    offer.style.color = "var(--pill-topic-text)";
     offer.append(document.createTextNode(
       `${unsorted.length} ${unsorted.length === 1 ? "clip was" : "clips were"} saved before `
       + "topics existed, so they are not filed anywhere yet. "
@@ -763,6 +1029,14 @@ function renderList() {
     button.onclick = () => sortOldClips(button);
     offer.append(document.createElement("br"), button);
     $("clipList").append(offer);
+  }
+
+  // The trackers are not a filtered list of clips, they are a list of the ROWS inside
+  // them, so they answer to the search box and not to the New/Keeping/Done chips — those
+  // describe a clip, and one clip can hold three products.
+  if (grouping === "product" || grouping === "tool") {
+    renderTracker(grouping);
+    return;
   }
 
   if (!wanted.length) {
@@ -777,6 +1051,296 @@ function renderList() {
 
   if (grouping === "topics") renderByTopic(wanted);
   else for (const clip of wanted) $("clipList").append(clipCard(clip));
+}
+
+// ---------------------------------------------------------------- the trackers (D34)
+//
+// The complaint these exist to answer: a video listing three products at three prices in
+// one shop arrived as a paragraph and four bullets. Right words, wrong shape — it cannot
+// be sorted by price, and there is nowhere to tick one off as ordered.
+//
+// Only two kinds get a table, because only two carry facts worth sorting and ticking off.
+// A tactic's steps are already the main points; an opinion's substance is already its
+// claims.
+
+const TRACKERS = {
+  product: {
+    blank: "Nothing here yet. Save a video that shows things to buy or sell, and every "
+      + "item it names will appear here as its own row.",
+    columns: [
+      { key: "name", label: "Item", wrap: true },
+      { key: "cost", label: "Cost", numeric: true },
+      { key: "sell_price", label: "Sell for", numeric: true },
+      { key: "where", label: "Where", wrap: true },
+      { key: "min_order", label: "Min order" },
+      { key: "note", label: "Note", wrap: true }
+    ],
+    statuses: [
+      ["", "Not decided"],
+      ["want", "Want to source"],
+      ["doing", "Ordered"],
+      ["done", "Listed"],
+      ["no", "Rejected"]
+    ]
+  },
+  tool: {
+    blank: "Nothing here yet. Save a video about an app, a website or a code project, and "
+      + "it will appear here as its own row.",
+    columns: [
+      { key: "name", label: "Tool", wrap: true },
+      { key: "does", label: "What it does", wrap: true },
+      { key: "popularity", label: "How popular" },
+      { key: "price", label: "Free or paid" },
+      { key: "link", label: "Link", wrap: true },
+      { key: "install", label: "How to get it", wrap: true }
+    ],
+    statuses: [
+      ["", "Not decided"],
+      ["want", "Want to try"],
+      ["doing", "Trying it"],
+      ["done", "Using it"],
+      ["no", "Not for me"]
+    ]
+  }
+};
+
+/**
+ * The row's name, flattened for matching. Deliberately the same rule as itemKey in
+ * backend/src/analyze.js: the app has to name a row the way the server will name it, or a
+ * decision made here would be stored against something else.
+ */
+function itemKeyOf(name) {
+  return String(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 120);
+}
+
+/** What this person has already decided about one row, or "" if nothing. */
+function decisionOf(clip, name) {
+  const key = itemKeyOf(name);
+  const row = store.item_status.find(
+    (entry) => entry.source_id === clip.source_id && entry.item_key === key && !entry.deleted_at
+  );
+  return row ? row.status : "";
+}
+
+/** Every row of that kind across the whole notebook. */
+function trackerRows(kind) {
+  const rows = [];
+  for (const clip of store.clips) {
+    if (clip.deleted_at) continue;
+    const analysis = analysisOf(clip);
+    if (!analysis || analysis.kind !== kind) continue;
+    for (const item of jsonList(analysis.items)) {
+      if (!item || typeof item !== "object" || !item.name) continue;
+      rows.push({ clip, item, status: decisionOf(clip, item.name) });
+    }
+  }
+  return rows;
+}
+
+/** The first number in a value, so a column of prices written as they were said sorts. */
+function firstNumber(value) {
+  const found = String(value ?? "").replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+  return found ? Number(found[0]) : Number.POSITIVE_INFINITY;
+}
+
+function sortRows(rows, columns) {
+  const { column, ascending } = trackerSort;
+  const direction = ascending ? 1 : -1;
+  const spec = columns.find((one) => one.key === column);
+
+  return rows.slice().sort((a, b) => {
+    if (column === "saved") return direction * (a.clip.created_at - b.clip.created_at);
+    if (column === "status") return direction * String(a.status).localeCompare(String(b.status));
+    if (spec && spec.numeric) {
+      return direction * (firstNumber(a.item[column]) - firstNumber(b.item[column]));
+    }
+    return direction * String(a.item[column] ?? "").localeCompare(String(b.item[column] ?? ""));
+  });
+}
+
+/** Clips that were summarised before kinds existed, so are in no tracker yet. */
+const unkindedClips = () =>
+  store.clips.filter((clip) => {
+    if (clip.deleted_at) return false;
+    const analysis = analysisOf(clip);
+    return analysis && analysis.summary && !analysis.kind;
+  });
+
+function renderTracker(kind) {
+  const spec = TRACKERS[kind];
+  const host = $("clipList");
+
+  // A tracker holding four rows out of a notebook of eighty-six is a demonstration, not a
+  // feature. Offered as a press rather than done automatically: it runs on their own AI
+  // allowance, and spending it without being asked looks like the app breaking.
+  const older = unkindedClips();
+  if (older.length) {
+    const offer = document.createElement("div");
+    offer.className = "notice";
+    offer.style.background = "var(--pill-topic-bg)";
+    offer.style.color = "var(--pill-topic-text)";
+    offer.append(document.createTextNode(
+      `${older.length} ${older.length === 1 ? "video was" : "videos were"} saved before `
+      + "this existed, so nothing has been picked out of them yet. Reading them again fills "
+      + "these tables in — it runs on your own AI account and takes a minute. "
+    ));
+    const button = document.createElement("button");
+    button.textContent = "Fill in my trackers";
+    button.style.marginTop = "8px";
+    button.onclick = () => fillInTrackers(button);
+    offer.append(document.createElement("br"), button);
+    host.append(offer);
+  }
+
+  const rows = trackerRows(kind).filter((row) => {
+    if (!query) return true;
+    return `${JSON.stringify(row.item)} ${titleOf(row.clip)}`.toLowerCase().includes(query);
+  });
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = query ? "Nothing here matches." : spec.blank;
+    host.append(empty);
+    return;
+  }
+
+  const count = document.createElement("p");
+  count.className = "muted";
+  count.textContent = `${rows.length} ${rows.length === 1 ? "row" : "rows"}, gathered from `
+    + "every video you have saved. Tap a heading to sort by it.";
+  host.append(count);
+
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  const table = document.createElement("table");
+  table.className = "tracker";
+
+  const headRow = document.createElement("tr");
+  const headings = [
+    ...spec.columns,
+    { key: "status", label: "What I decided" },
+    { key: "saved", label: "From" }
+  ];
+  for (const heading of headings) {
+    const cell = document.createElement("th");
+    cell.textContent = trackerSort.column === heading.key
+      ? `${heading.label} ${trackerSort.ascending ? "↑" : "↓"}`
+      : heading.label;
+    cell.onclick = () => {
+      trackerSort = trackerSort.column === heading.key
+        ? { column: heading.key, ascending: !trackerSort.ascending }
+        : { column: heading.key, ascending: true };
+      renderList();
+    };
+    headRow.append(cell);
+  }
+  const thead = document.createElement("thead");
+  thead.append(headRow);
+  table.append(thead);
+
+  const body = document.createElement("tbody");
+  for (const row of sortRows(rows, spec.columns)) body.append(trackerRow(row, spec));
+  table.append(body);
+  wrap.append(table);
+  host.append(wrap);
+}
+
+/**
+ * One clip's own rows, on its own page. The same cells and the same dropdown as the
+ * tracker, minus the "From" column — you are already looking at where they came from —
+ * and minus sorting, because three rows do not need it.
+ */
+function trackerTable(items, spec, clip) {
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  const table = document.createElement("table");
+  table.className = "tracker";
+
+  const headRow = document.createElement("tr");
+  for (const heading of [...spec.columns, { label: "What I decided" }]) {
+    const cell = document.createElement("th");
+    cell.style.cursor = "default";
+    cell.textContent = heading.label;
+    headRow.append(cell);
+  }
+  const thead = document.createElement("thead");
+  thead.append(headRow);
+  table.append(thead);
+
+  const body = document.createElement("tbody");
+  for (const item of items) {
+    if (!item || typeof item !== "object" || !item.name) continue;
+    body.append(
+      trackerRow({ clip, item, status: decisionOf(clip, item.name) }, spec, { withSource: false })
+    );
+  }
+  table.append(body);
+  wrap.append(table);
+  return wrap;
+}
+
+function trackerRow(row, spec, { withSource = true } = {}) {
+  const line = document.createElement("tr");
+  if (row.status === "no") line.className = "decided-no";
+
+  for (const column of spec.columns) {
+    const cell = document.createElement("td");
+    if (column.wrap) cell.className = "wrap";
+    const value = row.item[column.key];
+
+    // An address the video read out is shown as text and never as something to tap. It
+    // came out of somebody else's video, and nothing here should send a person to a
+    // stranger's address on one press.
+    cell.textContent = value === null || value === undefined || value === ""
+      ? "—"
+      : String(value);
+    line.append(cell);
+  }
+
+  const decision = document.createElement("td");
+  const select = document.createElement("select");
+  for (const [value, label] of spec.statuses) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === row.status;
+    select.append(option);
+  }
+  select.onchange = () => setItemDecision(row, select);
+  decision.append(select);
+  line.append(decision);
+
+  if (withSource) {
+    const from = document.createElement("td");
+    from.className = "from";
+    from.textContent = titleOf(row.clip).slice(0, 40);
+    from.onclick = () => { location.hash = `#/clip/${row.clip.id}`; };
+    line.append(from);
+  }
+
+  return line;
+}
+
+async function setItemDecision(row, select) {
+  const chosen = select.value;
+  select.disabled = true;
+  try {
+    await api(`/v1/clips/${row.clip.id}/item`, {
+      method: "PUT",
+      body: JSON.stringify({ name: row.item.name, status: chosen })
+    });
+    await sync();
+    // render(), not renderList(): the same dropdown appears on a clip's own page, and
+    // that page must not be replaced by the notebook when somebody uses it.
+    render();
+  } catch (error) {
+    // The two pages this can be used from have different places to put a message. A
+    // failure with nowhere to appear is a silent failure (Golden Rule 29).
+    say($("clipMsg") ? "clipMsg" : "syncMsg", `Could not save that: ${error.message}`);
+    select.value = row.status;
+    select.disabled = false;
+  }
 }
 
 /** One clip's card. Both views draw this same one, so they can never drift apart. */
@@ -837,6 +1401,24 @@ function clipCard(clip, { showTopic = true } = {}) {
  */
 function renderByTopic(wanted) {
   const host = $("clipList");
+
+  // Offered here because this is the only screen where a person can see the problem: the
+  // AI names a topic from each video alone (D27), so one subject grows a folder per name
+  // it was ever given. Whether there is anything to merge is decided by the server, which
+  // owns that rule — asking the same question twice in two places is how two answers
+  // start to disagree.
+  const tidy = document.createElement("div");
+  tidy.className = "notice";
+  tidy.append(document.createTextNode(
+    "Folders that mean the same thing can be put together — “AI tools” and "
+    + "“AI development” are one subject, not two. "
+  ));
+  const tidyButton = document.createElement("button");
+  tidyButton.textContent = "Tidy my folders";
+  tidyButton.style.marginTop = "8px";
+  tidyButton.onclick = () => tidyFolders(tidyButton);
+  tidy.append(document.createElement("br"), tidyButton);
+  host.append(tidy);
   const groups = new Map();   // parent topic id -> Map(sub-topic name -> clips)
   const unfiled = [];
 
@@ -888,6 +1470,69 @@ function renderByTopic(wanted) {
  * has looked at, named or not, so a clip it cannot place leaves the queue instead of being
  * asked about for ever.
  */
+/**
+ * "Tidy my folders" (D34). Costs nothing and calls no AI — it applies the rule every new
+ * clip is already filed by to the folders a notebook grew before that rule existed.
+ * Pressing it again does nothing, which is what makes it safe to press.
+ */
+async function tidyFolders(button) {
+  button.disabled = true;
+  button.textContent = "Tidying…";
+  try {
+    const result = await api("/v1/topics/tidy", { method: "POST" });
+    await sync();
+    say("syncMsg", result.merged
+      ? `Put ${result.merged} ${result.merged === 1 ? "folder" : "folders"} together, and `
+        + `moved ${result.moved} ${result.moved === 1 ? "clip" : "clips"} across.`
+      : "Nothing to tidy — your folders are already as tight as this can make them.", "ok");
+    renderList();
+  } catch (error) {
+    say("syncMsg", error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Tidy my folders";
+  }
+}
+
+/**
+ * "Fill in my trackers" (D34). Reads the videos saved before kinds existed again, a few
+ * at a time, until there are none left. Stops the moment a pass achieves nothing, so it
+ * can never sit there spending an allowance on the same failure.
+ */
+async function fillInTrackers(button) {
+  button.disabled = true;
+  let filled = 0;
+
+  try {
+    for (let pass = 0; pass < 40; pass += 1) {
+      button.textContent = `Reading them again… ${filled} done`;
+      const result = await api("/v1/kinds", { method: "POST" });
+      filled += result.done || 0;
+      if (result.error) {
+        await sync();
+        render();
+        say("syncMsg", `Read ${filled}, then stopped: ${result.error}`, "warn");
+        return;
+      }
+      // A pass that achieved nothing means the rest cannot be done either — stopping here
+      // is what guarantees this ends rather than pressing forty times for nothing.
+      if (!result.remaining || !result.done) break;
+    }
+
+    await sync();
+    render();
+    say("syncMsg", filled
+      ? `Read ${filled} ${filled === 1 ? "video" : "videos"} again. Anything with products `
+        + "or tools in it is in these tables now."
+      : "Nothing more could be read.", filled ? "ok" : "warn");
+  } catch (error) {
+    say("syncMsg", error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Fill in my trackers";
+  }
+}
+
 async function sortOldClips(button) {
   button.disabled = true;
   button.textContent = "Sorting…";
@@ -1303,6 +1948,16 @@ function renderClip(clipId) {
   saved.textContent = exactWhen(clip.created_at);
   panel.append(saved);
 
+  // The reason code, in small print, only when something actually went wrong (D34). It
+  // means nothing to read and it is not meant to — it is the thing to quote when asking
+  // why, instead of everyone guessing from one sentence that fits every failure.
+  if (source?.error_detail) {
+    const detail = document.createElement("p");
+    detail.className = "muted";
+    detail.textContent = `Reason code: ${source.error_detail}`;
+    panel.append(detail);
+  }
+
   if (source?.url_original) {
     const link = document.createElement("p");
     const anchor = document.createElement("a");
@@ -1357,6 +2012,52 @@ function renderClip(clipId) {
     const summary = document.createElement("p");
     summary.textContent = analysis.summary;
     panel.append(summaryHeading, summary);
+
+    // Only a long video has these, and they go straight after the summary — on an hour of
+    // talk this is the part somebody actually reads, and the way back into the video.
+    const sections = jsonList(analysis.sections);
+    if (sections.length) {
+      const chaptersHeading = document.createElement("h3");
+      chaptersHeading.textContent = "What happens when";
+      panel.append(chaptersHeading);
+      for (const entry of sections) {
+        const block = document.createElement("div");
+        block.className = "chapter";
+        const heading = document.createElement("div");
+        const at = String(entry.at || "").trim();
+        if (at) {
+          const stamp = document.createElement("span");
+          stamp.className = "at";
+          stamp.textContent = at;
+          heading.append(stamp);
+        }
+        const name = document.createElement("strong");
+        name.textContent = String(entry.heading || "");
+        heading.append(name);
+        block.append(heading);
+        const detail = String(entry.detail || "").trim();
+        if (detail) {
+          const line = document.createElement("div");
+          line.className = "muted";
+          line.textContent = detail;
+          block.append(line);
+        }
+        panel.append(block);
+      }
+    }
+
+    // The rows this video carries, if it carries any (D34). Shown here as well as in the
+    // tracker so that the video and what was taken out of it sit on one page — and so a
+    // decision can be made while reading it, rather than only from a table elsewhere.
+    const rows = jsonList(analysis.items);
+    const rowSpec = TRACKERS[analysis.kind];
+    if (rows.length && rowSpec) {
+      const rowsHeading = document.createElement("h3");
+      rowsHeading.textContent = analysis.kind === "product"
+        ? "What it showed, one by one"
+        : "What it introduced";
+      panel.append(rowsHeading, trackerTable(rows, rowSpec, clip));
+    }
 
     const points = jsonList(analysis.key_points);
     if (points.length) {
@@ -1589,6 +2290,15 @@ $("saveSettings").onclick = async () => {
   const body = { provider: $("provider").value };
   const key = $("apiKey").value.trim();
   if (key) body.api_key = key;
+
+  const held = (store.aiKeys || []).length;
+  if (body.provider === "manual" && held) {
+    const warning = held === 1
+      ? "Copy and paste means no key is used, so your saved key will be removed. It cannot be shown again afterwards."
+      : `Copy and paste means no key is used, so all ${held} of your saved keys will be removed. They cannot be shown again afterwards.`;
+    if (!confirm(warning)) return;
+  }
+
   $("saveSettings").disabled = true;
   try {
     const result = await api("/v1/settings", { method: "PUT", body: JSON.stringify(body) });
@@ -1598,6 +2308,14 @@ $("saveSettings").onclick = async () => {
     // because it is never shown back, and on its own an empty box reads as "it did not
     // save" — renderSettings puts the reassurance in the placeholder instead.
     store.settings = { ai_provider: result.provider, has_key: Boolean(result.key_stored) };
+    // The list is the setting now, so it has to be re-read rather than guessed at: this
+    // save may have replaced the first key, or emptied the list altogether.
+    try {
+      store.aiKeys = (await api("/v1/keys")).keys || [];
+    } catch {
+      // The save itself worked. A list that failed to refresh is a stale panel, not a
+      // reason to tell somebody their key did not save.
+    }
     saveCache();
     renderSettings();
 
@@ -1783,8 +2501,177 @@ function renderConnectors() {
   }
 }
 
+const KEY_STATE_WORDS = {
+  ready: { word: "working", pill: "good" },
+  exhausted: { word: "out of allowance", pill: "wait" },
+  rejected: { word: "not working", pill: "bad" }
+};
+
+function renderKeys() {
+  const host = $("keyList");
+  host.innerHTML = "";
+  const keys = store.aiKeys || [];
+
+  if (!keys.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent =
+      "No keys yet. The app hands you the text to paste into your own AI instead.";
+    host.append(empty);
+    return;
+  }
+
+  keys.forEach((key, index) => {
+    const block = document.createElement("div");
+    block.className = "learning";
+
+    const title = document.createElement("h4");
+    title.textContent = key.label || `Key ${index + 1}`;
+    const shape = KEY_STATE_WORDS[key.state] || KEY_STATE_WORDS.ready;
+    const pill = document.createElement("span");
+    pill.className = `pill ${shape.pill}`;
+    pill.textContent = shape.word;
+    title.append(document.createTextNode(" "), pill);
+    block.append(title);
+
+    const which = document.createElement("div");
+    which.className = "muted";
+    which.textContent = `${key.provider} · ${index === 0 ? "used first" : `used ${index + 1}${index === 1 ? "nd" : index === 2 ? "rd" : "th"}`}`;
+    block.append(which);
+
+    // Golden Rule 29 on a key rather than a reel: if it stopped working, the reason is
+    // here, not nowhere.
+    if (key.last_error) {
+      const why = document.createElement("div");
+      why.className = "muted";
+      const when = key.last_error_at ? ` (${whenText(key.last_error_at)})` : "";
+      why.textContent = `Last refused: ${key.last_error}${when}`;
+      block.append(why);
+    }
+    if (key.ready_again_at) {
+      const back = document.createElement("div");
+      back.className = "muted";
+      back.textContent = `Tried again after ${whenText(key.ready_again_at)}`;
+      block.append(back);
+    }
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.marginTop = "8px";
+
+    if (index > 0) {
+      const up = document.createElement("button");
+      up.className = "secondary";
+      up.textContent = "Use earlier";
+      up.onclick = () => moveKey(key, keys[index - 1]);
+      row.append(up);
+    }
+
+    const replace = document.createElement("button");
+    replace.className = "secondary";
+    replace.textContent = "Replace key";
+    replace.onclick = () => replaceKey(key);
+    row.append(replace);
+
+    if (key.state !== "ready") {
+      const again = document.createElement("button");
+      again.className = "secondary";
+      again.textContent = "Try it again";
+      again.onclick = () => patchKey(key.id, { state: "ready" }, "Ready to try again.");
+      row.append(again);
+    }
+
+    const remove = document.createElement("button");
+    remove.className = "secondary";
+    remove.textContent = "Remove";
+    remove.onclick = () => removeKey(key);
+    row.append(remove);
+
+    block.append(row);
+    host.append(block);
+  });
+}
+
+async function refreshKeys(message) {
+  const result = await api("/v1/keys");
+  store.aiKeys = result.keys || [];
+  if (store.settings) store.settings.has_key = store.aiKeys.length > 0;
+  renderKeys();
+  if (message) say("keysMsg", message, "ok");
+}
+
+async function patchKey(id, body, message) {
+  try {
+    await api(`/v1/keys/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+    await refreshKeys(message);
+  } catch (error) {
+    say("keysMsg", error.message);
+  }
+}
+
+async function moveKey(key, above) {
+  // The two swap places rather than everything shuffling up, so pressing it twice on the
+  // same key does what it looks like it does. Both writes go before the reread, or the
+  // list is drawn once with two keys claiming the same place.
+  try {
+    await api(`/v1/keys/${key.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ position: above.position })
+    });
+    await api(`/v1/keys/${above.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ position: key.position })
+    });
+    await refreshKeys("Moved.");
+  } catch (error) {
+    say("keysMsg", error.message);
+  }
+}
+
+async function replaceKey(key) {
+  const value = prompt(`Paste the new key for ${key.label || "this key"}.`);
+  if (!value || !value.trim()) return;
+  await patchKey(key.id, { api_key: value.trim() }, "Key replaced.");
+}
+
+async function removeKey(key) {
+  if (!confirm(`Remove ${key.label || "this key"}? It cannot be shown again afterwards.`)) return;
+  try {
+    await api(`/v1/keys/${key.id}`, { method: "DELETE" });
+    await refreshKeys("Removed.");
+  } catch (error) {
+    say("keysMsg", error.message);
+  }
+}
+
+async function addKey() {
+  const value = $("newKeyValue").value.trim();
+  if (!value) return say("keysMsg", "Paste the key first.");
+
+  const button = $("addKey");
+  button.disabled = true;
+  try {
+    await api("/v1/keys", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: $("newKeyProvider").value,
+        api_key: value,
+        label: $("newKeyLabel").value.trim()
+      })
+    });
+    $("newKeyValue").value = "";
+    $("newKeyLabel").value = "";
+    await refreshKeys("Added.");
+  } catch (error) {
+    say("keysMsg", error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderSettings() {
   renderConnectors();
+  renderKeys();
   const settings = store.settings;
   if (settings?.ai_provider) $("provider").value = settings.ai_provider;
   $("apiKey").value = "";
@@ -1849,6 +2736,7 @@ function renderProviderHelp() {
 $("provider").onchange = renderProviderHelp;
 
 $("settingsBack").onclick = () => { location.hash = ""; };
+$("addKey").onclick = addKey;
 $("navSettings").onclick = () => { location.hash = "#/settings"; };
 $("navGuide").onclick = () => { location.hash = "#/guide"; };
 $("guideBack").onclick = () => { location.hash = ""; };

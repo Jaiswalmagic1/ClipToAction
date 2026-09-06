@@ -1,0 +1,25 @@
+-- Chapters, so a long video can be got back into (2026-08-27, D33).
+--
+-- The 30-minute ceiling is gone and a saved video can now run to three hours. A 3-4
+-- sentence summary of a ninety-minute interview is not a short answer, it is a useless
+-- one -- and without a time against a point there is no way back into the video to hear
+-- it again, which is most of the reason for saving a long talk at all.
+--
+-- Run once per database that already has data:
+--   wrangler d1 execute cliptoaction-staging --remote --env staging \
+--     --file=./migrations/0006_long_video_sections.sql
+
+-- One nullable column, not a table. A chapter has no life of its own: it is read only with
+-- the analysis it belongs to, written only when that analysis is written, and dies with it.
+-- A table would have bought nothing and cost a join on every sync.
+--
+-- NULL means "this video has no chapters", which is every reel and every long video that
+-- came back without them. It is deliberately not '[]' -- a row written before today and a
+-- row written for a reel today are then identical, so nothing has to be backfilled and
+-- nothing downstream can tell the two apart.
+--
+-- Shared, like the rest of the analysis (D10): chapters are a fact about the video, not
+-- about the person who saved it, so one long video is chaptered once however many people
+-- save it. The per-user split already on this table (user_id = '' for shared, otherwise
+-- the pasting user) applies unchanged.
+ALTER TABLE analyses ADD COLUMN sections TEXT;

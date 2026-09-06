@@ -13,18 +13,26 @@
 
 import { verifyFirebaseToken, encryptSecret, tokensMatch, AuthError } from "./auth.js";
 import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "./canonical.js";
+import { forDisplay } from "./keys.js";
 import {
-  ANALYSIS_PROMPT,
+  promptFor,
+  tidyTranscript,
+  isLong,
   analyzeSource,
   parseAnalysis,
   proposeTopic,
+  cleanKind,
+  cleanItems,
+  itemKey,
+  ITEM_STATUSES,
   AnalysisError
 } from "./analyze.js";
 import {
   cleanTopicName,
   fileClipIntoTopic,
   fileSourceForAllSavers,
-  setClipTopicByHand
+  setClipTopicByHand,
+  tidyTopics
 } from "./topics.js";
 import {
   buildLearningPrompt,
@@ -34,6 +42,10 @@ import {
 import { handleMcp, hashSecret, newConnectorSecret } from "./mcp.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
+
+// Enough to hold a few free accounts across a couple of providers, and low enough that a
+// list stays something a person can actually read down and reason about (D35).
+const MAX_AI_KEYS = 10;
 const SHARED = ""; // analyses.user_id value meaning "produced by the Worker, safe to share"
 const THE_WORKER = ""; // workers.id value meaning "the one PC worker"
 
@@ -65,6 +77,20 @@ const LIMITS = {
   url: 2000,
   transcript: 200000
 };
+
+// A long video's analysis is a bigger object than a reel's, and the reel's ceilings would
+// reject a good one. Applied only when the video is actually long, so nothing a reel
+// produces is judged by a looser rule than it is today (D33).
+const LONG_LIMITS = {
+  summary: 24000,
+  item: 2000,
+  items: 200,
+  sections: 24
+};
+
+function limitsFor(durationSec) {
+  return isLong(durationSec) ? { ...LIMITS, ...LONG_LIMITS } : LIMITS;
+}
 
 function corsHeaders(env) {
   return {
@@ -222,13 +248,14 @@ async function deltaSync(request, env, userId) {
       .bind(userId, since)
       .all();
 
-  const [clips, notes, questions, topics, tasks, learnings] = await Promise.all([
+  const [clips, notes, questions, topics, tasks, learnings, itemStatus] = await Promise.all([
     scoped("clips"),
     scoped("notes"),
     scoped("questions"),
     scoped("topics"),
     scoped("tasks"),
-    scoped("learnings")
+    scoped("learnings"),
+    scoped("item_status")
   ]);
 
   // Shared rows are pivoted on the joining clip, not on their own timestamp. A reel
@@ -268,9 +295,21 @@ async function deltaSync(request, env, userId) {
   //
   // `has_key` and never the key. The stored value is only ever decrypted inside the Worker
   // to call a provider (D11), and there is a test that it cannot come back through here.
-  const user = await env.DB.prepare(`SELECT ai_provider, ai_key_cipher FROM users WHERE id = ?1`)
+  const user = await env.DB.prepare(`SELECT ai_provider FROM users WHERE id = ?1`)
     .bind(userId)
     .first();
+
+  // The keys themselves, as the app is allowed to see them (D35): what each is called,
+  // whose provider it is, whether it is working, and why not when it is not. Never the key
+  // and never the ciphertext — `forDisplay` is what enforces that, and a test proves no
+  // sync response can carry one.
+  const keys = await env.DB.prepare(
+    `SELECT id, label, provider, position, state, last_error, last_error_detail,
+            last_error_at, exhausted_at, last_used_at
+     FROM ai_keys WHERE user_id = ?1 ORDER BY position, created_at`
+  )
+    .bind(userId)
+    .all();
 
   // Whether the machine that downloads and transcribes is running. Not per-user, and
   // deliberately shown to everybody: when it is off, nobody's reels are moving, and the
@@ -298,8 +337,11 @@ async function deltaSync(request, env, userId) {
     connectors: connectors.results,
     settings: {
       ai_provider: user?.ai_provider || null,
-      has_key: Boolean(user?.ai_key_cipher)
+      // The list IS the setting now. Having any key at all is what makes the Worker
+      // summarise for you; having none is the copy-paste tier (D35).
+      has_key: keys.results.length > 0
     },
+    ai_keys: keys.results.map((row) => forDisplay(row, timestamp)),
     worker: {
       last_seen_at: worker?.last_seen_at || null,
       running: Boolean(worker && timestamp - worker.last_seen_at < WORKER_QUIET_AFTER_MS)
@@ -310,6 +352,7 @@ async function deltaSync(request, env, userId) {
     topics: topics.results,
     tasks: tasks.results,
     learnings: learnings.results,
+    item_status: itemStatus.results,
     sources: sources.results,
     transcripts: transcripts.results,
     analyses: analyses.results
@@ -369,27 +412,52 @@ async function saveSettings(request, env, userId) {
   const suppliedKey = String(body.api_key || "").trim();
 
   // 'manual' is the copy-paste tier. Choosing it is a statement that no key is in use, so
-  // the stored one goes rather than sitting encrypted for nothing.
+  // the stored ones go rather than sitting encrypted for nothing. With a list rather than
+  // a single key this throws away more than it used to, which is why the app asks first —
+  // the endpoint does what it is told, and the warning belongs on screen (D35).
   if (body.provider === "manual") {
-    await env.DB.prepare(
-      `UPDATE users SET ai_provider = ?1, ai_key_cipher = NULL, last_seen_at = ?2 WHERE id = ?3`
-    )
-      .bind(body.provider, timestamp, userId)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM ai_keys WHERE user_id = ?1`).bind(userId),
+      env.DB.prepare(`UPDATE users SET ai_provider = ?1, last_seen_at = ?2 WHERE id = ?3`)
+        .bind(body.provider, timestamp, userId)
+    ]);
     return json(env, { ok: true, provider: body.provider, key_stored: false });
   }
 
+  // A key given here replaces the FIRST key in the list, which is what this screen has
+  // always meant: "the key I use". Adding a second is POST /v1/keys, deliberately a
+  // different action so that saving this screen can never quietly append a duplicate.
   if (suppliedKey) {
     const cipher = await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET);
-    await env.DB.prepare(
-      `UPDATE users SET ai_provider = ?1, ai_key_cipher = ?2, last_seen_at = ?3 WHERE id = ?4`
+    const first = await env.DB.prepare(
+      `SELECT id FROM ai_keys WHERE user_id = ?1 ORDER BY position, created_at LIMIT 1`
     )
-      .bind(body.provider, cipher, timestamp, userId)
-      .run();
+      .bind(userId)
+      .first();
+
+    await env.DB.batch([
+      first
+        ? env.DB.prepare(
+            // A replaced key is a new key: whatever the old one was refused for says
+            // nothing about this one, so it starts ready with a clean slate.
+            `UPDATE ai_keys
+             SET provider = ?1, key_cipher = ?2, state = 'ready', last_error = NULL,
+                 last_error_detail = NULL, last_error_at = NULL, exhausted_at = NULL,
+                 updated_at = ?3
+             WHERE id = ?4`
+          ).bind(body.provider, cipher, timestamp, first.id)
+        : env.DB.prepare(
+            `INSERT INTO ai_keys
+               (id, user_id, label, provider, key_cipher, position, state, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4, 0, 'ready', ?5, ?5)`
+          ).bind(newId(), userId, body.provider, cipher, timestamp),
+      env.DB.prepare(`UPDATE users SET ai_provider = ?1, last_seen_at = ?2 WHERE id = ?3`)
+        .bind(body.provider, timestamp, userId)
+    ]);
     return json(env, { ok: true, provider: body.provider, key_stored: true });
   }
 
-  // No key was sent, so the stored one is left alone. This screen is also how someone
+  // No key was sent, so the stored ones are left alone. This screen is also how someone
   // changes which AI they use, and the key is never shown back to them — so if saving
   // without retyping it wiped it, they would have no way of noticing. Their clips would
   // simply stop being summarised with nothing on screen to explain why, which is the
@@ -398,15 +466,141 @@ async function saveSettings(request, env, userId) {
     .bind(body.provider, timestamp, userId)
     .run();
 
-  const existing = await env.DB.prepare(`SELECT ai_key_cipher FROM users WHERE id = ?1`)
+  const count = await env.DB.prepare(
+    `SELECT COUNT(*) AS held FROM ai_keys WHERE user_id = ?1`
+  )
     .bind(userId)
     .first();
 
-  return json(env, {
-    ok: true,
-    provider: body.provider,
-    key_stored: Boolean(existing?.ai_key_cipher)
-  });
+  return json(env, { ok: true, provider: body.provider, key_stored: (count?.held || 0) > 0 });
+}
+
+// ---------------------------------------------------------------- the key list (D35)
+
+/** Everything about this person's keys except the keys. */
+async function listKeys(env, userId) {
+  const rows = await env.DB.prepare(
+    `SELECT id, label, provider, position, state, last_error, last_error_detail,
+            last_error_at, exhausted_at, last_used_at
+     FROM ai_keys WHERE user_id = ?1 ORDER BY position, created_at`
+  )
+    .bind(userId)
+    .all();
+  const timestamp = now();
+  return json(env, { keys: rows.results.map((row) => forDisplay(row, timestamp)) });
+}
+
+/** Adds one key to the end of this person's list. */
+async function addKey(request, env, userId) {
+  const body = await readJson(request);
+
+  // 'manual' is the absence of a key, so it cannot be one entry in a list of them.
+  if (!PROVIDERS.includes(body.provider) || body.provider === "manual") {
+    return fail(env, `Provider must be one of: ${PROVIDERS.filter((p) => p !== "manual").join(", ")}`);
+  }
+
+  const suppliedKey = String(body.api_key || "").trim();
+  if (!suppliedKey) return fail(env, "An API key is required.");
+  if (suppliedKey.length > LIMITS.apiKey) return fail(env, "That does not look like an API key.");
+
+  const label = String(body.label || "").trim().slice(0, 60) || null;
+
+  const held = await env.DB.prepare(
+    `SELECT COUNT(*) AS held, COALESCE(MAX(position), -1) AS last FROM ai_keys WHERE user_id = ?1`
+  )
+    .bind(userId)
+    .first();
+  if ((held?.held || 0) >= MAX_AI_KEYS) {
+    return fail(env, `That is the most keys one account can hold (${MAX_AI_KEYS}).`);
+  }
+
+  const timestamp = now();
+  const id = newId();
+  const cipher = await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET);
+
+  await env.DB.prepare(
+    `INSERT INTO ai_keys
+       (id, user_id, label, provider, key_cipher, position, state, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ready', ?7, ?7)`
+  )
+    .bind(id, userId, label, body.provider, cipher, (held?.last ?? -1) + 1, timestamp)
+    .run();
+
+  return json(env, { id, provider: body.provider, label }, 201);
+}
+
+/**
+ * Renames a key, replaces it, moves it up or down the order, or wakes it up.
+ *
+ * Replacing the key clears whatever the old one was refused for — the new one has not
+ * been refused anything yet, and carrying the old error forward would leave a working key
+ * sitting there labelled broken.
+ */
+async function updateKey(request, env, userId, keyId) {
+  const body = await readJson(request);
+
+  const existing = await env.DB.prepare(
+    `SELECT id FROM ai_keys WHERE id = ?1 AND user_id = ?2`
+  )
+    .bind(keyId, userId)
+    .first();
+  if (!existing) return fail(env, "No such key.", 404);
+
+  const timestamp = now();
+  const sets = ["updated_at = ?1"];
+  const values = [timestamp];
+
+  if (body.label !== undefined) {
+    values.push(String(body.label || "").trim().slice(0, 60) || null);
+    sets.push(`label = ?${values.length}`);
+  }
+
+  if (body.provider !== undefined) {
+    if (!PROVIDERS.includes(body.provider) || body.provider === "manual") {
+      return fail(env, "That is not a provider a key can belong to.");
+    }
+    values.push(body.provider);
+    sets.push(`provider = ?${values.length}`);
+  }
+
+  if (body.position !== undefined) {
+    const position = Number(body.position);
+    if (!Number.isInteger(position) || position < 0 || position >= MAX_AI_KEYS) {
+      return fail(env, "That is not a place in the list.");
+    }
+    values.push(position);
+    sets.push(`position = ?${values.length}`);
+  }
+
+  const suppliedKey = String(body.api_key || "").trim();
+  if (suppliedKey) {
+    if (suppliedKey.length > LIMITS.apiKey) {
+      return fail(env, "That does not look like an API key.");
+    }
+    values.push(await encryptSecret(suppliedKey, env.KEY_ENCRYPTION_SECRET));
+    sets.push(`key_cipher = ?${values.length}`);
+  }
+
+  // A replaced key, or one the person has explicitly told us to try again, starts clean.
+  if (suppliedKey || body.state === "ready") {
+    sets.push("state = 'ready'", "last_error = NULL", "last_error_detail = NULL");
+    sets.push("last_error_at = NULL", "exhausted_at = NULL");
+  }
+
+  values.push(keyId);
+  await env.DB.prepare(`UPDATE ai_keys SET ${sets.join(", ")} WHERE id = ?${values.length}`)
+    .bind(...values)
+    .run();
+
+  return json(env, { ok: true });
+}
+
+async function removeKey(env, userId, keyId) {
+  const result = await env.DB.prepare(`DELETE FROM ai_keys WHERE id = ?1 AND user_id = ?2`)
+    .bind(keyId, userId)
+    .run();
+  if (!result.meta.changes) return fail(env, "No such key.", 404);
+  return json(env, { ok: true });
 }
 
 // ---------------------------------------------------------------- service routes
@@ -481,6 +675,10 @@ async function storeTranscript(request, env, sourceId) {
   if (!text) return fail(env, "Transcript text is required.");
   if (text.length > LIMITS.transcript) return fail(env, "That transcript is too long.");
 
+  // The length decides which of the two prompts this gets, so it has to be known here.
+  // The worker sends it; anything already on the row is the fallback for a re-post.
+  const durationSec = Number(body.duration_sec || 0) || (await durationOf(env, sourceId));
+
   const timestamp = now();
   await env.DB.batch([
     env.DB.prepare(
@@ -493,7 +691,8 @@ async function storeTranscript(request, env, sourceId) {
       // come back late, and without this it would overwrite a newer transcript.
       `UPDATE sources
        SET state = 'transcribed', title = COALESCE(?1, title),
-           duration_sec = COALESCE(?2, duration_sec), error = NULL, claimed_at = NULL,
+           duration_sec = COALESCE(?2, duration_sec), error = NULL, error_detail = NULL,
+           claimed_at = NULL,
            updated_at = ?3
        WHERE id = ?4 AND state = 'downloading'`
     ).bind(body.title || null, body.duration_sec || null, timestamp, sourceId)
@@ -503,7 +702,7 @@ async function storeTranscript(request, env, sourceId) {
   // with everyone else who saved it. If nobody has one, the source stays at 'transcribed'
   // and the app offers the copy-paste tier instead — that is not a failure.
   try {
-    const analysis = await analyzeSource(env, sourceId, text);
+    const analysis = await analyzeSource(env, sourceId, text, null, durationSec);
     if (analysis) {
       const problems = await storeAnalysis(
         env,
@@ -511,36 +710,93 @@ async function storeTranscript(request, env, sourceId) {
         SHARED,
         analysis.payload,
         analysis.provider,
-        analysis.model
+        analysis.model,
+        durationSec
       );
-      if (problems.length) throw new AnalysisError("the AI's reply was malformed");
+      if (problems.length) throw new AnalysisError(...malformed(problems));
     }
     return json(env, { ok: true, analyzed: Boolean(analysis) });
   } catch (error) {
     // sources.error is read by every user who saved this reel, so it carries a fixed
     // classification — never a provider's response body, which can contain a fragment of
     // the key that failed and the account it belongs to.
+    //
+    // sources.error_detail is the HTTP status and a name from a fixed list in analyze.js,
+    // and can carry nothing else — see safeDetail there. It is the difference between
+    // knowing what went wrong next time and guessing at it (Golden Rule 1).
     const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
-    await env.DB.prepare(`UPDATE sources SET error = ?1, updated_at = ?2 WHERE id = ?3`)
-      .bind(`Analysis failed: ${reason}`, now(), sourceId)
+    const detail = error instanceof AnalysisError ? error.detail : null;
+    await env.DB.prepare(
+      `UPDATE sources SET error = ?1, error_detail = ?2, updated_at = ?3 WHERE id = ?4`
+    )
+      .bind(`Analysis failed: ${reason}`, detail, now(), sourceId)
       .run();
-    return json(env, { ok: true, analyzed: false, analysis_error: reason });
+    return json(env, { ok: true, analyzed: false, analysis_error: reason, detail });
   }
 }
 
-export function validateAnalysis(payload) {
+/**
+ * The arguments for an AnalysisError about our own validation, not the provider's.
+ * The field names are this file's own words, so nothing a provider wrote travels.
+ */
+function malformed(problems) {
+  return ["the AI's reply was malformed", `200 malformed:${problems.join(",")}`.slice(0, 120)];
+}
+
+/** How long this video is, from the row. 0 when it was never reported (D33). */
+async function durationOf(env, sourceId) {
+  const row = await env.DB.prepare(`SELECT duration_sec FROM sources WHERE id = ?1`)
+    .bind(sourceId)
+    .first();
+  return Number(row?.duration_sec || 0);
+}
+
+export function validateAnalysis(payload, durationSec = 0) {
   const problems = [];
+  const limits = limitsFor(durationSec);
 
   const summary = String(payload?.summary || "").trim();
   if (!summary) problems.push("summary");
-  else if (summary.length > LIMITS.summary) problems.push("summary is too long");
+  else if (summary.length > limits.summary) problems.push("summary is too long");
 
   for (const field of ["key_points", "learn_more", "claims"]) {
     const value = payload?.[field];
     if (!Array.isArray(value)) problems.push(field);
-    else if (value.length > LIMITS.items) problems.push(`${field} has too many items`);
-    else if (value.some((item) => JSON.stringify(item ?? "").length > LIMITS.item)) {
+    else if (value.length > limits.items) problems.push(`${field} has too many items`);
+    else if (value.some((item) => JSON.stringify(item ?? "").length > limits.item)) {
       problems.push(`${field} has an item that is too long`);
+    }
+  }
+
+  // Chapters are optional in exactly the way a topic is (D27): a long video that came back
+  // without them is a summary worth keeping, not a broken reply. Only a wrong *type* is a
+  // problem. A short reel is never asked for them, and one that volunteers them is still
+  // checked rather than trusted.
+  const sections = payload?.sections;
+  if (sections !== null && sections !== undefined) {
+    if (!Array.isArray(sections)) problems.push("sections");
+    else if (sections.length > (limits.sections || LONG_LIMITS.sections)) {
+      problems.push("sections has too many items");
+    } else if (sections.some((item) => JSON.stringify(item ?? "").length > limits.item)) {
+      problems.push("sections has an item that is too long");
+    }
+  }
+
+  // A kind of the wrong TYPE is a malformed reply; a kind that is simply not one of the
+  // five is not. cleanKind turns that into null and the video sits outside the trackers,
+  // which is visible, rather than a good summary being thrown away over one word.
+  if (payload?.kind !== null && payload?.kind !== undefined && typeof payload.kind !== "string") {
+    problems.push("kind");
+  }
+
+  // Same rule as sections: optional, and only a wrong type or an unreasonable size is a
+  // problem. cleanItems drops rows belonging to a kind that has no row shape.
+  const items = payload?.items;
+  if (items !== null && items !== undefined) {
+    if (!Array.isArray(items)) problems.push("items");
+    else if (items.length > limits.items) problems.push("items has too many items");
+    else if (items.some((item) => JSON.stringify(item ?? "").length > limits.item)) {
+      problems.push("items has an item that is too long");
     }
   }
 
@@ -562,20 +818,28 @@ export function validateAnalysis(payload) {
  * paste is stored against that user so it can never overwrite what others read.
  * Returns an array of problems; empty means it was stored.
  */
-async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
-  const problems = validateAnalysis(payload);
+async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, durationSec = 0) {
+  const problems = validateAnalysis(payload, durationSec);
   if (problems.length) return problems;
 
   const timestamp = now();
+  // What sort of video this is, and the rows that sort of video carries (D34). Both are
+  // null for anything that named no kind, which is every analysis stored before today —
+  // so an old row and a new one that tracks nothing are indistinguishable, and nothing
+  // has to be backfilled.
+  const kind = cleanKind(payload.kind);
+  const rows = cleanItems(kind, payload.items);
+
   const statements = [
     env.DB.prepare(
       `INSERT INTO analyses
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
-          suggested_task, topic, sub_topic, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+          suggested_task, topic, sub_topic, sections, kind, items, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
-         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, created_at = ?12`
+         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, sections = ?12,
+         kind = ?13, items = ?14, created_at = ?15`
     ).bind(
       sourceId,
       ownerId,
@@ -588,6 +852,13 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
       payload.suggested_task || null,
       cleanTopicName(payload.topic) || null,
       cleanTopicName(payload.sub_topic) || null,
+      // Null rather than "[]" when there are none, so a reel's row is exactly what it was
+      // before chapters existed and the app can tell "no chapters" from "none found".
+      Array.isArray(payload.sections) && payload.sections.length
+        ? JSON.stringify(payload.sections)
+        : null,
+      kind,
+      rows && rows.length ? JSON.stringify(rows) : null,
       timestamp
     )
   ];
@@ -597,7 +868,8 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model) {
   if (ownerId === SHARED) {
     statements.push(
       env.DB.prepare(
-        `UPDATE sources SET state = 'analyzed', error = NULL, claimed_at = NULL, updated_at = ?1
+        `UPDATE sources SET state = 'analyzed', error = NULL, error_detail = NULL,
+             claimed_at = NULL, updated_at = ?1
          WHERE id = ?2`
       ).bind(timestamp, sourceId)
     );
@@ -642,7 +914,7 @@ async function storeFailure(request, env, sourceId) {
   const result = await env.DB.prepare(
     `UPDATE sources
      SET state = CASE WHEN attempts >= ?4 THEN 'failed' ELSE 'pending' END,
-         error = ?1, claimed_at = NULL, updated_at = ?2
+         error = ?1, error_detail = NULL, claimed_at = NULL, updated_at = ?2
      WHERE id = ?3 AND state = 'downloading'`
   )
     .bind(message, now(), sourceId, MAX_ATTEMPTS)
@@ -655,15 +927,19 @@ async function storeFailure(request, env, sourceId) {
 
 async function buildPrompt(env, userId, clipId) {
   const row = await env.DB.prepare(
-    `SELECT t.text FROM clips c
+    `SELECT t.text, s.duration_sec FROM clips c
      JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
      WHERE c.id = ?1 AND c.user_id = ?2`
   )
     .bind(clipId, userId)
     .first();
 
   if (!row) return fail(env, "No transcript yet for this clip.", 404);
-  return json(env, { prompt: ANALYSIS_PROMPT + row.text });
+  // The same prompt the Worker would have used, and the same tidied transcript. What a
+  // person pastes into a free chat AI has to be what a connected key would have sent, or
+  // the two tiers quietly produce different answers for the same reel (D9).
+  return json(env, { prompt: promptFor(row.duration_sec) + tidyTranscript(row.text) });
 }
 
 /**
@@ -680,8 +956,9 @@ async function buildPrompt(env, userId, clipId) {
  */
 async function summariseOnDemand(request, env, userId, clipId) {
   const row = await env.DB.prepare(
-    `SELECT c.source_id, t.text FROM clips c
+    `SELECT c.source_id, t.text, s.duration_sec FROM clips c
      JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
      WHERE c.id = ?1 AND c.user_id = ?2`
   )
     .bind(clipId, userId)
@@ -696,7 +973,13 @@ async function summariseOnDemand(request, env, userId, clipId) {
   if (already) return json(env, { ok: true, already: true });
 
   try {
-    const analysis = await analyzeSource(env, row.source_id, row.text, userId);
+    const analysis = await analyzeSource(
+      env,
+      row.source_id,
+      row.text,
+      userId,
+      row.duration_sec
+    );
     if (!analysis) {
       return fail(env, "Connect an AI account in Settings first, or use copy and paste.");
     }
@@ -707,9 +990,10 @@ async function summariseOnDemand(request, env, userId, clipId) {
       SHARED,
       analysis.payload,
       analysis.provider,
-      analysis.model
+      analysis.model,
+      row.duration_sec
     );
-    if (problems.length) throw new AnalysisError("the AI's reply was malformed");
+    if (problems.length) throw new AnalysisError(...malformed(problems));
     return json(env, { ok: true });
   } catch (error) {
     // Unlike the automatic run, nothing is written to `sources.error` here. That column is
@@ -717,7 +1001,8 @@ async function summariseOnDemand(request, env, userId, clipId) {
     // about the reel. The person who pressed the button is watching, so the reason goes
     // back to them and nowhere else.
     const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
-    return fail(env, `Could not summarise it: ${reason}`);
+    const detail = error instanceof AnalysisError ? error.detail : null;
+    return json(env, { error: `Could not summarise it: ${reason}`, detail }, 400);
   }
 }
 
@@ -725,8 +1010,9 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
   // A paste is only meaningful against a transcript this user can already see, which also
   // stops anyone pasting an analysis for a reel that has not been downloaded yet.
   const clip = await env.DB.prepare(
-    `SELECT c.source_id FROM clips c
+    `SELECT c.source_id, s.duration_sec FROM clips c
      JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
      WHERE c.id = ?1 AND c.user_id = ?2`
   )
     .bind(clipId, userId)
@@ -751,7 +1037,8 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
     userId,
     payload,
     "manual",
-    body.model || null
+    body.model || null,
+    clip.duration_sec
   );
   if (problems.length) {
     return fail(env, `The analysis is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);
@@ -928,6 +1215,63 @@ async function saveLearning(request, env, userId, clipId) {
 }
 
 /**
+ * What the user has decided about one row of a product or tool tracker (D34).
+ *
+ * Keyed to the clip, like every other per-user write, so ownership is checked the same
+ * way. An empty status clears the decision — a soft delete, so delta sync carries the
+ * clearing to their other devices instead of the row silently reappearing.
+ */
+async function setItemStatus(request, env, userId, clipId) {
+  const body = await readJson(request);
+  const key = itemKey(body.name);
+  if (!key) return fail(env, "That row has no name to remember it by.");
+
+  const status = String(body.status || "").trim().toLowerCase();
+  if (status && !ITEM_STATUSES.includes(status)) return fail(env, "Unknown status.");
+
+  const clip = await env.DB.prepare(
+    `SELECT source_id FROM clips WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!clip) return fail(env, "Clip not found.", 404);
+
+  const timestamp = now();
+  await env.DB.prepare(
+    `INSERT INTO item_status
+       (id, user_id, source_id, item_key, status, created_at, updated_at, deleted_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+     ON CONFLICT (user_id, source_id, item_key) DO UPDATE SET
+       status = ?5, updated_at = ?6, deleted_at = ?7`
+  )
+    .bind(
+      newId(),
+      userId,
+      clip.source_id,
+      key,
+      status || "want",
+      timestamp,
+      status ? null : timestamp
+    )
+    .run();
+
+  return json(env, { ok: true, item_key: key, status: status || null });
+}
+
+/**
+ * "Tidy my folders" — folds together the top-level topics that are the same broad
+ * subject under different names, and moves their clips across.
+ *
+ * Costs nothing and calls nobody: the rule is the one every new clip is already filed by,
+ * applied to what a notebook accumulated before it existed. Safe to press twice — the
+ * second press finds nothing left to do.
+ */
+async function tidyMyTopics(env, userId) {
+  const result = await tidyTopics(env, userId, now());
+  return json(env, { ok: true, ...result });
+}
+
+/**
  * "Sort my old clips" (D27) — for the clips summarised before topics existed.
  *
  * Two kinds get sorted. One is a reel somebody else has since had named, where the name
@@ -1022,6 +1366,74 @@ async function sortOldClips(request, env, userId) {
   return json(env, { sorted, remaining: Math.max(queue.length - attempted, 0), error: failure });
 }
 
+/**
+ * "Fill in my trackers" (D34) — for everything saved before kinds existed.
+ *
+ * A tracker holding four rows out of a notebook of eighty-six is a demonstration, not a
+ * feature. This runs the analysis again over the transcript already stored, so a video
+ * that showed three products at three prices ends up as three rows.
+ *
+ * It runs on the presser's own key, like "Summarise this one" does: they volunteered
+ * their allowance by pressing, and quietly spending an earlier saver's would be wrong.
+ * And it is a press rather than something automatic, because eighty-six calls that nobody
+ * asked for look exactly like the app breaking.
+ *
+ * A few at a time, and the app presses again while anything is left — one Worker request
+ * has a hard ceiling on how many calls out it may make. It stops on the first failure
+ * rather than spending the rest of the allowance on the same failure ten more times.
+ */
+async function fillInKinds(request, env, userId) {
+  const pending = await env.DB.prepare(
+    `SELECT c.id, c.source_id, t.text, s.duration_sec
+     FROM clips c
+     JOIN analyses a ON a.source_id = c.source_id AND a.user_id = ?2
+     JOIN transcripts t ON t.source_id = c.source_id
+     JOIN sources s ON s.id = c.source_id
+     WHERE c.user_id = ?1
+       AND c.deleted_at IS NULL
+       AND a.kind IS NULL
+     ORDER BY c.created_at DESC`
+  )
+    .bind(userId, SHARED)
+    .all();
+
+  const queue = pending.results;
+  let done = 0;
+  let attempted = 0;
+  let failure = null;
+
+  for (const row of queue.slice(0, MAX_SORT_PER_REQUEST)) {
+    try {
+      const analysis = await analyzeSource(env, row.source_id, row.text, userId, row.duration_sec);
+      if (!analysis) {
+        if (!done) return fail(env, "Connect an AI account in Settings first.", 400);
+        failure = "no AI account is connected";
+        break;
+      }
+
+      const problems = await storeAnalysis(
+        env,
+        row.source_id,
+        SHARED,
+        analysis.payload,
+        analysis.provider,
+        analysis.model,
+        row.duration_sec
+      );
+      if (problems.length) throw new AnalysisError(...malformed(problems));
+      done += 1;
+    } catch (error) {
+      // Never onto sources.error: one person's key failing is not a fact about the reel,
+      // and the person who pressed the button is watching.
+      failure = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+      break;
+    }
+    attempted += 1;
+  }
+
+  return json(env, { done, remaining: Math.max(queue.length - attempted, 0), error: failure });
+}
+
 /** Sets a clip's topic by hand. The user's choice is final (D27). */
 async function setTopic(request, env, userId, clipId) {
   const body = await readJson(request);
@@ -1102,6 +1514,16 @@ export default {
       if (segments[1] === "settings" && request.method === "PUT") {
         return await saveSettings(request, env, userId);
       }
+      if (segments[1] === "keys" && !segments[2]) {
+        if (request.method === "GET") return await listKeys(env, userId);
+        if (request.method === "POST") return await addKey(request, env, userId);
+      }
+      if (segments[1] === "keys" && segments[2]) {
+        if (request.method === "PATCH") {
+          return await updateKey(request, env, userId, segments[2]);
+        }
+        if (request.method === "DELETE") return await removeKey(env, userId, segments[2]);
+      }
       if (segments[1] === "clips" && segments[2]) {
         if (!segments[3] && request.method === "PATCH") {
           return await setStatus(request, env, userId, segments[2]);
@@ -1124,6 +1546,9 @@ export default {
         if (segments[3] === "learning" && request.method === "POST") {
           return await saveLearning(request, env, userId, segments[2]);
         }
+        if (segments[3] === "item" && request.method === "PUT") {
+          return await setItemStatus(request, env, userId, segments[2]);
+        }
       }
       if (segments[1] === "connector" && !segments[2] && request.method === "POST") {
         return await createConnector(request, env, userId);
@@ -1133,6 +1558,12 @@ export default {
       }
       if (segments[1] === "topics" && segments[2] === "sort" && request.method === "POST") {
         return await sortOldClips(request, env, userId);
+      }
+      if (segments[1] === "topics" && segments[2] === "tidy" && request.method === "POST") {
+        return await tidyMyTopics(env, userId);
+      }
+      if (segments[1] === "kinds" && !segments[2] && request.method === "POST") {
+        return await fillInKinds(request, env, userId);
       }
 
       return fail(env, "Not found.", 404);

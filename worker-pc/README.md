@@ -87,7 +87,9 @@ looking, and it stays out of the way while everything is working.
 
 | Situation | What happens |
 |---|---|
-| Video longer than `MAX_DURATION_SEC` (default 30 min) | Skipped with a visible error, not silently dropped |
+| Video longer than `MAX_DURATION_SEC` (default 3 hours) | Skipped with a visible error, not silently dropped |
+| Video longer than `LONG_VIDEO_SEC` (default 10 min) | Times are written into the transcript every half minute, and the AI is asked for chapters rather than a 3-sentence summary (D33) |
+| A long video is in the queue | It holds the machine for its whole length. Reels shared meanwhile wait behind it — the queue is one at a time |
 | Download or transcription fails | Error is posted back and shown in the app; retried up to 3 times, then marked `failed` |
 | No speech in the video | Recorded as an error rather than saving an empty transcript |
 | PC is off | Nothing is lost — sources stay `pending` and are picked up on the next run, oldest first |
