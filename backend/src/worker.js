@@ -43,6 +43,14 @@ import {
 } from "./learnings.js";
 import { handleMcp, hashSecret, newConnectorSecret } from "./mcp.js";
 import {
+  WARN_ABOVE_SEC,
+  MAX_VIDEO_SEC,
+  MAX_TRANSCRIPT_CHARS,
+  needsPermission,
+  tooLongForAnyone,
+  whatItCosts
+} from "./longvideo.js";
+import {
   DEFAULT_RELOOK_DAYS,
   RELOOK_CHOICES,
   RELOOK_PROMPT,
@@ -86,7 +94,9 @@ const LIMITS = {
   note: 20000,
   apiKey: 400,
   url: 2000,
-  transcript: 200000,
+  // Raised with the six-hour ceiling (D42). It lives in longvideo.js because the PC worker
+  // has to refuse a video BEFORE spending three hours on one whose words would not fit.
+  transcript: MAX_TRANSCRIPT_CHARS,
   // A channel name. Long enough for the padded ones creators actually use, short enough
   // that nothing else can be smuggled into a column the app draws (D40).
   creator: 200
@@ -659,8 +669,12 @@ async function claimQueue(request, env) {
 
   // A claim is a lease. Without the timeout, a worker that dies mid-download leaves the
   // source in 'downloading' forever.
+  // `long_ok` tells the worker this one has already been said yes to, so it downloads it
+  // without asking again (D42). 'needs_ok' and 'parked' are not in this query at all, so a
+  // video waiting on an answer is never picked up.
   const rows = await env.DB.prepare(
-    `SELECT id, url_canonical, url_original, platform, attempts
+    `SELECT id, url_canonical, url_original, platform, attempts,
+            CASE WHEN long_ok_at IS NULL THEN 0 ELSE 1 END AS long_ok
      FROM sources
      WHERE attempts < ?3
        AND (state = 'pending'
@@ -700,7 +714,8 @@ async function storeTranscript(request, env, sourceId) {
 
   // The length decides which of the two prompts this gets, so it has to be known here.
   // The worker sends it; anything already on the row is the fallback for a re-post.
-  const durationSec = Number(body.duration_sec || 0) || (await durationOf(env, sourceId));
+  const facts = await sourceFacts(env, sourceId);
+  const durationSec = Number(body.duration_sec || 0) || facts.duration_sec;
 
   const timestamp = now();
   await env.DB.batch([
@@ -735,7 +750,11 @@ async function storeTranscript(request, env, sourceId) {
   // with everyone else who saved it. If nobody has one, the source stays at 'transcribed'
   // and the app offers the copy-paste tier instead — that is not a failure.
   try {
-    const analysis = await analyzeSource(env, sourceId, text, null, durationSec);
+    // Whoever agreed to this video's length is whoever pays for reading it (D42). Left
+    // null for everything else, which is D10's cost model unchanged: the first saver with
+    // a key pays. Nobody's daily allowance should go on an hour-long video they did not
+    // ask for and did not approve.
+    const analysis = await analyzeSource(env, sourceId, text, facts.long_ok_by, durationSec);
     if (analysis) {
       const problems = await storeAnalysis(
         env,
@@ -776,12 +795,21 @@ function malformed(problems) {
   return ["the AI's reply was malformed", `200 malformed:${problems.join(",")}`.slice(0, 120)];
 }
 
-/** How long this video is, from the row. 0 when it was never reported (D33). */
-async function durationOf(env, sourceId) {
-  const row = await env.DB.prepare(`SELECT duration_sec FROM sources WHERE id = ?1`)
+/**
+ * The two things about a source that decide how its transcript is read: how long it is
+ * (D33, which of the two prompts it gets) and who agreed to its length (D42, whose key
+ * pays for it). Both null-safe — an old row has neither.
+ */
+async function sourceFacts(env, sourceId) {
+  const row = await env.DB.prepare(
+    `SELECT duration_sec, long_ok_by FROM sources WHERE id = ?1`
+  )
     .bind(sourceId)
     .first();
-  return Number(row?.duration_sec || 0);
+  return {
+    duration_sec: Number(row?.duration_sec || 0),
+    long_ok_by: row?.long_ok_by || null
+  };
 }
 
 export function validateAnalysis(payload, durationSec = 0) {
@@ -959,6 +987,136 @@ async function storeFailure(request, env, sourceId) {
     .run();
 
   return json(env, { ok: true, applied: Boolean(result.meta.changes) });
+}
+
+// ---------------------------------------------------------------- very long videos (D42)
+
+/**
+ * "This one is long — here is what it will cost." The PC worker reports the length it read
+ * from the metadata and stops, having downloaded nothing.
+ *
+ * The video goes to 'needs_ok' and sits there. It is not failed, it carries no error, and
+ * it is outside the claim query, so nothing touches it again until somebody answers.
+ *
+ * A length past the ceiling is the one case that IS a failure, and it fails here rather
+ * than after three hours of work: no answer he could give would make a seven-hour video
+ * fit, so asking him would be asking a question with one answer.
+ */
+async function reportTooLong(request, env, sourceId) {
+  const body = await readJson(request);
+  const durationSec = Math.max(Number(body.duration_sec || 0), 0);
+  const timestamp = now();
+
+  if (tooLongForAnyone(durationSec)) {
+    const hours = Math.round(MAX_VIDEO_SEC / 3600);
+    await env.DB.prepare(
+      `UPDATE sources
+       SET state = 'failed',
+           error = ?1, error_detail = 'refused too_long', claimed_at = NULL,
+           duration_sec = COALESCE(?2, duration_sec), title = COALESCE(?3, title),
+           creator = COALESCE(?4, creator), creator_checked_at = ?5, updated_at = ?5
+       WHERE id = ?6`
+    )
+      .bind(
+        `This video is ${Math.round(durationSec / 60)} minutes long, past the ${hours}-hour limit.`,
+        durationSec || null,
+        body.title || null,
+        cleanCreator(body.creator),
+        timestamp,
+        sourceId
+      )
+      .run();
+    return json(env, { ok: true, refused: true });
+  }
+
+  // Only a source the worker actually holds may be moved. A worker whose lease expired can
+  // come back late, and without this it would drag a video somebody has since approved and
+  // transcribed back into "waiting to be asked about".
+  const result = await env.DB.prepare(
+    `UPDATE sources
+     SET state = 'needs_ok', error = NULL, error_detail = NULL, claimed_at = NULL,
+         attempts = 0,
+         duration_sec = COALESCE(?1, duration_sec), title = COALESCE(?2, title),
+         creator = COALESCE(?3, creator), creator_checked_at = ?4, updated_at = ?4
+     WHERE id = ?5 AND state = 'downloading'`
+  )
+    .bind(durationSec || null, body.title || null, cleanCreator(body.creator), timestamp, sourceId)
+    .run();
+
+  return json(env, { ok: true, applied: Boolean(result.meta.changes) });
+}
+
+/**
+ * "Yes, do it." The video goes back into the queue with a note that its length has been
+ * agreed to, so the worker downloads it next time round without asking again.
+ *
+ * `long_ok_by` is the person who pressed, and it is not bookkeeping. A long video can
+ * spend most of a free daily allowance, and D10 would otherwise have the first saver with
+ * a key pay for a video somebody else approved. Whoever says yes pays for that one.
+ *
+ * Attempts go back to zero: the claim that discovered the length used one up, and a video
+ * that has just been agreed to deserves a full set of tries.
+ */
+async function approveLongVideo(env, userId, clipId) {
+  const clip = await env.DB.prepare(
+    `SELECT c.source_id, s.state, s.duration_sec FROM clips c
+     JOIN sources s ON s.id = c.source_id
+     WHERE c.id = ?1 AND c.user_id = ?2 AND c.deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!clip) return fail(env, "No such clip.", 404);
+
+  if (clip.state !== "needs_ok" && clip.state !== "parked") {
+    return fail(env, "That video is not waiting to be approved.");
+  }
+  if (tooLongForAnyone(clip.duration_sec)) {
+    return fail(env, "That video is past the length this can handle at all.");
+  }
+
+  const timestamp = now();
+  await env.DB.prepare(
+    `UPDATE sources
+     SET state = 'pending', attempts = 0, error = NULL, error_detail = NULL,
+         claimed_at = NULL, long_ok_at = ?1, long_ok_by = ?2, updated_at = ?1
+     WHERE id = ?3 AND state IN ('needs_ok', 'parked')`
+  )
+    .bind(timestamp, userId, clip.source_id)
+    .run();
+
+  return json(env, { ok: true });
+}
+
+/**
+ * "Not now." The video is parked, and parked is not failed.
+ *
+ * It keeps no error, it is never retried, and it can be approved at any time afterwards —
+ * that is the whole difference, and it is the one he asked for by name. A refused video
+ * that came back as "could not be read" would be a video he had thrown away without
+ * meaning to.
+ */
+async function parkLongVideo(env, userId, clipId) {
+  const clip = await env.DB.prepare(
+    `SELECT c.source_id, s.state FROM clips c
+     JOIN sources s ON s.id = c.source_id
+     WHERE c.id = ?1 AND c.user_id = ?2 AND c.deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!clip) return fail(env, "No such clip.", 404);
+  if (clip.state !== "needs_ok") return fail(env, "That video is not waiting to be approved.");
+
+  const timestamp = now();
+  await env.DB.prepare(
+    `UPDATE sources
+     SET state = 'parked', error = NULL, error_detail = NULL, claimed_at = NULL,
+         updated_at = ?1
+     WHERE id = ?2 AND state = 'needs_ok'`
+  )
+    .bind(timestamp, clip.source_id)
+    .run();
+
+  return json(env, { ok: true });
 }
 
 // ---------------------------------------------------------------- who made it (D40)
@@ -1769,6 +1927,9 @@ export default {
         if (segments[3] === "creator" && request.method === "POST") {
           return await storeCreator(request, env, segments[2]);
         }
+        if (segments[3] === "too-long" && request.method === "POST") {
+          return await reportTooLong(request, env, segments[2]);
+        }
       }
 
       // --- user (app)
@@ -1820,6 +1981,12 @@ export default {
         }
         if (segments[3] === "item" && request.method === "PUT") {
           return await setItemStatus(request, env, userId, segments[2]);
+        }
+        if (segments[3] === "long-ok" && request.method === "POST") {
+          return await approveLongVideo(env, userId, segments[2]);
+        }
+        if (segments[3] === "long-park" && request.method === "POST") {
+          return await parkLongVideo(env, userId, segments[2]);
         }
       }
       if (segments[1] === "connector" && !segments[2] && request.method === "POST") {

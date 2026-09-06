@@ -32,10 +32,19 @@ SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "3"))
-# 3 hours. Long enough for the talks and interviews people actually save, and still a
-# real ceiling -- past this the machine is tied up for hours and everything else queues
-# behind it, so it is refused out loud rather than accepted and left to rot.
-MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "10800"))
+# 6 hours, and still a real ceiling rather than no ceiling (D42). Past this no answer he
+# could give would help: the machine would be tied up for most of a day and the words would
+# not fit in the column that holds them, so it is refused out loud rather than accepted and
+# left to rot.
+MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "21600"))
+# Past this, HE IS ASKED before anything is downloaded (D42). Nothing about the videos he
+# saves all the time -- 11 to 18 minutes -- comes near it, and that is the point: a warning
+# that always appears is a warning nobody reads.
+WARN_ABOVE_SEC = int(os.getenv("WARN_ABOVE_SEC", "1800"))
+# As much transcript as the notebook will hold for one video. Checked HERE, before the work
+# and not after it: a six-hour video whose words did not fit would otherwise be discovered
+# at the last step, having already had three hours of the machine.
+MAX_TRANSCRIPT_CHARS = int(os.getenv("MAX_TRANSCRIPT_CHARS", "400000"))
 # Past this, a video stops being a reel and starts being something you come back to. It
 # gets times written into the transcript so there is a way back into the video.
 LONG_VIDEO_SEC = int(os.getenv("LONG_VIDEO_SEC", "600"))
@@ -111,8 +120,28 @@ def assert_public_host(url):
             raise ValueError(f"{host} resolves to a private address; refusing to fetch it.")
 
 
+class NeedsPermission(Exception):
+    """This video is long enough that he has to be asked before anything is downloaded.
+
+    Carries what the app needs to write the warning: how long it is, what it is called and
+    who made it. Not a failure -- process() reports it as a question, and the video sits
+    waiting for an answer rather than being marked as broken (D42).
+    """
+
+    def __init__(self, duration, title, creator):
+        super().__init__(f"{duration // 60} minutes; waiting to be approved")
+        self.duration = duration
+        self.title = title
+        self.creator = creator
+
+
 def download_audio(source):
-    """Downloads audio only and returns (path, title, duration_sec)."""
+    """Downloads audio only and returns (path, title, duration_sec, creator).
+
+    Reads the metadata first and stops there when the video is long enough to need his
+    permission and has not been given it (D42). Nothing is fetched in that case: the whole
+    point is that a two-hour download does not start behind his back.
+    """
     if not UUID_PATTERN.match(source["id"]):
         raise ValueError("Source id is not a UUID; refusing to build a path from it.")
 
@@ -134,10 +163,17 @@ def download_audio(source):
     with YoutubeDL(options) as downloader:
         info = downloader.extract_info(source["url_original"], download=False)
         duration = int(info.get("duration") or 0)
+
+        # Past the ceiling nothing helps, so it is refused rather than asked about.
         if duration > MAX_DURATION_SEC:
             raise ValueError(
                 f"Video is {duration // 60} minutes long, over the {MAX_DURATION_SEC // 60} minute limit."
             )
+        # Long enough to be worth asking about, and nobody has said yes yet. Stop here --
+        # before the download, which is the only place stopping is worth anything.
+        if duration > WARN_ABOVE_SEC and not source.get("long_ok"):
+            raise NeedsPermission(duration, info.get("title"), creator_from(info))
+
         downloader.download([source["url_original"]])
 
     audio_path = target.with_suffix(".wav")
@@ -263,6 +299,13 @@ def transcribe(audio_path, duration_sec=0):
         text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text:
         raise ValueError("No speech found in this video.")
+    if len(text) > MAX_TRANSCRIPT_CHARS:
+        # Said plainly rather than silently cut. A transcript with its last hour missing
+        # would be worse than none: the summary would look complete and be wrong.
+        raise ValueError(
+            f"This video produced {len(text) // 1000}k characters of speech, more than the "
+            f"{MAX_TRANSCRIPT_CHARS // 1000}k a single video can hold."
+        )
     return text, info.language
 
 
@@ -312,6 +355,25 @@ def cleanup(source_id):
         leftover.unlink(missing_ok=True)
 
 
+def ask_about_length(source_id, waiting):
+    """Hands the length back so the app can ask him, and downloads nothing (D42)."""
+    try:
+        requests.post(
+            f"{API_BASE}/v1/sources/{source_id}/too-long",
+            json={
+                "duration_sec": waiting.duration,
+                "title": waiting.title,
+                "creator": waiting.creator,
+            },
+            headers=HEADERS,
+            timeout=30,
+        )
+    except requests.RequestException as error:
+        # Not reported, so the lease simply expires and it is asked again. Nothing is lost
+        # and nothing was downloaded.
+        print(f"  ! could not ask about {source_id}: {error}")
+
+
 def process(source):
     print(f"- {source['platform']}: {source['url_canonical']}")
     try:
@@ -319,6 +381,10 @@ def process(source):
         text, lang = transcribe(audio_path, duration)
         post_transcript(source["id"], text, lang, title, duration, creator)
         print(f"  transcribed {len(text)} chars ({lang})")
+    except NeedsPermission as waiting:
+        # A question, not a failure. It sits waiting for an answer and keeps no error.
+        print(f"  waiting for permission: {waiting}")
+        ask_about_length(source["id"], waiting)
     # Deliberately broad: a whisper RuntimeError or an OSError killing the loop would
     # strand every source in this batch, and the operator would see clips stuck on
     # "pending" with no error anywhere.

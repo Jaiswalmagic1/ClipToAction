@@ -65,7 +65,11 @@ CREATE TABLE IF NOT EXISTS sources (
   -- backfill finite: a video the platform will not name is asked once and then left alone.
   creator_checked_at INTEGER,
   duration_sec  INTEGER,
-  state         TEXT NOT NULL,             -- pending | downloading | transcribed | analyzed | failed
+  -- pending | downloading | transcribed | analyzed | failed
+  -- plus, since D42: needs_ok (long enough that somebody has to say yes first, and nothing
+  -- has been downloaded) and parked (somebody said not now -- not a failure, keeps no
+  -- error, is never retried, and can be approved at any time).
+  state         TEXT NOT NULL,
   error         TEXT,                      -- surfaced in the UI, never swallowed
   -- Why, in a form that cannot carry a key: the HTTP status and a name from a fixed list
   -- in src/analyze.js, or "unrecognised". `error` stays the sentence people read; this is
@@ -73,6 +77,11 @@ CREATE TABLE IF NOT EXISTS sources (
   error_detail  TEXT,
   attempts      INTEGER NOT NULL DEFAULT 0,
   claimed_at    INTEGER,                   -- lease: a claim older than the timeout is retryable
+  -- D42. When somebody said yes to this video's length, and who. WHO is not bookkeeping:
+  -- a long video can spend most of a free daily allowance, and D10 would otherwise make
+  -- the first saver with a key pay for a video somebody else approved. The approver pays.
+  long_ok_at    INTEGER,
+  long_ok_by    TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

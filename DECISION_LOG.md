@@ -1431,3 +1431,81 @@ A test pins that a finished video stays finished.
 
 **In the app it is a word, never a link.** The name came out of somebody else's video, so
 one press searches this notebook. Nothing here sends a person to a stranger's page.
+
+---
+
+### D42 — A very long video is not started until he has been told what it costs
+**Date:** 2026-09-07
+**Decided by:** Jaiswal, and he called it a requirement rather than a nicety: "a very long
+video must WARN and take INFORMED PERMISSION before it is processed". Also: "make it
+possible to process longer videos as well."
+**Amends:** D33, which set a three-hour ceiling and accepted anything under it silently.
+
+**The problem with D33 as it stood.** Everything under the ceiling was accepted without a
+word. A two-hour video therefore looked exactly like a reel at the moment of saving, and
+the first he would know about it is that nothing else moved for an hour. His PC does one
+video at a time, so a long one is not just slow — it is a queue for everything else.
+
+**Where the question can be asked, and why it could not be asked earlier.** The length is
+not in the link. It is only known once the metadata is read, and that read happens on his
+PC and is free — no download, no audio. So the worker reads it, **stops there**, and hands
+the length back. Nothing has been fetched at that point, which is the only point at which
+stopping is worth anything.
+
+**The four things the warning says**, all of them his list:
+
+| | |
+|---|---|
+| How long it runs | From the metadata, in plain words: "an hour and 9 minutes" |
+| How long his PC is busy | About 60% of the video's length, and that **everything he shares meanwhile waits behind it** |
+| What it costs in AI | As a multiple of a normal reel — a 90-minute video is around 90 times — and that this can be a whole day of one key's free allowance |
+| Whether the words will fit | Only when the estimate passes 70% of what one video may hold, said before the work rather than discovered after it |
+
+The PC figure comes from the one real measurement there is: a 29-second reel took 16
+seconds on `small` (D28). Most of that on a clip that short is start-up, so a long video is
+very likely quicker per minute — and the estimate is deliberately not corrected for that. A
+warning that says twenty minutes and finishes in twelve is a good warning; one that says
+twenty and takes an hour is not.
+
+**Thirty minutes is the threshold, and the number that matters is the one it stays above.**
+The long videos he saves all the time are 11 to 18 minutes. Being asked about those would
+turn the warning into furniture, and the first thing anybody does with a dialog that always
+appears is stop reading it. Under thirty minutes nothing changes at all: an 18-minute video
+is downloaded exactly as it is today and still gets the long prompt and its chapters.
+
+**This is a different number from D33's, and they must not be merged.** D33's ten minutes
+decides which PROMPT a video gets. This decides whether to ask. A 15-minute video gets
+chapters and is not asked about, and a test pins both halves of that.
+
+**A refusal parks it, and parked is not failed.** `sources.state` gains two values:
+`needs_ok` (long enough to ask about, nobody asked yet, nothing downloaded) and `parked`
+(somebody said not now). A parked video carries **no error**, is never retried, is outside
+the claim query, and can be approved at any time afterwards. He asked for this by name, and
+it is the difference between putting something off and throwing it away.
+
+**Whoever says yes is whoever pays.** `sources.long_ok_by` records who approved it, and the
+analysis runs on that person's key. Without this, D10's cost model — the first saver with a
+key pays — would spend a day of somebody's free allowance on an hour-long video a different
+person approved. D10 is unchanged for everything else.
+
+**Six hours, and the transcript ceiling had to move with it.** `MAX_DURATION_SEC` goes from
+three hours to six. That is not a free change: `LIMITS.transcript` was 200,000 characters,
+about four and a half hours of speech, so a six-hour video would have been refused **at the
+last step, after the machine had spent three hours on it.** It is now 400,000, and six
+hours of speech is about 330,000 — so the longest allowed video fits, with room for a fast
+talker. The guard belongs before the work, not after it.
+
+**Not removed, still a ceiling.** Past six hours it is refused outright rather than asked
+about, because there is no answer he could give that would make it fit. The refusal carries
+a plain sentence and the reason code `refused too_long`.
+
+**One number, three places.** The threshold, the ceiling and the transcript limit live in
+`backend/src/longvideo.js`; the app and `worker-pc/worker.py` carry copies, and tests read
+all three files and compare them. A warning built from different arithmetic to the code
+that enforces it would quietly tell him the wrong thing.
+
+**His three stuck videos.** 72, 69 and 113 minutes, all failed against the old 30-minute
+`.env` limit with `attempts=3`, so they would never be picked up again. Requeued by setting
+`state='pending', attempts=0, error=NULL`. Under this decision they come back as three
+questions with their real lengths on them rather than starting three long downloads at
+once — which is exactly the behaviour he asked for.

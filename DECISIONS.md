@@ -61,6 +61,7 @@ The reel is a seed, not the destination.
 | D39 | Backfilling | A new table counts the reels read before it existed, says the number, and waits to be pressed. `analyses.shapes_version` is what makes that queue shrink to zero instead of asking for ever. |
 | D40 | Creators | Who made each video is stored on the shared row, arrives free with the download's metadata pass, and is searchable. The ones already saved are filled in two at a time when the PC has no real work, metadata only — being rate-limited would cost transcription, not just this. |
 | D41 | The look back | Every fortnight by default, changeable to weekly, monthly or never. It is an offer with a number on it and a button — one call over the reels that have been sitting unlooked-at, and no timer anywhere. Nothing is marked until the round-up is stored. |
+| D42 | Very long videos | Past 30 minutes nothing downloads until he has been told the length, the time his PC is tied up, that everything queues behind it and that it can spend a day of a key - then said yes. A refusal parks it, and parked is never failed. The ceiling goes from 3 hours to 6, and the transcript limit moves with it so the refusal cannot come after the work. Whoever approves pays. |
 
 ---
 

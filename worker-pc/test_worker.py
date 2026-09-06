@@ -111,10 +111,11 @@ class LongVideoSettings(unittest.TestCase):
         )
 
     def test_the_ceiling_is_still_a_ceiling(self):
-        """Removing it entirely is not the fix. A machine tied up for six hours strands
-        every reel behind it, and the refusal is what makes that visible."""
+        """Removing it entirely is not the fix. A machine tied up all day strands every
+        reel behind it, and the refusal is what makes that visible. Raised from 3 hours to
+        6 by D42, together with a warning he has to answer before anything downloads."""
         limit = int(default_of("MAX_DURATION_SEC"))
-        self.assertLessEqual(limit, 4 * 3600, "there must still be a real limit (D33)")
+        self.assertLessEqual(limit, 6 * 3600, "there must still be a real limit (D33, D42)")
 
     def test_only_a_long_video_gets_times_written_into_it(self):
         """A reel's transcript must come back exactly as it always has -- one block of
@@ -253,6 +254,60 @@ class CreatorFromMetadata(unittest.TestCase):
 
     def test_an_absurd_name_is_cut_rather_than_stored_whole(self):
         self.assertEqual(len(self.creator_from({"uploader": "x" * 5000})), 200)
+
+
+class AskingBeforeAVeryLongVideo(unittest.TestCase):
+    """Nothing is downloaded until he has said yes (D42)."""
+
+    def setUp(self):
+        self.source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
+
+    def test_the_warning_sits_clear_of_the_videos_he_saves_all_the_time(self):
+        """His long videos are 11 to 18 minutes. A warning that always appears is one
+        nobody reads, which would be worse than having none."""
+        warn = int(default_of("WARN_ABOVE_SEC"))
+        self.assertGreater(warn, 20 * 60, "18-minute videos must never be asked about (D42)")
+        self.assertLessEqual(warn, 60 * 60, "an hour-long video must be asked about")
+
+    def test_the_check_happens_before_the_download_and_not_after(self):
+        """Stopping after the download has already run is not stopping."""
+        body = self.source[self.source.index("def download_audio"):]
+        body = body[: body.index("def creator_from")]
+        self.assertLess(
+            body.index("raise NeedsPermission"),
+            body.index("downloader.download("),
+            "the question must come before the download, or it saves nothing (D42)",
+        )
+
+    def test_permission_already_given_is_honoured_without_asking_again(self):
+        self.assertIn(
+            'not source.get("long_ok")',
+            self.source,
+            "an approved video must not be asked about a second time",
+        )
+
+    def test_waiting_for_an_answer_is_not_reported_as_a_failure(self):
+        """`parked` and `needs_ok` must never reach report_failure -- a video he has not
+        answered about yet is not a video that could not be read."""
+        process = self.source[self.source.index("def process(source)"):]
+        process = process[: process.index("def main()")]
+        self.assertLess(
+            process.index("except NeedsPermission"),
+            process.index("except Exception as error"),
+            "the question must be caught before the catch-all, or it becomes a failure",
+        )
+        asked = process[process.index("except NeedsPermission"): process.index("except Exception")]
+        self.assertIn("ask_about_length", asked)
+        self.assertNotIn("report_failure", asked)
+
+    def test_a_transcript_too_big_to_store_is_refused_out_loud(self):
+        """Silently cutting the last hour off would be worse than refusing it: the summary
+        would look complete and be wrong."""
+        self.assertIn("MAX_TRANSCRIPT_CHARS", self.source)
+        transcribe = self.source[self.source.index("def transcribe("):]
+        transcribe = transcribe[: transcribe.index("def post_transcript")]
+        self.assertIn("len(text) > MAX_TRANSCRIPT_CHARS", transcribe)
+        self.assertNotIn("text[:MAX_TRANSCRIPT_CHARS]", transcribe)
 
 
 if __name__ == "__main__":

@@ -857,7 +857,131 @@ function progressOf(clip) {
     case "transcribed": return { text: "Written down — no summary yet", kind: "wait" };
     case "analyzed": return { text: "Ready", kind: "good" };
     case "failed": return { text: "Could not be read", kind: "bad" };
+    // D42. Neither of these is a failure and neither may look like one. Nothing has been
+    // downloaded; the video is waiting on an answer and will wait as long as it takes.
+    case "needs_ok": return { text: "Long — needs your go-ahead", kind: "wait" };
+    case "parked": return { text: "Parked — start it whenever you want", kind: "wait" };
     default: return { text: source.state, kind: "wait" };
+  }
+}
+
+// ---------------------------------------------------------------- very long videos (D42)
+//
+// Past half an hour, nothing is downloaded until he has been told what it costs and has
+// said yes. Not a generic "are you sure" — the length, the time his PC is tied up, that
+// everything else waits behind it, and that it can spend a whole day of an AI key.
+//
+// These four numbers must match backend/src/longvideo.js. A test compares the two files,
+// because a warning built from different arithmetic to the code that enforces it would
+// quietly tell him the wrong thing.
+const WARN_ABOVE_SEC = 1800;
+const MAX_VIDEO_SEC = 21600;
+const CHARS_PER_SEC = 15;
+const MAX_TRANSCRIPT_CHARS = 400000;
+const PC_TIME_FACTOR = 0.6;
+const REEL_SEC = 45;
+const NEAR_CEILING_FRACTION = 0.7;
+
+/** How long something takes, said the way a person says it. */
+function spellOutMinutes(minutes) {
+  const whole = Math.max(Math.round(minutes), 1);
+  if (whole < 60) return `${whole} minutes`;
+  const hours = Math.floor(whole / 60);
+  const rest = whole % 60;
+  const hourPart = hours === 1 ? "an hour" : `${hours} hours`;
+  return rest ? `${hourPart} and ${rest} minutes` : hourPart;
+}
+
+/** The figures the warning is written from, all estimated from the length alone. */
+function whatItCosts(durationSec) {
+  const seconds = Math.max(Number(durationSec || 0), 0);
+  const characters = Math.round(seconds * CHARS_PER_SEC);
+  return {
+    minutes: Math.round(seconds / 60),
+    pcMinutes: Math.max(Math.round((seconds * PC_TIME_FACTOR) / 60), 1),
+    timesAReel: Math.max(Math.round(seconds / REEL_SEC), 1),
+    nearCeiling: characters > MAX_TRANSCRIPT_CHARS * NEAR_CEILING_FRACTION
+  };
+}
+
+/**
+ * The whole warning, in plain words, with a yes and a no.
+ *
+ * Every line here is one of the things he asked to be told before anything starts. It is
+ * deliberately long: this is the one screen in the app where reading it is the point.
+ */
+function longVideoNotice(clip) {
+  const source = sourceOf(clip);
+  if (!source || (source.state !== "needs_ok" && source.state !== "parked")) return null;
+
+  const cost = whatItCosts(source.duration_sec);
+  const parked = source.state === "parked";
+
+  const box = document.createElement("div");
+  box.className = "notice warn";
+
+  const heading = document.createElement("strong");
+  heading.textContent = parked
+    ? "You parked this one. It is still here."
+    : `This one is long — ${spellOutMinutes(cost.minutes)}. Shall I do it?`;
+  box.append(heading);
+
+  const list = document.createElement("ul");
+  list.className = "plain";
+  const lines = [
+    `It runs for ${spellOutMinutes(cost.minutes)}.`,
+    `Your PC will be busy with it for roughly ${spellOutMinutes(cost.pcMinutes)}, and `
+      + "anything else you share while it works waits behind it — it does one video at a time.",
+    `Reading it uses about ${cost.timesAReel} times as much of your AI account as a normal `
+      + "reel does, so it can spend a whole day of one key's free allowance."
+  ];
+  if (cost.nearCeiling) {
+    lines.push("Its words will come close to as much as the notebook holds for one video, "
+      + "so if it runs longer than expected it may be refused at the end.");
+  }
+  lines.push("Nothing has been downloaded yet. Nothing happens until you press.");
+  for (const line of lines) {
+    const item = document.createElement("li");
+    item.textContent = line;
+    list.append(item);
+  }
+  box.append(list);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.marginTop = "10px";
+
+  const yes = document.createElement("button");
+  yes.textContent = parked ? "Go ahead now" : "Yes, do it";
+  yes.onclick = (event) => { event.stopPropagation(); answerLongVideo(clip, "long-ok", yes); };
+  row.append(yes);
+
+  if (!parked) {
+    const no = document.createElement("button");
+    no.className = "secondary";
+    no.textContent = "Not now";
+    no.onclick = (event) => { event.stopPropagation(); answerLongVideo(clip, "long-park", no); };
+    row.append(no);
+  }
+
+  box.append(row);
+  return box;
+}
+
+async function answerLongVideo(clip, action, button) {
+  button.disabled = true;
+  try {
+    await api(`/v1/clips/${clip.id}/${action}`, { method: "POST" });
+    await sync();
+    render();
+    say($("clipMsg") ? "clipMsg" : "syncMsg",
+      action === "long-ok"
+        ? "Started. It will take a while — you can close this and come back."
+        : "Parked. It is not lost — open it any time and press go ahead.",
+      "ok");
+  } catch (error) {
+    say($("clipMsg") ? "clipMsg" : "syncMsg", error.message);
+    button.disabled = false;
   }
 }
 
@@ -1210,6 +1334,22 @@ function renderList() {
 
   const lookBack = relookBanner();
   if (lookBack) $("clipList").append(lookBack);
+
+  // Videos waiting on an answer about their length (D42). At the top, because a question
+  // sitting two hundred cards down is a question nobody answers — and because nothing is
+  // downloading while it waits.
+  for (const clip of store.clips) {
+    if (clip.deleted_at) continue;
+    if (sourceOf(clip)?.state !== "needs_ok") continue;
+    const ask = longVideoNotice(clip);
+    if (!ask) continue;
+    const title = document.createElement("div");
+    title.textContent = titleOf(clip);
+    title.style.fontWeight = "700";
+    title.style.marginBottom = "6px";
+    ask.prepend(title);
+    $("clipList").append(ask);
+  }
 
   // The last round-up, folded away. It is a page of reading and it must not sit on top of
   // the notebook every visit — but it must also not be somewhere you have to remember.
@@ -2326,6 +2466,11 @@ function renderClip(clipId) {
   saved.className = "muted";
   saved.textContent = exactWhen(clip.created_at);
   panel.append(saved);
+
+  // The question, before anything else on the page — it is the only thing on it that
+  // needs an answer (D42).
+  const lengthAsk = longVideoNotice(clip);
+  if (lengthAsk) panel.append(lengthAsk);
 
   // The reason code, in small print, only when something actually went wrong (D34). It
   // means nothing to read and it is not meant to — it is the thing to quote when asking
