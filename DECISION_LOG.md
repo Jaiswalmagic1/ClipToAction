@@ -1142,7 +1142,7 @@ clears it.
 
 | Where | What |
 |---|---|
-| `backend/migrations/0007_many_ai_keys.sql` | The `ai_keys` table, and every existing key carried across as first in its owner's list |
+| `backend/migrations/0008_many_ai_keys.sql` | The `ai_keys` table, and every existing key carried across as first in its owner's list |
 | `backend/src/keys.js` | Which keys may be spent and in what order, and the recording of what each was refused for |
 | `backend/src/analyze.js` | `categoryOf`, and `spendKeys` — the rotation rule, written once so the automatic run and the topic button cannot drift apart |
 | `backend/src/worker.js` | `/v1/keys` add, list, change, remove; `has_key` now means "holds at least one"; sync carries the list |

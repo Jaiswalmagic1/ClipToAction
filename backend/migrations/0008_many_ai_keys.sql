@@ -7,7 +7,7 @@
 --
 -- Run once per database that already has data:
 --   wrangler d1 execute cliptoaction-staging --remote --env staging \
---     --file=./migrations/0007_many_ai_keys.sql
+--     --file=./migrations/0008_many_ai_keys.sql
 
 -- Per-user, so it carries updated_at like every other per-user table (D6). The key itself
 -- is the same AES-GCM ciphertext users.ai_key_cipher held, encrypted with the same secret
