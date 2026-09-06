@@ -602,6 +602,9 @@ describe("filling in the trackers from what was already saved", () => {
         body: { text: "3 items to sell", lang: "en", engine: "test", duration_sec: 45 }
       });
     }
+    // What an analysis stored before any of this existed actually looks like: no kind, no
+    // rows, and no record of which row shapes it was asked for (D39).
+    harness.database.prepare("UPDATE analyses SET shapes_version = NULL WHERE user_id = ''").run();
   });
 
   after(() => {
@@ -631,6 +634,26 @@ describe("filling in the trackers from what was already saved", () => {
     }
   });
 
+  // D39, added after review. A reel that already carries rows is never re-read, whatever
+  // version it was written against — re-reading REPLACES those rows, and `item_status` is
+  // keyed on a row's flattened name, so a re-run that renames one leaves his "ordered" and
+  // "using it" pointing at nothing, with no error and no way back. A speculative new table
+  // is not worth a decision he actually made.
+  test("a reel that already has rows is left alone, so his decisions cannot be orphaned", async () => {
+    harness.database
+      .prepare("UPDATE analyses SET shapes_version = NULL WHERE user_id = ''")
+      .run();
+
+    const before = harness.providerCalls.length;
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: amy });
+    assert.equal(response.body.done, 0);
+    assert.equal(response.body.remaining, 0);
+    assert.equal(harness.providerCalls.length, before, "nothing may be spent re-reading it");
+
+    const row = analysisFor("OLDONE");
+    assert.equal(JSON.parse(row.items)[0].name, "6-piece hook set", "the rows are untouched");
+  });
+
   test("pressing again finds nothing to do and costs nothing", async () => {
     const before = harness.providerCalls.length;
     const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: amy });
@@ -648,7 +671,7 @@ describe("filling in the trackers from what was already saved", () => {
       body: { url: "https://www.instagram.com/reel/OLDONE/" }
     });
     harness.database
-      .prepare("UPDATE analyses SET kind = NULL, items = NULL WHERE user_id = ''")
+      .prepare("UPDATE analyses SET kind = NULL, items = NULL, shapes_version = NULL WHERE user_id = ''")
       .run();
 
     const response = await harness.call(worker, "/v1/kinds", { method: "POST", token: ben });
@@ -657,6 +680,9 @@ describe("filling in the trackers from what was already saved", () => {
   });
 
   test("a failure stops the run and keeps what was already done", async () => {
+    harness.database
+      .prepare("UPDATE analyses SET kind = NULL, items = NULL, shapes_version = NULL WHERE user_id = ''")
+      .run();
     harness.answerProviderWith(
       () => new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429 })
     );

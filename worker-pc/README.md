@@ -52,8 +52,11 @@ the text beside it is English.
 python -m unittest discover -p "test_*.py" -v
 ```
 
-Three tests guard exactly that. They read the source rather than importing it, so they need
-no model and no `.env`, and they run in CI on every push.
+Those tests read the source rather than importing it, so they need no model and no `.env`,
+and they run in CI on every push. They also guard the two things added since: that a very
+long video is asked about **before** anything is downloaded (D42), and that the creator
+backfill is paced and backs off rather than hammering a platform that is throttling it
+(D40).
 
 ## Letting it run itself
 
@@ -87,14 +90,30 @@ looking, and it stays out of the way while everything is working.
 
 | Situation | What happens |
 |---|---|
-| Video longer than `MAX_DURATION_SEC` (default 3 hours) | Skipped with a visible error, not silently dropped |
+| Video longer than `WARN_ABOVE_SEC` (default 30 min) | **Nothing is downloaded.** The length is read from the metadata, reported back, and the app asks first — how long it runs, how long this machine will be busy, that everything else queues behind it, and that it can spend a day of an AI key. A refusal parks it, and parked is never failed (D42) |
 | Video longer than `LONG_VIDEO_SEC` (default 10 min) | Times are written into the transcript every half minute, and the AI is asked for chapters rather than a 3-sentence summary (D33) |
+| Video longer than `MAX_DURATION_SEC` (default 6 hours) | Refused. The **API** makes this call from the reported length; this machine's own setting is only a guard for something already approved |
+| Transcript longer than `MAX_TRANSCRIPT_CHARS` | Refused out loud rather than silently cut — a summary of a transcript missing its last hour would look complete and be wrong |
 | A long video is in the queue | It holds the machine for its whole length. Reels shared meanwhile wait behind it — the queue is one at a time |
 | Download or transcription fails | Error is posted back and shown in the app; retried up to 3 times, then marked `failed` |
 | No speech in the video | Recorded as an error rather than saving an empty transcript |
 | PC is off | Nothing is lost — sources stay `pending` and are picked up on the next run, oldest first |
-| Worker dies mid-reel | That reel is handed back out after 15 minutes rather than being stuck |
+| Worker dies mid-reel | That reel is handed back out after 15 minutes rather than being stuck — or after 8 hours for a video long enough that 15 minutes would steal it mid-job |
 | Worker stops altogether | Every queue call is a heartbeat, so the app notices the silence and says so |
+| Nothing to do | It fills in who made the videos saved before that was recorded (D40) — metadata only, two at a time, `CREATOR_PAUSE_SEC` apart, and it goes quiet for `CREATOR_BACKOFF_SEC` after any failed lookup |
+
+## Settings, and the trap in them
+
+**`.env` overrides every default in `worker.py`, and `.env` is gitignored.** Changing a
+default in the code does nothing on a machine that already has a `.env` — this has cost the
+project two separate sessions. When a setting changes, it has to be changed in `.env` **and
+the worker restarted**, or it has not happened.
+
+`.env.example` lists every setting with what it is for. Copy the ones you need; anything
+absent falls back to the code's default, which is the safest place to leave most of them.
+
+The two that actually matter on a new machine are still only `API_BASE` and
+`SERVICE_TOKEN`.
 
 ## Moving off the PC later
 

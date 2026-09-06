@@ -197,12 +197,14 @@ class CreatorBackfill(unittest.TestCase):
             "the backfill is called from exactly one place, and that place is the idle arm",
         )
 
-    def test_there_is_a_pause_between_each_one(self):
+    def test_there_is_a_pause_between_each_one_but_not_after_the_last(self):
         self.assertIn(
             "time.sleep(CREATOR_PAUSE_SEC)",
             self.source,
             "without a pause this asks a platform two hundred questions in two minutes",
         )
+        # A pause after the final one costs an idle poll twenty seconds for nothing.
+        self.assertIn("if index < len(pending) - 1:", self.source)
         self.assertGreaterEqual(int(default_of("CREATOR_PAUSE_SEC")), 10)
         self.assertLessEqual(int(default_of("CREATOR_BATCH")), 5)
 
@@ -220,18 +222,39 @@ class CreatorBackfill(unittest.TestCase):
         backfill = backfill[: backfill.index("def clock(")]
         self.assertIn("assert_public_host(source[", backfill)
 
-    def test_every_attempt_is_reported_even_when_nobody_is_named(self):
-        """Otherwise a video the platform will not name is asked about on every poll."""
+    def test_a_lookup_that_answered_settles_the_question(self):
+        """A platform that answered "nobody" IS an answer -- that video must leave the
+        queue, or it is asked about on every idle poll for ever."""
         backfill = self.source[self.source.index("def fill_in_creators"):]
         backfill = backfill[: backfill.index("def clock(")]
-        self.assertIn('json={"creator": name}', backfill)
-        # The post is outside the try that catches the lookup failing, so a video with no
-        # creator is still reported.
-        self.assertLess(
-            backfill.index("except Exception as error"),
-            backfill.index("requests.post"),
-            "the report must happen after the failure is swallowed, not inside the try",
-        )
+        self.assertIn("report_creator(source[\"id\"], name, asked=True)", backfill)
+
+    def test_a_lookup_that_failed_settles_nothing(self):
+        """This is the one that matters. Reporting a FAILED lookup as though the platform
+        had answered is how a single rate-limit walks the whole backfill queue, marking two
+        hundred videos "asked, nobody named" without anything ever having been asked -- and
+        the creator column then stays empty for ever with nothing on screen saying why."""
+        backfill = self.source[self.source.index("def fill_in_creators"):]
+        backfill = backfill[: backfill.index("def clock(")]
+        failure = backfill[backfill.index("except Exception as error"):]
+        self.assertIn("asked=False", failure)
+
+    def test_one_failure_stops_the_pass_and_quietens_the_backfill(self):
+        """Being throttled is the likeliest cause of a failure, and the worst possible
+        answer to being throttled is to keep asking."""
+        backfill = self.source[self.source.index("def fill_in_creators"):]
+        backfill = backfill[: backfill.index("def clock(")]
+        failure = backfill[backfill.index("except Exception as error"):]
+        self.assertIn("_creator_quiet_until = time.monotonic() + CREATOR_BACKOFF_SEC", failure)
+        self.assertIn("return", failure)
+        self.assertIn("if time.monotonic() < _creator_quiet_until:", backfill)
+        self.assertGreaterEqual(int(default_of("CREATOR_BACKOFF_SEC")), 600)
+
+    def test_a_rejected_report_is_not_mistaken_for_an_accepted_one(self):
+        """requests does not raise on a 4xx or a 5xx."""
+        reporter = self.source[self.source.index("def report_creator"):]
+        reporter = reporter[: reporter.index("def fill_in_creators")]
+        self.assertIn("response.raise_for_status()", reporter)
 
 
 class CreatorFromMetadata(unittest.TestCase):
@@ -262,6 +285,15 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
     def setUp(self):
         self.source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
 
+    def test_a_rejected_question_is_not_mistaken_for_an_asked_one(self):
+        """requests does not raise on a 4xx or a 5xx. Without this, a rejected report reads
+        as an accepted one: the video stays claimed, is re-claimed until its attempts run
+        out, and is retired as "gave up after 3 attempts" -- a video he was supposed to be
+        ASKED about, thrown away instead, with no visible cause."""
+        asker = self.source[self.source.index("def ask_about_length"):]
+        asker = asker[: asker.index("def process(source)")]
+        self.assertIn("response.raise_for_status()", asker)
+
     def test_the_warning_sits_clear_of_the_videos_he_saves_all_the_time(self):
         """His long videos are 11 to 18 minutes. A warning that always appears is one
         nobody reads, which would be worse than having none."""
@@ -277,6 +309,19 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
             body.index("raise NeedsPermission"),
             body.index("downloader.download("),
             "the question must come before the download, or it saves nothing (D42)",
+        )
+
+    def test_the_api_decides_what_is_too_long_not_this_machine(self):
+        """MAX_DURATION_SEC lives in a gitignored .env that overrides the code. If the
+        ceiling were checked first, a stale value there would silently hard-fail videos the
+        app had just promised to ASK him about -- which is exactly how the three long
+        videos ended up failed in the first place."""
+        body = self.source[self.source.index("def download_audio"):]
+        body = body[: body.index("def creator_from")]
+        self.assertLess(
+            body.index("raise NeedsPermission"),
+            body.index("over this machine's"),
+            "the permission check must come before this machine's own ceiling (D42)",
         )
 
     def test_permission_already_given_is_honoured_without_asking_again(self):

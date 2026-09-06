@@ -1,7 +1,6 @@
 {
   "name": "ClipToAction",
   "short_name": "ClipToAction",
-  "id": "./index.html",
   "description": "Capture video ideas and convert them into action.",
   "start_url": "./index.html",
   "scope": "./",

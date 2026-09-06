@@ -56,6 +56,11 @@ MARK_EVERY_SEC = 30
 # when there is no real work.
 CREATOR_BATCH = int(os.getenv("CREATOR_BATCH", "2"))
 CREATOR_PAUSE_SEC = int(os.getenv("CREATOR_PAUSE_SEC", "20"))
+# How long to leave the whole backfill alone after a lookup fails. A failure usually means
+# the platform is throttling this machine, and the worst possible response to being
+# throttled is to keep asking -- so it stops for half an hour rather than working down the
+# queue burning attempts on questions that are not being answered.
+CREATOR_BACKOFF_SEC = int(os.getenv("CREATOR_BACKOFF_SEC", "1800"))
 MEDIA_DIR = Path(__file__).parent / "media"
 
 if not API_BASE or not SERVICE_TOKEN:
@@ -164,15 +169,24 @@ def download_audio(source):
         info = downloader.extract_info(source["url_original"], download=False)
         duration = int(info.get("duration") or 0)
 
-        # Past the ceiling nothing helps, so it is refused rather than asked about.
-        if duration > MAX_DURATION_SEC:
-            raise ValueError(
-                f"Video is {duration // 60} minutes long, over the {MAX_DURATION_SEC // 60} minute limit."
-            )
         # Long enough to be worth asking about, and nobody has said yes yet. Stop here --
         # before the download, which is the only place stopping is worth anything.
+        #
+        # This is checked BEFORE the ceiling on purpose. The API decides what is too long
+        # -- it holds MAX_VIDEO_SEC and refuses outright -- and it hears the real duration
+        # from this report. The ceiling below is only a guard for a video somebody has
+        # already approved, so a stale value in this machine's gitignored .env can no
+        # longer quietly refuse videos the app has just told him it would ask about.
         if duration > WARN_ABOVE_SEC and not source.get("long_ok"):
             raise NeedsPermission(duration, info.get("title"), creator_from(info))
+
+        # Approved, and still past what this machine will take on. Names the setting, so a
+        # mismatch between here and the API is diagnosable rather than mysterious.
+        if duration > MAX_DURATION_SEC:
+            raise ValueError(
+                f"Video is {duration // 60} minutes long, over this machine's "
+                f"MAX_DURATION_SEC of {MAX_DURATION_SEC // 60} minutes."
+            )
 
         downloader.download([source["url_original"]])
 
@@ -198,17 +212,49 @@ def creator_from(info):
     return None
 
 
+# When the backfill may next run. A failed lookup pushes this into the future.
+_creator_quiet_until = 0.0
+
+
+def report_creator(source_id, name, asked):
+    """Sends one answer back. `asked` is whether the platform actually answered.
+
+    That distinction is the whole safety of this feature. A lookup that succeeded and
+    named nobody SETTLES the question and the video leaves the queue. A lookup that failed
+    settles nothing -- reporting it as though it had is how one rate-limit marks two
+    hundred videos "asked, nobody named" without anything ever having been asked.
+    """
+    try:
+        response = requests.post(
+            f"{API_BASE}/v1/sources/{source_id}/creator",
+            json={"creator": name, "asked": asked},
+            headers=HEADERS,
+            timeout=30,
+        )
+        # requests does not raise on a 4xx or a 5xx, so without this a rejected report
+        # looks exactly like an accepted one.
+        response.raise_for_status()
+    except requests.RequestException as error:
+        # Nothing was recorded, so it comes round again. Nothing is lost.
+        print(f"  ! could not report the creator for {source_id}: {error}")
+
+
 def fill_in_creators():
     """Fills in who made the videos saved before this was recorded (D40).
 
     Metadata only -- `download=False` -- so nothing is fetched twice and no audio is
-    touched. Called only when there was no real work in this poll, one at a time with a
-    pause between, because being rate-limited here would cost transcription too.
+    touched. Called only when there was no real work in this poll, a couple at a time with
+    a pause between, because being rate-limited here would cost transcription too.
 
-    Every attempt is reported whether it found a name or not. That is what makes the queue
-    shrink: a video whose platform will not say who made it must leave it, or it comes back
-    on every poll for ever.
+    And when a lookup DOES fail, this stops: one failure ends the pass and quietens the
+    whole backfill for half an hour. A failure almost always means the platform is
+    throttling this machine, and working down the queue while that is true would burn a
+    hundred videos' attempts on questions nobody is answering.
     """
+    global _creator_quiet_until
+    if time.monotonic() < _creator_quiet_until:
+        return
+
     try:
         response = requests.get(
             f"{API_BASE}/v1/creators",
@@ -227,30 +273,27 @@ def fill_in_creators():
         return
     print(f"- filling in who made {len(pending)} of {payload.get('remaining', '?')} videos")
 
-    for source in pending:
-        name = None
+    for index, source in enumerate(pending):
         try:
             assert_public_host(source["url_original"])
             with YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as reader:
                 name = creator_from(reader.extract_info(source["url_original"], download=False))
         # Deliberately broad, and deliberately not reported as a failure of the video:
-        # this runs over reels that are already finished and analysed. The worst case is
-        # that nobody is named, which the app already shows correctly.
+        # this runs over reels that are already finished and analysed.
         except Exception as error:  # noqa: BLE001
-            print(f"  . no creator for {source['id']}: {type(error).__name__}")
-
-        try:
-            requests.post(
-                f"{API_BASE}/v1/sources/{source['id']}/creator",
-                json={"creator": name},
-                headers=HEADERS,
-                timeout=30,
+            print(
+                f"  . could not look up {source['id']}: {type(error).__name__}"
+                " -- pausing the backfill"
             )
-        except requests.RequestException as error:
-            # Not marked, so it is asked again next time round. Nothing is lost.
-            print(f"  ! could not report the creator for {source['id']}: {error}")
+            report_creator(source["id"], None, asked=False)
+            _creator_quiet_until = time.monotonic() + CREATOR_BACKOFF_SEC
+            return
 
-        time.sleep(CREATOR_PAUSE_SEC)
+        report_creator(source["id"], name, asked=True)
+        # Not after the last one: an idle poll would otherwise cost an extra pause for
+        # nothing, every time.
+        if index < len(pending) - 1:
+            time.sleep(CREATOR_PAUSE_SEC)
 
 
 def clock(seconds):
@@ -358,7 +401,7 @@ def cleanup(source_id):
 def ask_about_length(source_id, waiting):
     """Hands the length back so the app can ask him, and downloads nothing (D42)."""
     try:
-        requests.post(
+        response = requests.post(
             f"{API_BASE}/v1/sources/{source_id}/too-long",
             json={
                 "duration_sec": waiting.duration,
@@ -368,10 +411,15 @@ def ask_about_length(source_id, waiting):
             headers=HEADERS,
             timeout=30,
         )
+        # requests does not raise on a 4xx or a 5xx. Without this a REJECTED report reads
+        # as an accepted one: the video would stay in 'downloading', be re-claimed until
+        # its attempts ran out, and be retired as "gave up after 3 attempts" -- a video he
+        # was supposed to be ASKED about, thrown away instead, with no visible cause.
+        response.raise_for_status()
     except requests.RequestException as error:
-        # Not reported, so the lease simply expires and it is asked again. Nothing is lost
-        # and nothing was downloaded.
-        print(f"  ! could not ask about {source_id}: {error}")
+        # Loud, because the alternative is the silent retirement described above. Nothing
+        # was downloaded, and the claim simply expires so it is asked again.
+        print(f"  !! could not ask about {source_id}: {error}")
 
 
 def process(source):

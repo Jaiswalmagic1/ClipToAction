@@ -41,7 +41,12 @@ manifest.short_name = "CTA staging";
 // that address is what the browser has been using to recognise the app ever since. Saying
 // it here keeps that install the same app rather than making a second icon appear beside
 // it. What it OPENS is index.html, like everywhere else.
-manifest.id = "./app.html";
+//
+// Written as an absolute path, and that matters: `id` is resolved against the ORIGIN, not
+// against the manifest's own folder. A relative "./app.html" happens to give the same
+// answer here only because this manifest sits at the root — the repo's copy, which sits
+// under /ClipToAction/ on GitHub Pages, has no `id` at all for exactly that reason.
+manifest.id = "/app.html";
 if (manifest.start_url !== "./index.html") {
   throw new Error("manifest.json no longer starts at ./index.html — check the D21 swap");
 }

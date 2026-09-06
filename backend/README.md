@@ -155,6 +155,32 @@ before touching production.
 npm run deploy:staging
 ```
 
+### The migrations come FIRST, and nothing enforces that
+
+`npm run deploy:staging` builds the app's assets and ships the Worker. **It does not touch
+the database.** Deploying code that expects a column the database has not got does not fail
+politely in one place — it breaks every route that reads that table at once, and the app
+shows an empty notebook, which reads exactly like data loss.
+
+So: apply any new files in `migrations/` **before** deploying the code that needs them, in
+order, one at a time.
+
+```bash
+wrangler d1 execute cliptoaction-staging --remote --env staging --file=./migrations/0009_row_shapes_version.sql
+```
+
+Each is additive — `ALTER TABLE ADD COLUMN` and `CREATE TABLE IF NOT EXISTS` — so they are
+safe on a database holding real reels, and none of them rewrites a single existing row.
+They are **not** safe to run twice: SQLite has no `ADD COLUMN IF NOT EXISTS`, so a repeat
+fails with "duplicate column name". That is a loud, harmless failure; it means it was
+already applied.
+
+To see which have landed:
+
+```bash
+wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT name FROM pragma_table_info('sources')"
+```
+
 ## AI providers
 
 Analysis runs inside the Worker (`src/analyze.js`) so a user's API key never leaves it.

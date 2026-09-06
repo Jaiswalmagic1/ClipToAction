@@ -39,10 +39,22 @@ describe("the root page is the app", () => {
   test("the installed app starts at the app, and keeps the identity it already had", () => {
     const manifest = JSON.parse(read("manifest.json"));
     assert.equal(manifest.start_url, "./index.html");
-    // Changing start_url on an installed app makes it a different app unless `id` pins
-    // the old one. `id` must therefore stay exactly what start_url has always been.
-    assert.equal(manifest.id, "./index.html");
     assert.equal(manifest.share_target.action, "./share-target.html");
+
+    // No `id`, deliberately. A browser recognises an installed app by its manifest `id`,
+    // which DEFAULTS to the fully-resolved start_url — and start_url has not changed, so
+    // the identity is already exactly what his phone has been using.
+    //
+    // Writing one down looked safer and was the opposite: `id` is resolved against the
+    // ORIGIN, not against the manifest's folder. On GitHub Pages this manifest lives at
+    // /ClipToAction/manifest.json, so "./index.html" would have resolved to
+    // https://jaiswalmagic1.github.io/index.html — a DIFFERENT app from the one he has
+    // installed, which would then have stopped taking manifest updates and offered him a
+    // second icon. The one line added to protect the install was the line breaking it.
+    assert.ok(
+      !("id" in manifest),
+      "an `id` here resolves against the origin, not this folder — see the comment above"
+    );
   });
 
   test("a shared link lands on the app", () => {
@@ -69,5 +81,13 @@ describe("the root page is the app", () => {
     assert.ok(sw.includes("self.skipWaiting"), "a new version would wait for every tab to close");
     // Nothing from another address may be written into a cache the app does not control.
     assert.ok(sw.includes("!== self.location.origin"), "cross-origin requests are not left alone");
+    // Nor the API, even where the app and the API share an address (D26) — a cached sync
+    // response is somebody's whole notebook, served back to whoever opens the app next.
+    assert.ok(sw.includes('startsWith("/v1/")'), "API responses could be cached");
+    // A dead connection does not reject. Without a wait, an app that used to open
+    // instantly from its cache sits on a white screen instead.
+    assert.ok(sw.includes("NETWORK_WAIT_MS"), "the network is waited on for ever");
+    // Sharing a reel is the only way one gets in (D17), and it navigates to this page.
+    assert.ok(sw.includes("./share-target.html"), "the share target is not kept for offline");
   });
 });

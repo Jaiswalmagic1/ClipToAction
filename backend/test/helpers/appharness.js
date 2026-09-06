@@ -210,6 +210,28 @@ export async function loadApp(sync, { hash = "" } = {}) {
   document._seed(html);
   const listeners = [];
 
+  /**
+   * A `location` that fires `hashchange` when its hash is assigned, the way a browser does.
+   *
+   * The first version of this harness was a plain object, so assigning `location.hash`
+   * changed a string and nothing else — and the app's own `hashchange` handler, which is
+   * what actually redraws the screen, never ran. Every tab press in a test therefore only
+   * worked because the app ALSO called `render()` by hand, and a real browser was doing
+   * both. A harness that cannot see a double render cannot see a missing one either.
+   */
+  let currentHash = hash;
+  const fakeLocation = {
+    get hash() {
+      return currentHash;
+    },
+    set hash(value) {
+      const next = value && !String(value).startsWith("#") ? `#${value}` : String(value);
+      if (next === currentHash) return;
+      currentHash = next;
+      for (const [name, handler] of listeners) if (name === "hashchange") handler();
+    }
+  };
+
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   const previous = {
     document: globalThis.document,
@@ -226,9 +248,9 @@ export async function loadApp(sync, { hash = "" } = {}) {
   globalThis.window = {
     addEventListener: (name, handler) => listeners.push([name, handler]),
     getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
-    location: { hash }
+    location: fakeLocation
   };
-  globalThis.location = globalThis.window.location;
+  globalThis.location = fakeLocation;
   globalThis.localStorage = {
     getItem: (key) => (store.has(key) ? store.get(key) : null),
     setItem: (key, value) => store.set(key, String(value)),
@@ -247,6 +269,10 @@ export async function loadApp(sync, { hash = "" } = {}) {
   globalThis.setInterval = () => 0;
   globalThis.clearInterval = () => {};
 
+  // Every draw of the notebook empties this element first, and every draw of Home empties
+  // its own. Counting that is how a test can tell one press from two.
+  const renderCount = { value: 0 };
+
   const calls = [];
   globalThis.fetch = async (url) => {
     calls.push(String(url));
@@ -256,6 +282,24 @@ export async function loadApp(sync, { hash = "" } = {}) {
       json: async () => (String(url).includes("/v1/sync") ? sync : { ok: true })
     };
   };
+
+  // Every draw of Home empties #homeView and every draw of the notebook empties #clipList,
+  // so counting those is how a test tells one press from two.
+  for (const id of ["homeView", "clipList"]) {
+    const node = document.getElementById(id);
+    Object.defineProperty(node, "innerHTML", {
+      configurable: true,
+      get() {
+        return this.textContent;
+      },
+      set(value) {
+        if (String(value) !== "") throw new Error("the app set innerHTML to markup");
+        this.children = [];
+        this._text = "";
+        renderCount.value += 1;
+      }
+    });
+  }
 
   const dir = mkdtempSync(join(tmpdir(), "cta-app-"));
   const file = join(dir, "app.mjs");
@@ -271,6 +315,15 @@ export async function loadApp(sync, { hash = "" } = {}) {
     document,
     calls,
     localStore: store,
+    /** How many times the app has drawn a screen. A press should cost exactly one. */
+    renders: () => renderCount.value,
+    /** Presses one of the two tabs, the way a finger does. */
+    tab(which) {
+      const tabs = document.getElementById("tabs");
+      const button = tabs.children.find((child) => child.dataset.tab === which);
+      if (!button) throw new Error(`no ${which} tab`);
+      tabs.onclick({ target: button });
+    },
     $: (id) => document.getElementById(id),
     text: (id) => document.getElementById(id).textContent,
     restore() {

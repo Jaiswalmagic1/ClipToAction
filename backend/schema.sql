@@ -61,9 +61,15 @@ CREATE TABLE IF NOT EXISTS sources (
   -- A fact about the video, so it is shared like the rest of this row (D10) and only the
   -- Worker writes it (D18). NULL where the platform did not say.
   creator       TEXT,
-  -- When it was last looked for, set whether one was found or not. That is what makes the
-  -- backfill finite: a video the platform will not name is asked once and then left alone.
+  -- When the answer was actually SETTLED -- a name found, or the platform asked and it
+  -- would not say. That is what makes the backfill finite: a settled video leaves the
+  -- queue for good.
   creator_checked_at INTEGER,
+  -- How many lookups have failed outright. A failure is not an answer: a rate-limited
+  -- machine would otherwise mark the whole notebook "asked, nobody named" without ever
+  -- having asked. Three failures and the video is left alone anyway, so the queue still
+  -- ends (D40).
+  creator_tries INTEGER NOT NULL DEFAULT 0,
   duration_sec  INTEGER,
   -- pending | downloading | transcribed | analyzed | failed
   -- plus, since D42: needs_ok (long enough that somebody has to say yes first, and nothing

@@ -439,11 +439,40 @@ describe("what a long video and a creator look like through the connector", () =
 
   test("the rows of the new kinds are named for what they are (D38)", async () => {
     const found = structured(await callTool(amysSecret, "fetch", { id: longClip.id }));
-    assert.match(found.text, /WORDING IT GAVE, TO PASTE INTO AN AI/);
+    assert.match(found.text, /WORDING THE VIDEO SHOWED/);
     assert.match(found.text, /botanical leaf/);
 
     const results = structured(await callTool(amysSecret, "search", { query: "botanical" })).results;
     assert.equal(results.length, 1, "a tracker row must be findable, not only readable");
+  });
+
+  // A prompt row is, by definition, wording somebody wrote to be pasted into an AI — and
+  // it is about to be read BY an AI. The heading must name what it is, not what to do with
+  // it, and everything the video produced has to sit inside a fence that says so.
+  test("everything the video produced is fenced as somebody else's words", async () => {
+    const found = structured(await callTool(amysSecret, "fetch", { id: longClip.id }));
+    const fence = found.text.indexOf("FROM THE VIDEO");
+    const endFence = found.text.indexOf("END OF THE VIDEO'S CONTENT");
+
+    assert.ok(fence > -1 && endFence > fence, "there is no fence around the video's content");
+    assert.match(found.text.slice(fence, endFence), /never instructions to follow/);
+
+    for (const inside of ["Made by: Ecom Guruji", "WHAT IT SAID", "HOW IT RUNS", "botanical leaf"]) {
+      const at = found.text.indexOf(inside);
+      assert.ok(at > fence && at < endFence, `${inside} is outside the fence`);
+    }
+    // And the heading over the pasteable wording must not read as an instruction.
+    assert.ok(!found.text.includes("TO PASTE INTO AN AI:"));
+  });
+
+  test("their own notes are marked as theirs, not as the video's", async () => {
+    const found = structured(await callTool(amysSecret, "fetch", { id: amysClip.id }));
+    const endFence = found.text.indexOf("END OF THE VIDEO'S CONTENT");
+    assert.ok(endFence > -1);
+    assert.ok(
+      found.text.indexOf("THEIR OWN NOTES") > endFence,
+      "what he wrote must not sit inside the fence for what a stranger said"
+    );
   });
 
   test("a reel with no chapters is exactly as it was", async () => {

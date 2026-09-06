@@ -85,7 +85,7 @@ describe("the new app against the previous backend", () => {
     // NULL means version 1, which is every analysis in the real notebook today. The offer
     // to read them again must appear, and it must not appear as an error.
     const app = await loadApp(oldWorkerSync());
-    app.$("tabs").onclick({ target: app.$("tabs").children[1] });
+    app.tab("notebook");
     const views = app.$("views");
     views.onclick({ target: views.children.find((b) => b.dataset.view === "prompt") });
     const list = app.text("clipList");
@@ -95,7 +95,7 @@ describe("the new app against the previous backend", () => {
 
   test("the notebook still lists the reel, with no creator and no crash", async () => {
     const app = await loadApp(oldWorkerSync());
-    app.$("tabs").onclick({ target: app.$("tabs").children[1] });
+    app.tab("notebook");
     assert.ok(app.text("clipList").includes("A reel"));
     app.restore();
   });
@@ -122,7 +122,7 @@ describe("the current app against the current backend", () => {
 
   test("a creator is shown, and pressing it searches for them", async () => {
     const app = await loadApp(currentSync());
-    app.$("tabs").onclick({ target: app.$("tabs").children[1] });
+    app.tab("notebook");
     const chip = app.$("clipList").byClass("creator")[0];
     assert.ok(chip, "the creator is not on the card");
     assert.equal(chip.textContent, "Ecom Guruji");

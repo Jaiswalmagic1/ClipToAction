@@ -74,8 +74,21 @@ const THE_WORKER = ""; // workers.id value meaning "the one PC worker"
 const WORKER_QUIET_AFTER_MS = 5 * 60 * 1000;
 
 const MAX_BODY_BYTES = 256 * 1024;
+// A transcript is the one body that is legitimately enormous, and it has its own cap
+// because the general one is far below it: 256KB is about 4.8 hours of speech, so a
+// five-hour video would have had its transcript REFUSED AS TOO LARGE after the machine
+// had already spent three hours making it — the exact failure D42 raised the limits to
+// prevent. Sized well clear of MAX_TRANSCRIPT_CHARS so the checked limit is the one that
+// bites, and a test pins that this stays true.
+const MAX_TRANSCRIPT_BODY_BYTES = 700 * 1024;
 const MAX_SAVES_PER_DAY = 200;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
+// A long video is a different size of job (D42): six hours of video is around three and a
+// half hours of a machine's time, and the lease above would expire in the middle of it —
+// a second worker would then claim the same video, and the retirement sweep below would
+// mark it failed while the first machine was still working on it. So a video whose length
+// is known to be long gets a lease that covers the work it actually is.
+const LONG_CLAIM_LEASE_MS = 8 * 60 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
 // How many old clips one press of "sort my old clips" may name. Each one is a call out
 // to a provider, and a Worker request has a hard ceiling on how many of those it may
@@ -85,6 +98,10 @@ const MAX_SORT_PER_REQUEST = 10;
 // How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
 // and a spare; low enough that a leaked one is noticed rather than lost in a list.
 const MAX_CONNECTORS = 5;
+// How many failed attempts to find out who made a video before it is left alone (D40). A
+// failure is not an answer, so it must not settle the question — but a question that is
+// never settled is a queue that never ends, and this is what closes it.
+const MAX_CREATOR_TRIES = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const LIMITS = {
@@ -99,7 +116,10 @@ const LIMITS = {
   transcript: MAX_TRANSCRIPT_CHARS,
   // A channel name. Long enough for the padded ones creators actually use, short enough
   // that nothing else can be smuggled into a column the app draws (D40).
-  creator: 200
+  creator: 200,
+  // Facebook hands back the whole caption as the title, and `titleOf` in the app already
+  // cuts it down for display — but the stored value was unbounded.
+  title: 500
 };
 
 // A long video's analysis is a bigger object than a reel's, and the reel's ceilings would
@@ -115,6 +135,21 @@ const LONG_LIMITS = {
 function limitsFor(durationSec) {
   return isLong(durationSec) ? { ...LIMITS, ...LONG_LIMITS } : LIMITS;
 }
+
+/**
+ * How long this source's claim lasts, as SQL. Written once and used by all three places
+ * that read a lease, so they cannot disagree about when a claim has expired — a claim one
+ * query thinks is live and another thinks is stale is how a job gets marked failed while
+ * it is still running.
+ *
+ * The numbers are interpolated rather than bound. They are this file's own constants and
+ * never anything a caller sent, and doing it this way means the three queries below keep
+ * the placeholder numbering they already had — which is the part of a query that goes
+ * wrong silently.
+ */
+const LEASE_SQL =
+  `(CASE WHEN COALESCE(duration_sec, 0) > ${WARN_ABOVE_SEC}`
+  + ` THEN ${LONG_CLAIM_LEASE_MS} ELSE ${CLAIM_LEASE_MS} END)`;
 
 function corsHeaders(env) {
   return {
@@ -149,12 +184,12 @@ class RequestError extends Error {
 }
 
 /** Rejects oversized bodies before spending CPU parsing them. */
-async function readJson(request) {
+async function readJson(request, cap = MAX_BODY_BYTES) {
   const declared = Number(request.headers.get("Content-Length") || 0);
-  if (declared > MAX_BODY_BYTES) throw new RequestError("That request is too large.", 413);
+  if (declared > cap) throw new RequestError("That request is too large.", 413);
 
   const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) throw new RequestError("That request is too large.", 413);
+  if (text.length > cap) throw new RequestError("That request is too large.", 413);
 
   try {
     return JSON.parse(text || "{}");
@@ -295,6 +330,16 @@ async function deltaSync(request, env, userId) {
     .bind(userId, since)
     .all();
 
+  // `sources` is shared, and since D42 it carries `long_ok_by` — somebody's account id.
+  // Anybody who saves the same link would otherwise be handed the id of whoever approved
+  // that video. It is stripped here rather than by naming the columns, because a column
+  // list is exactly the thing that silently stops being complete (D44). What the app can
+  // legitimately know is whether the person looking is the one who approved it.
+  const visibleSources = sources.results.map(({ long_ok_by: approver, ...row }) => ({
+    ...row,
+    long_ok_mine: approver ? approver === userId : null
+  }));
+
   const transcripts = await env.DB.prepare(
     `SELECT t.* FROM transcripts t
      JOIN clips c ON c.source_id = t.source_id
@@ -386,7 +431,7 @@ async function deltaSync(request, env, userId) {
     learnings: learnings.results,
     item_status: itemStatus.results,
     relooks: relooks.results,
-    sources: sources.results,
+    sources: visibleSources,
     transcripts: transcripts.results,
     analyses: analyses.results
   });
@@ -662,9 +707,10 @@ async function claimQueue(request, env) {
      SET state = 'failed',
          error = COALESCE(error, 'Gave up after ' || attempts || ' attempts.'),
          claimed_at = NULL, updated_at = ?1
-     WHERE state = 'downloading' AND attempts >= ?2 AND COALESCE(claimed_at, 0) < ?3`
+     WHERE state = 'downloading' AND attempts >= ?2
+       AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?1`
   )
-    .bind(timestamp, MAX_ATTEMPTS, timestamp - CLAIM_LEASE_MS)
+    .bind(timestamp, MAX_ATTEMPTS)
     .run();
 
   // A claim is a lease. Without the timeout, a worker that dies mid-download leaves the
@@ -678,11 +724,12 @@ async function claimQueue(request, env) {
      FROM sources
      WHERE attempts < ?3
        AND (state = 'pending'
-            OR (state = 'downloading' AND COALESCE(claimed_at, 0) < ?2))
+            OR (state = 'downloading'
+                AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?2))
      ORDER BY created_at
      LIMIT ?1`
   )
-    .bind(limit, timestamp - CLAIM_LEASE_MS, MAX_ATTEMPTS)
+    .bind(limit, timestamp, MAX_ATTEMPTS)
     .all();
 
   // Each claim is conditional on the row still being in the state we selected it in, so
@@ -695,9 +742,10 @@ async function claimQueue(request, env) {
        SET state = 'downloading', attempts = attempts + 1, claimed_at = ?1, updated_at = ?1
        WHERE id = ?2
          AND (state = 'pending'
-              OR (state = 'downloading' AND COALESCE(claimed_at, 0) < ?3))`
+              OR (state = 'downloading'
+                  AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?1))`
     )
-      .bind(timestamp, row.id, timestamp - CLAIM_LEASE_MS)
+      .bind(timestamp, row.id)
       .run();
 
     if (result.meta.changes) claimed.push(row);
@@ -707,7 +755,7 @@ async function claimQueue(request, env) {
 }
 
 async function storeTranscript(request, env, sourceId) {
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_TRANSCRIPT_BODY_BYTES);
   const text = String(body.text || "").trim();
   if (!text) return fail(env, "Transcript text is required.");
   if (text.length > LIMITS.transcript) return fail(env, "That transcript is too long.");
@@ -756,7 +804,16 @@ async function storeTranscript(request, env, sourceId) {
     // null for everything else, which is D10's cost model unchanged: the first saver with
     // a key pays. Nobody's daily allowance should go on an hour-long video they did not
     // ask for and did not approve.
-    const analysis = await analyzeSource(env, sourceId, text, facts.long_ok_by, durationSec);
+    let analysis = await analyzeSource(env, sourceId, text, facts.long_ok_by, durationSec);
+
+    // The approver turns out to have nothing to pay with — no key, or one that has since
+    // been removed, rejected or spent. "You pay" was a rule about WHO SHOULD pay, not a
+    // reason to throw an hour of somebody's PC away: without this the video sits at
+    // 'transcribed' with no error for ever while another saver's working key goes unused,
+    // which is the silent failure Golden Rule 29 forbids. So it falls back to D10.
+    if (!analysis && facts.long_ok_by) {
+      analysis = await analyzeSource(env, sourceId, text, null, durationSec);
+    }
     if (analysis) {
       const problems = await storeAnalysis(
         env,
@@ -1012,23 +1069,34 @@ async function reportTooLong(request, env, sourceId) {
   if (tooLongForAnyone(durationSec)) {
     const hours = Math.round(MAX_VIDEO_SEC / 3600);
     await env.DB.prepare(
+      // Guarded exactly like the branch below, and for the same reason: a worker whose
+      // lease expired can come back late, and this one writes 'failed' — so without the
+      // guard a stale report buries a video another worker has since transcribed and
+      // analysed, and every saver of that reel sees an error on a reel that worked.
       `UPDATE sources
        SET state = 'failed',
            error = ?1, error_detail = 'refused too_long', claimed_at = NULL,
            duration_sec = COALESCE(?2, duration_sec), title = COALESCE(?3, title),
            creator = COALESCE(?4, creator), creator_checked_at = ?5, updated_at = ?5
-       WHERE id = ?6`
+       WHERE id = ?6 AND state = 'downloading'`
     )
       .bind(
         `This video is ${Math.round(durationSec / 60)} minutes long, past the ${hours}-hour limit.`,
         durationSec || null,
-        body.title || null,
+        cleanTitle(body.title),
         cleanCreator(body.creator),
         timestamp,
         sourceId
       )
       .run();
     return json(env, { ok: true, refused: true });
+  }
+
+  // The Worker decides what is long, not the machine that reported it. Without this the
+  // ceiling and the threshold live only in a gitignored `.env` on one PC, and a stale
+  // value there silently changes the rules the app is telling him about (D42).
+  if (!needsPermission(durationSec)) {
+    return fail(env, "That video is not long enough to need permission.");
   }
 
   // Only a source the worker actually holds may be moved. A worker whose lease expired can
@@ -1042,7 +1110,7 @@ async function reportTooLong(request, env, sourceId) {
          creator = COALESCE(?3, creator), creator_checked_at = ?4, updated_at = ?4
      WHERE id = ?5 AND state = 'downloading'`
   )
-    .bind(durationSec || null, body.title || null, cleanCreator(body.creator), timestamp, sourceId)
+    .bind(durationSec || null, cleanTitle(body.title), cleanCreator(body.creator), timestamp, sourceId)
     .run();
 
   return json(env, { ok: true, applied: Boolean(result.meta.changes) });
@@ -1129,6 +1197,13 @@ async function parkLongVideo(env, userId, clipId) {
  * Kept as plain text and never turned into a link. It comes out of somebody else's video,
  * and the app draws it as a word you can search by — never as an address to tap.
  */
+/** A video's own title, trimmed to something a row can hold. Third-party text, like the
+ * creator name, so it is capped rather than trusted to be a sensible length. */
+export function cleanTitle(raw) {
+  const title = String(raw ?? "").replace(/\s+/g, " ").trim();
+  return title ? title.slice(0, LIMITS.title) : null;
+}
+
 export function cleanCreator(raw) {
   const name = String(raw ?? "").replace(/\s+/g, " ").trim();
   return name ? name.slice(0, LIMITS.creator) : null;
@@ -1153,7 +1228,7 @@ async function creatorQueue(request, env) {
   const rows = await env.DB.prepare(
     `SELECT id, url_original, platform FROM sources
      WHERE creator IS NULL AND creator_checked_at IS NULL
-     ORDER BY created_at DESC
+     ORDER BY creator_tries, created_at DESC
      LIMIT ?1`
   )
     .bind(limit)
@@ -1167,26 +1242,42 @@ async function creatorQueue(request, env) {
 }
 
 /**
- * Stores who made one video, or records that the platform would not say.
+ * Stores who made one video, or records what happened when we tried to find out.
  *
- * Either way the row is marked as looked at, so this backfill ends. Nothing else on the
- * source is touched: this must never be able to move a video's state, its error or its
- * transcript, because it runs over reels that are already finished.
+ * `asked` is the whole distinction, and it is not bookkeeping. A lookup that SUCCEEDED and
+ * named nobody is an answer: that video is settled and leaves the queue. A lookup that
+ * FAILED is not an answer, and treating it as one is how a single rate-limit walks the
+ * whole notebook marking two hundred videos "asked, nobody named" without having asked
+ * anything — the creator column empty for ever, and nothing on screen saying why.
+ *
+ * So a failure counts instead. Three of them and the video is left alone anyway, because a
+ * queue that never ends is the other way to get this wrong.
+ *
+ * Nothing else on the source is touched: this must never move a video's state, its error
+ * or its transcript, because it runs over reels that are already finished.
  */
 async function storeCreator(request, env, sourceId) {
   const body = await readJson(request);
   const name = cleanCreator(body.creator);
+  // Absent means "asked" — the field was added after the route, and an older worker that
+  // does not send it is one that only ever posted after a successful lookup.
+  const asked = body.asked === undefined ? true : Boolean(body.asked);
+  const timestamp = now();
 
   const result = await env.DB.prepare(
     `UPDATE sources
-     SET creator = COALESCE(?1, creator), creator_checked_at = ?2, updated_at = ?2
+     SET creator = COALESCE(?1, creator),
+         creator_tries = creator_tries + ?4,
+         creator_checked_at = CASE
+           WHEN ?5 = 1 OR creator_tries + ?4 >= ?6 THEN ?2 ELSE creator_checked_at END,
+         updated_at = ?2
      WHERE id = ?3`
   )
-    .bind(name, now(), sourceId)
+    .bind(name, timestamp, sourceId, asked ? 0 : 1, asked ? 1 : 0, MAX_CREATOR_TRIES)
     .run();
 
   if (!result.meta.changes) return fail(env, "No such video.", 404);
-  return json(env, { ok: true, creator: name });
+  return json(env, { ok: true, creator: name, settled: asked });
 }
 
 // ---------------------------------------------------------------- tier 3: copy-paste
@@ -1639,11 +1730,22 @@ async function sortOldClips(request, env, userId) {
  * feature. This runs the analysis again over the transcript already stored, so a video
  * that showed three products at three prices ends up as three rows.
  *
- * Two sorts of reel qualify. One was read before kinds existed at all and has no kind.
- * The other was read before a table it belongs in existed — a video full of prompts, read
- * when there was no prompt table, was filed as a tool and its rows came back empty. That
- * is what `shapes_version` counts, and it is why a reel which WAS asked and genuinely had
- * nothing to track never appears here twice (D39).
+ * Two conditions, and BOTH have to hold.
+ *
+ * `shapes_version` behind the current one — which is every analysis written before today,
+ * because NULL means the first set of shapes. That is what makes the queue finite: a reel
+ * asked under the current shapes never appears here again, even if it had nothing to
+ * track. It is deliberately the only version test: an earlier draft also included
+ * `kind IS NULL`, which never becomes false for a reel whose AI keeps answering with a
+ * kind nobody recognises, so the offer would have come back for ever and spent an
+ * allowance on every press.
+ *
+ * `items IS NULL` — nothing to lose. A reel that already carries rows already has its
+ * table, and re-reading it would REPLACE those rows: `item_status` is keyed on the row's
+ * flattened name (D34), so a re-run that renames a row leaves his "ordered" and "using
+ * it" pointing at nothing, with no error and no way back. Gaining a speculative table is
+ * not worth losing a decision he actually made. In his notebook this is the difference
+ * between re-reading 210 reels and re-reading the ~120 that can only gain.
  *
  * It runs on the presser's own key, like "Summarise this one" does: they volunteered
  * their allowance by pressing, and quietly spending an earlier saver's would be wrong.
@@ -1664,7 +1766,8 @@ async function fillInKinds(request, env, userId) {
      JOIN sources s ON s.id = c.source_id
      WHERE c.user_id = ?1
        AND c.deleted_at IS NULL
-       AND (a.kind IS NULL OR COALESCE(a.shapes_version, 1) < ?3)
+       AND COALESCE(a.shapes_version, 1) < ?3
+       AND a.items IS NULL
      ORDER BY c.created_at DESC`
   )
     .bind(userId, SHARED, ITEM_SHAPES_VERSION)
@@ -1797,6 +1900,18 @@ async function setRelookEvery(request, env, userId) {
  */
 async function doRelook(request, env, userId) {
   const timestamp = now();
+
+  // "Stop asking me" is an answer, and the server is where a rule like that has to live —
+  // the app not drawing the banner is a courtesy, not an enforcement (D41).
+  //
+  // The GAP is deliberately NOT enforced here. It exists so he is not nagged, and the only
+  // way to reach this is a button he pressed; refusing a deliberate press because it is
+  // three days early would be the app arguing with him.
+  const state = await relookFor(env, userId, timestamp);
+  if (state.every_days <= 0) {
+    return fail(env, "You have turned looking back off. Turn it on in Settings first.");
+  }
+
   const batch = await relookQueue(env, userId, MAX_RELOOK_CLIPS);
   if (!batch.length) {
     return json(env, { ok: true, nothing_due: true });

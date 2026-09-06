@@ -410,6 +410,11 @@
       <button data-tab="home" class="active">Home</button>
       <button data-tab="notebook">Notebook</button>
     </div>
+    <!-- Outside every view on purpose. It used to sit inside the notebook, and when Home
+         became the screen that opens (D43) every message written to it — "you appear to be
+         offline", "read 12 videos again", "could not save that" — went into a hidden box.
+         A message nobody can see is the same as no message (Golden Rule 29). -->
+    <div id="syncMsg"></div>
 
     <div class="panel" id="saveView">
       <h2>Save a link</h2>
@@ -444,7 +449,6 @@
           <button data-view="prompt">Prompts</button>
           <button data-view="tactic">Worth trying</button>
         </div>
-        <div id="syncMsg"></div>
         <div id="clipList"></div>
       </div>
     </div>
@@ -482,7 +486,7 @@
         <div id="settingsMsg"></div>
         <div class="row" style="margin-top:12px">
           <button id="saveSettings">Save</button>
-          <button class="secondary" id="settingsBack">Back to notebook</button>
+          <button class="secondary" id="settingsBack">Back to home</button>
         </div>
       </div>
 
@@ -640,7 +644,7 @@
         </ul>
 
         <div class="row" style="margin-top:16px">
-          <button class="secondary" id="guideBack">Back to notebook</button>
+          <button class="secondary" id="guideBack">Back to home</button>
         </div>
       </div>
     </div>
@@ -1112,6 +1116,10 @@ function show(view) {
   for (const name of ["homeView", "listView", "clipView", "settingsView"]) {
     $(name).hidden = name !== view;
   }
+  // Emptied, not just hidden. A clip's page builds its own message box, and leaving the
+  // page only hid it — so for the rest of the session every "could not save that" went
+  // into a box on a page nobody was looking at (Golden Rule 29).
+  if (view !== "clipView") $("clipView").innerHTML = "";
   // A clip has its own page (D22) — the save box belongs on the two screens you land on,
   // not on top of one reel.
   $("saveView").hidden = view !== "listView" && view !== "homeView";
@@ -1181,13 +1189,15 @@ function workerNotice() {
 // no timer here and no background call anywhere — the same rule as summarising one clip
 // on demand, and as the offer to fill in a new table (D39).
 
-const SNOOZE_KEY = "cliptoaction-relook-snoozed-until";
+// Per account, like the notebook cache itself (`cacheKey`). Two of his Google accounts on
+// one phone are two different notebooks, and one's "not now" is not the other's.
+const snoozeKey = () => `cliptoaction-relook-snoozed-${user ? user.uid : "none"}`;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 /** "Not now" means not today, on this device. It is a convenience, not a setting. */
 function relookSnoozed() {
   try {
-    return Number(localStorage.getItem(SNOOZE_KEY) || 0) > Date.now();
+    return Number(localStorage.getItem(snoozeKey()) || 0) > Date.now();
   } catch {
     return false;
   }
@@ -1195,7 +1205,7 @@ function relookSnoozed() {
 
 function snoozeRelook() {
   try {
-    localStorage.setItem(SNOOZE_KEY, String(Date.now() + SNOOZE_MS));
+    localStorage.setItem(snoozeKey(), String(Date.now() + SNOOZE_MS));
   } catch {
     // Nothing is lost — the offer simply stays on screen until it is used.
   }
@@ -1234,7 +1244,7 @@ function relookBanner() {
   later.textContent = "Not now";
   later.style.marginTop = "8px";
   later.style.marginLeft = "8px";
-  later.onclick = () => { snoozeRelook(); renderList(); };
+  later.onclick = () => { snoozeRelook(); render(); };
 
   offer.append(document.createElement("br"), go, later);
   return offer;
@@ -1254,7 +1264,9 @@ async function runRelook(button) {
         + (result.still_due ? ` ${result.still_due} more are waiting for the next one.` : ""),
         "ok");
     }
-    renderList();
+    // render(), not renderList(): the banner and the round-up both live on Home now (D43),
+    // and redrawing the notebook would leave the banner on screen after it was answered.
+    render();
   } catch (error) {
     say("syncMsg", error.message);
   } finally {
@@ -1599,7 +1611,12 @@ const behindClips = () =>
     if (clip.deleted_at) return false;
     const analysis = analysisOf(clip);
     if (!analysis || !analysis.summary) return false;
-    return !analysis.kind || Number(analysis.shapes_version || 1) < SHAPES_VERSION;
+    // Word for word the Worker's rule, and it has to stay that way or the app offers to
+    // re-read reels the Worker will refuse to touch. Behind the current shapes, AND
+    // carrying no rows — a reel that already has rows is left alone, because re-reading
+    // replaces them and a decision he made is keyed on a row's name (D34, D39).
+    const rows = jsonList(analysis.items);
+    return Number(analysis.shapes_version || 1) < SHAPES_VERSION && !rows.length;
   });
 
 /**
@@ -1862,12 +1879,8 @@ function creatorChip(clip, { stopClick = false } = {}) {
 function searchFor(phrase) {
   query = String(phrase).trim().toLowerCase();
   $("search").value = phrase;
-  grouping = "list";
-  for (const button of $("views").children) {
-    button.classList.toggle("active", button.dataset.view === "list");
-  }
-  if (location.hash === "#/notebook") { show("listView"); renderList(); }
-  else location.hash = "#/notebook";
+  setGrouping("list");
+  showTab("notebook");
 }
 
 function clipCard(clip, { showTopic = true } = {}) {
@@ -2457,7 +2470,9 @@ function renderClip(clipId) {
   const back = document.createElement("button");
   back.className = "secondary";
   back.textContent = "Back to notebook";
-  back.onclick = () => { location.hash = ""; };
+  // To the notebook, which is what it says. Since D43 an empty hash is Home, so leaving
+  // this as it was would have made all three of these buttons lie about where they go.
+  back.onclick = () => { showTab("notebook"); };
   panel.append(back);
 
   const heading = document.createElement("h2");
@@ -2773,7 +2788,9 @@ window.addEventListener("focus", refreshQuietly);
 const HOME_ROWS = 6;
 const DAY = 24 * 60 * 60 * 1000;
 
-const SEEN_KEY = "cliptoaction-home-last-seen";
+// Per account, for the same reason the snooze is: signing in as a second account must not
+// inherit the first one's idea of when it last looked.
+const seenKey = () => `cliptoaction-home-last-seen-${user ? user.uid : "none"}`;
 
 /**
  * When he last opened this screen, read ONCE per session.
@@ -2787,8 +2804,8 @@ let seenBefore = null;
 function markHomeSeen() {
   if (seenBefore !== null) return;
   try {
-    seenBefore = Number(localStorage.getItem(SEEN_KEY) || 0);
-    localStorage.setItem(SEEN_KEY, String(Date.now()));
+    seenBefore = Number(localStorage.getItem(seenKey()) || 0);
+    localStorage.setItem(seenKey(), String(Date.now()));
   } catch {
     seenBefore = 0;
   }
@@ -3002,7 +3019,7 @@ function learningSection() {
           : "steady";
     panel.append(homeRow(`${subject.name} — ${subject.all} ${subject.all === 1 ? "video" : "videos"}`, {
       detail: shape,
-      onClick: () => openTopic(subject.id)
+      onClick: () => openTopic()
     }));
   }
 
@@ -3018,15 +3035,31 @@ function learningSection() {
   return panel;
 }
 
-/** Opens the notebook grouped by folder, with this one searched for. */
-function openTopic(topicId) {
-  const topic = topicById(topicId);
-  grouping = "topics";
+/**
+ * Opens the notebook grouped by folder, so the subject he pressed is a heading he can see.
+ *
+ * Deliberately NOT a search. The first version handed the folder's name to the search box,
+ * and the search box looks at titles, transcripts, summaries and notes — not at where a
+ * clip is filed. So pressing "e-commerce — 41 videos" showed "Nothing here matches",
+ * because the words "e-commerce" appear in none of those forty-one transcripts.
+ */
+function openTopic() {
+  query = "";
+  $("search").value = "";
+  setGrouping("topics");
+  showTab("notebook");
+}
+
+/** Switches which view of the notebook is drawn, and marks the chip that says so. */
+function setGrouping(view) {
+  grouping = view;
+  // A tracker sorted by "Cost" and then switched to Prompts was sorting by a column that
+  // kind does not have: every comparison returned nothing and no heading showed an arrow,
+  // so the table was unsorted with nothing saying so.
+  trackerSort = { column: "saved", ascending: false };
   for (const button of $("views").children) {
-    button.classList.toggle("active", button.dataset.view === "topics");
+    button.classList.toggle("active", button.dataset.view === view);
   }
-  if (topic) searchFor(topic.name);
-  else showTab("notebook");
 }
 
 // ------------------------------------------------------------------ 3. needs attention
@@ -3265,10 +3298,13 @@ function render() {
 
 /** Switches between Home and the notebook, through the address so Back works. */
 function showTab(tab) {
-  location.hash = tab === "notebook" ? "#/notebook" : "";
-  // Going from "#/notebook" to "" leaves no hash to change on some browsers, so nothing
-  // would be redrawn. Ask for it directly rather than relying on the event.
-  render();
+  const wanted = tab === "notebook" ? "#/notebook" : "";
+  // Assigning a hash that is already set fires no `hashchange`, so nothing would redraw.
+  // Assigning a DIFFERENT one fires it, and `render()` here as well would draw the whole
+  // screen twice — which on two hundred clips with a search running means rebuilding every
+  // clip's searchable text, transcripts and all, for nothing.
+  if (location.hash === wanted) render();
+  else location.hash = wanted;
 }
 
 $("tabs").onclick = (event) => {
@@ -3730,8 +3766,11 @@ $("relookEvery").onchange = async () => {
     await sync();
     renderRelookSetting();
   } catch (error) {
-    say("relookMsg", error.message);
+    // The dropdown goes back to what is actually stored, but the message is written AFTER
+    // that — renderRelookSetting ends by writing its own status line, so saying it first
+    // would have wiped the error one line later and the change would look like it saved.
     renderRelookSetting();
+    say("relookMsg", error.message);
   }
 };
 
@@ -3802,11 +3841,11 @@ function renderProviderHelp() {
 
 $("provider").onchange = renderProviderHelp;
 
-$("settingsBack").onclick = () => { location.hash = ""; };
+$("settingsBack").onclick = () => { showTab("home"); };
 $("addKey").onclick = addKey;
 $("navSettings").onclick = () => { location.hash = "#/settings"; };
 $("navGuide").onclick = () => { location.hash = "#/guide"; };
-$("guideBack").onclick = () => { location.hash = ""; };
+$("guideBack").onclick = () => { location.hash = ""; };  // Home, and it is reachable before signing in.
 $("home").onclick = () => { showTab("home"); };
 
 // ---------------------------------------------------------------- search and filters
@@ -3823,8 +3862,7 @@ $("filters").onclick = (event) => {
 $("views").onclick = (event) => {
   const button = event.target.closest("button");
   if (!button) return;
-  grouping = button.dataset.view;
-  for (const other of $("views").children) other.classList.toggle("active", other === button);
+  setGrouping(button.dataset.view);
   renderList();
 };
 
@@ -3843,7 +3881,11 @@ $("signIn").onclick = async () => {
 $("signOut").onclick = () => {
   // The device copy is the whole notebook in clear text. Signing out on a shared or
   // borrowed machine has to take it with you, so the next sync starts from nothing.
-  try { localStorage.removeItem(cacheKey()); } catch { /* nothing to remove */ }
+  try {
+    localStorage.removeItem(cacheKey());
+    localStorage.removeItem(seenKey());
+    localStorage.removeItem(snoozeKey());
+  } catch { /* nothing to remove */ }
   signOut(auth);
 };
 
@@ -3853,6 +3895,7 @@ onAuthStateChanged(auth, async (account) => {
   applyChrome();
   if (!account) {
     store = structuredClone(EMPTY);
+    seenBefore = null;
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
     return;
   }

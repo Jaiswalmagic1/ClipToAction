@@ -279,6 +279,31 @@ describe("a new table never spends an allowance by itself", () => {
     assert.equal(JSON.parse(row.items).length, 1, "the tactic now has a row to tick off");
   });
 
+  // D39, tightened after review: a reel that already carries rows is never re-read at all,
+  // whatever version it was written against. Re-reading REPLACES the rows, and a decision
+  // is keyed on a row's flattened name (D34) — so a re-run that renames one leaves his
+  // "ordered" pointing at nothing. A speculative table is not worth that.
+  test("a reel that now has rows is protected, even when it is behind", async () => {
+    harness.database
+      .prepare("UPDATE analyses SET shapes_version = NULL WHERE source_id = ?")
+      .run(sourceId);
+
+    const before = harness.providerCalls.length;
+    const run = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    assert.equal(run.body.done, 0);
+    assert.equal(run.body.remaining, 0);
+    assert.equal(harness.providerCalls.length, before, "nothing may be spent on it");
+    assert.equal(
+      JSON.parse(
+        harness.database
+          .prepare("SELECT items FROM analyses WHERE source_id = ? AND user_id = ''")
+          .get(sourceId).items
+      ).length,
+      1,
+      "and its rows are untouched"
+    );
+  });
+
   test("a reel already read under the current shapes is never re-read again", async () => {
     const before = harness.providerCalls.length;
     const run = await harness.call(worker, "/v1/kinds", { method: "POST", token });
@@ -294,7 +319,7 @@ describe("a new table never spends an allowance by itself", () => {
   test("a reel that was asked and truly had nothing is not offered for ever", async () => {
     harness.answerProviderWith(() => harness.geminiReplyWith(answer("tactic", [])));
     harness.database
-      .prepare("UPDATE analyses SET shapes_version = NULL WHERE source_id = ?")
+      .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL WHERE source_id = ?")
       .run(sourceId);
 
     await harness.call(worker, "/v1/kinds", { method: "POST", token });
@@ -312,10 +337,36 @@ describe("a new table never spends an allowance by itself", () => {
     assert.equal(run.body.remaining, 0);
   });
 
+  // The version is the ONLY test of whether a reel is behind. An earlier draft also asked
+  // `kind IS NULL`, which never becomes false for a reel whose AI keeps answering with a
+  // kind nobody recognises — so the offer came back for ever and every press spent a call.
+  test("a reel whose kind the AI cannot name still leaves the queue", async () => {
+    harness.database
+      .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL, kind = NULL WHERE source_id = ?")
+      .run(sourceId);
+    harness.answerProviderWith(() =>
+      harness.geminiReplyWith({ ...answer("tactic", []), kind: "setting" })
+    );
+
+    const first = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    assert.equal(first.body.done, 1);
+    const row = harness.database
+      .prepare("SELECT kind, shapes_version FROM analyses WHERE source_id = ? AND user_id = ''")
+      .get(sourceId);
+    assert.equal(row.kind, null, "a kind nobody agreed on is still not a kind");
+    assert.equal(row.shapes_version, ITEM_SHAPES_VERSION, "but it WAS asked, and that is what counts");
+
+    const before = harness.providerCalls.length;
+    const second = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    assert.equal(second.body.done, 0);
+    assert.equal(second.body.remaining, 0);
+    assert.equal(harness.providerCalls.length, before, "a second press must spend nothing");
+  });
+
   test("without a key nothing is attempted, and it says so", async () => {
     harness.database.prepare("DELETE FROM ai_keys WHERE user_id = 'vish'").run();
     harness.database
-      .prepare("UPDATE analyses SET shapes_version = NULL WHERE source_id = ?")
+      .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL WHERE source_id = ?")
       .run(sourceId);
 
     const before = harness.providerCalls.length;

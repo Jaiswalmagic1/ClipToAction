@@ -95,12 +95,32 @@ describe("what opens", () => {
   test("the notebook is still there, one press away, and it is still the notebook", () => {
     const tabs = app.$("tabs");
     assert.deepEqual(tabs.children.map((child) => child.textContent), ["Home", "Notebook"]);
-    tabs.onclick({ target: tabs.children[1] });
+    app.tab("notebook");
     assert.equal(app.$("listView").hidden, false);
     assert.equal(app.$("homeView").hidden, true);
     // Nothing he uses today may be removed — that was the condition on the whole change.
     assert.ok(app.$("clipList").textContent.includes("A reel"));
     assert.equal(app.$("saveView").hidden, false, "the save box is on both landing screens");
+  });
+
+  test("one press draws one screen, not two", () => {
+    // Setting the address fires the app's own hashchange handler, so calling render()
+    // alongside it would rebuild everything twice — and on two hundred clips with a search
+    // running, a rebuild means re-reading every transcript.
+    const before = app.renders();
+    app.tab("home");
+    assert.equal(app.renders() - before, 1, "going to Home drew more than once");
+
+    const again = app.renders();
+    app.tab("notebook");
+    assert.equal(app.renders() - again, 1, "going to the notebook drew more than once");
+  });
+
+  test("pressing the tab you are already on still redraws", () => {
+    app.tab("notebook");
+    const before = app.renders();
+    app.tab("notebook");
+    assert.equal(app.renders() - before, 1, "the address did not change, so nothing fired");
   });
 
   test("opening the app spends nothing", () => {
@@ -376,8 +396,8 @@ describe("what's new since you last looked", () => {
     const first = app.text("homeView");
     // Going to the notebook and back must not empty the section — which is exactly what
     // happens if the "last looked" mark is moved on every draw.
-    app.$("tabs").onclick({ target: app.$("tabs").children[1] });
-    app.$("tabs").onclick({ target: app.$("tabs").children[0] });
+    app.tab("notebook");
+    app.tab("home");
     assert.equal(app.text("homeView").includes("videos you saved"), first.includes("videos you saved"));
     app.restore();
   });

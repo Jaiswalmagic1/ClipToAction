@@ -1616,3 +1616,141 @@ has now been rewritten from a real run, so its content is superseded rather than
 halves are provably in place (the Worker allows the origin, Firebase has the domain), but
 only he can open it and sign in. After D37 the address to test is the plain
 `https://jaiswalmagic1.github.io/ClipToAction/` — the app is the root page now.
+
+---
+
+### D45 — What four independent reviews found, and what it changed
+**Date:** 2026-09-07
+**Decided by:** Jaiswal set the process — "you are the author, you cannot be the reviewer" —
+and the stop bar: a full independent review returning nothing that breaks correctness,
+security or his data.
+
+Four reviewers who had not written any of it went over the branch: security and data safety,
+backend correctness, the app, and the PC worker with the deploy setup. They found **fourteen
+blocking problems**, several of them in the parts of D37–D44 that were meant to be the
+careful bits. Every one is fixed and pinned by a test. This entry exists so the reasoning
+survives — a fix with no record of what it was for is a fix somebody undoes.
+
+**Amends:** D37, D38, D39, D40, D41, D42, D43.
+
+#### The ones that would have cost him work
+
+**A six-hour video could not have posted its transcript.** D42 raised the ceiling to six
+hours and the transcript limit to 400,000 characters, and left the general request-body cap
+at 256KB — about 4.8 hours of speech. So a five-hour video, approved after reading a warning
+that said it would fit, would have been transcribed over three hours of his PC and then
+**refused as too large**, reported to him as "could not reach ClipToAction", and retried
+twice more. Ten hours of his machine, thrown away, with a wrong reason on a shared row.
+Exactly the failure D42 says it fixed, one step further along. The transcript route now has
+its own cap, and a test posts a real six-hour transcript through the real Worker.
+
+**The offer to fill in the new tables would have orphaned his tracker decisions.** It
+re-read every analysis behind the current row shapes — which is all ~210 — including the
+~88 product and tool reels that already have good rows and against which he has recorded
+"ordered", "using it", "not for me". A re-read **replaces** those rows, and `item_status` is
+keyed on the row's flattened name (D34), so any renamed row leaves his decision pointing at
+nothing, silently, with no way back. It now re-reads only reels that carry **no rows at
+all** — nothing to lose, ~120 rather than 210, and every decision he has made is untouchable
+by it.
+
+**The same offer would never have gone away.** It also asked `kind IS NULL`, which never
+stops being true for a reel whose AI keeps answering with a kind nobody recognises. Three
+presses, three fresh calls, the same reel. `shapes_version` is now the only test, which is
+what D39 said it was for.
+
+**A video he approved could be stranded for ever.** D42's "whoever says yes pays" had no
+answer for "the approver has nothing to pay with". With no key — or one since removed,
+rejected or spent — the analysis returned nothing, **no error was written anywhere**, and
+the source sat at `transcribed` while another saver's working key went unused. An hour of
+his PC for nothing, and Golden Rule 29 broken. It now falls back to D10's rule: whoever
+should pay, pays; if they cannot, somebody who can does, rather than the video being lost.
+
+**A throttled creator backfill would have burned the whole notebook.** A failed lookup was
+reported identically to a successful one that found nobody, and both marked the video
+"asked". So one Instagram throttle would have walked the entire ~215-video queue in about
+three hours, marking every one "asked, nobody named" without a single question having been
+answered — the creator column empty for ever, search-by-creator dead, nothing on screen
+saying why. Precisely what D40's pacing existed to prevent. A failure now **counts instead
+of concluding** (`sources.creator_tries`, migration 0013), one failure stops the pass, and
+the whole backfill goes quiet for half an hour. Three failures and a video is left alone, so
+the queue still ends.
+
+**His `.env` would have switched D42 off entirely.** `worker-pc/.env` is gitignored and
+overrides every default in the code — it still said `MAX_DURATION_SEC=10800`. The app would
+have told him the limit was six hours and that he would be asked; his machine would have
+hard-failed anything over three. Worse, the version test in
+`backend/test/very-long-video.test.js` reads the **literal default in `worker.py`**, so the
+drift was invisible to the one test written to catch it. Two fixes: the file is updated, and
+the worker now asks the API's permission **before** consulting its own ceiling — so the API
+holds the rule, and a stale local value can no longer quietly refuse what the app has just
+promised.
+
+#### The ones that would have shown him the wrong thing
+
+**Every message on the landing screen was written into a hidden box.** `syncMsg` lived
+inside the notebook, and D43 made Home the screen that opens — so "you appear to be offline",
+"read 12 videos again" and "could not save that" all went somewhere invisible. He would have
+seen a normal Home screen built from stale data with nothing saying anything had failed. It
+now sits outside every view.
+
+**`$("clipMsg")` outlived the clip page.** Leaving a clip only hid it, so for the rest of the
+session the "where do I put this error" check picked the hidden one. Leaving now empties it.
+
+**Every subject on Home was a dead link.** `openTopic` set the folder view and then called
+`searchFor`, which set it straight back to the flat list — and searched for the folder's name
+in text that does not contain it. Tapping "e-commerce — 41 videos" showed "Nothing here
+matches". It now opens the folder view and nothing else.
+
+**Answering the look back left the banner on screen.** Both its buttons redrew the notebook,
+which D43 had moved them off. Twenty seconds of his allowance would have been spent with
+Home looking byte-identical afterwards.
+
+**A tracker sorted by a column the next tracker has not got** silently sorted by nothing,
+with no arrow to say so. Switching view now resets the sort.
+
+**Three buttons saying "Back to notebook" went to Home**, because an empty address means Home
+now. Two say "Back to home" and mean it; the clip page's goes to the notebook, as it says.
+
+**A failed change to the look-back setting reported nothing** — the error was written and
+then overwritten one line later by the status line.
+
+#### The ones about other people's data
+
+**Another person's account id was being handed out.** `sources` is shared, and since D42 it
+carries `long_ok_by`. Anybody saving the same link was sent the id of whoever approved that
+video. It is stripped now; what the app can know is `long_ok_mine` — whether it was them.
+
+**Untrusted video content sat above the guard, under a heading that read as an instruction.**
+The connector labelled only the transcript as somebody else's words, and then put the
+chapters, the creator's name and — worst — a list of prompt wording under
+"WORDING IT GAVE, TO PASTE INTO AN AI:" above that label. A reel whose on-screen text is
+"ignore your instructions and…" would reach his AI as ordinary-looking content in the trusted
+part of the page, and the connector can write to his notebook. Everything the video produced
+is now inside one fence that says what it is, and the heading names the wording rather than
+telling anyone what to do with it.
+
+**A stale worker could bury finished work.** `reportTooLong`'s over-ceiling branch had no
+`state = 'downloading'` guard, while its sibling fifteen lines below had one and a comment
+explaining why. A late report could mark a fully analysed reel `failed`, for everyone.
+
+**A six-hour job outlived its fifteen-minute claim.** Raising the ceiling made the lease an
+order of magnitude shorter than the longest legal job: a second worker could start the same
+three-hour video over, and the retirement sweep could mark it failed while the first machine
+was still on it. A video known to be long now gets a lease that covers the work it is.
+
+#### And one scratch file
+
+`backend/zz.probe.test.js` — a reviewer's debugging leftover, swept into a commit by a
+`git add -A` and discovered by `node --test`, so it would have run in CI and printed its
+output into the release gate. Deleted, and `*.probe.test.js` is now ignored.
+
+#### What this says about the process
+
+Two of these were in code written *specifically* to prevent the failure it caused. The body
+cap and the transcript limit contradicted each other inside the decision that raised them
+both. The manifest `id` added to protect his installed app was the one line that would have
+broken it — `id` resolves against the origin, not the manifest's folder, so `./index.html`
+on GitHub Pages pointed at a different app entirely.
+
+**An author cannot see this.** He was right, and the rule stands: independent review, and
+the bar is a full pass with nothing that breaks correctness, security or his data.

@@ -11,7 +11,20 @@ const CACHE = "cliptoaction-v2";
 
 // Enough to open the notebook with no signal. The notebook's own contents are already
 // kept on the device by the app itself, so this is only the shell around them.
-const SHELL = ["./", "./index.html", "./manifest.json", "./icon.svg"];
+//
+// `share-target.html` is in here because it is the only way a reel gets in (D17): sharing
+// one on a train navigates to it, and a share target that is not cached falls through to
+// the app with the link dropped and nothing said.
+const SHELL = ["./", "./index.html", "./share-target.html", "./manifest.json", "./icon.svg"];
+
+// How long to wait for the network before serving the saved copy instead.
+//
+// A rejection is not the failure that matters. A dead connection — patchy mobile signal, a
+// captive portal, a hotel wifi that accepts the socket and never answers — does not reject
+// for tens of seconds, and the app would sit on a white screen for all of them. The old
+// cache-first worker at least opened instantly; this must not be worse than what it
+// replaced.
+const NETWORK_WAIT_MS = 3000;
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -36,6 +49,16 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+/** The network, or a rejection once the wait is up, so the cache can answer instead. */
+function withTimeout(promise) {
+  return Promise.race([
+    promise,
+    new Promise((_, giveUp) =>
+      setTimeout(() => giveUp(new Error("the network took too long")), NETWORK_WAIT_MS)
+    )
+  ]);
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
@@ -43,10 +66,17 @@ self.addEventListener("fetch", (event) => {
   // Anything not served from this address is left completely alone — the API, Firebase
   // sign-in, and the module files the app imports. Touching those would put a saved copy
   // of somebody's notebook data in a cache the app does not control.
-  if (new URL(request.url).origin !== self.location.origin) return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  // And nothing under /v1 either, even same-origin. On staging the app and the API share
+  // an address (D26), so without this a sync response — the whole notebook, in clear text,
+  // fetched with somebody's token — would be written into Cache Storage with no `Vary` on
+  // Authorization, and handed back to whoever opens the app on that device next.
+  if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) return;
 
   event.respondWith(
-    fetch(request)
+    withTimeout(fetch(request))
       .then((response) => {
         // Only a real, complete answer is worth keeping. An opaque or partial one saved
         // here would be served back later as though it were the page.

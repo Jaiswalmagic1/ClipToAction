@@ -67,6 +67,11 @@ cd backend && npm run dev
 cd backend && npm run deploy:staging
 ```
 
+**Any new file in `backend/migrations/` is applied BEFORE that command, not after.**
+Deploying code that expects a column the database has not got breaks every route that reads
+that table at once, and an empty notebook reads exactly like data loss. See
+`backend/README.md` for the command and for how to check which have landed.
+
 Only after a real reel has gone end to end through staging:
 
 ```bash
