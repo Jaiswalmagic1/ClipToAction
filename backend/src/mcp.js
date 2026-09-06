@@ -264,10 +264,10 @@ const istStamp = (milliseconds) =>
 async function ownRows(env, userId) {
   const rows = await env.DB.prepare(
     `SELECT c.id, c.created_at, c.status,
-            s.url_original, s.platform,
+            s.url_original, s.platform, s.creator, s.duration_sec,
             t.text AS transcript,
             a.summary, a.key_points, a.claims, a.learn_more, a.topic, a.sub_topic,
-            a.kind, a.items
+            a.kind, a.items, a.sections
      FROM clips c
      JOIN sources s ON s.id = c.source_id
      LEFT JOIN transcripts t ON t.source_id = c.source_id
@@ -322,6 +322,16 @@ async function runSearch(env, userId, args) {
       jsonList(clip.key_points).join(" "),
       jsonList(clip.learn_more).join(" "),
       jsonList(clip.claims).map((c) => `${c?.claim || ""} ${c?.why || ""}`).join(" "),
+      // Who made it (D40), so "what have I saved from that Meesho seller?" works here and
+      // not only in the app's own search box.
+      clip.creator,
+      // The chapters of a long video (D33). They were being written and stored and were
+      // reachable from nowhere but the app — so an hour-long talk arrived at the AI as a
+      // summary and an undifferentiated wall of speech, which is the one shape chapters
+      // exist to avoid.
+      jsonList(clip.sections).map((part) => `${part?.heading || ""} ${part?.detail || ""}`).join(" "),
+      // The rows a video carries, for all four kinds that have them (D34, D38).
+      jsonList(clip.items).map((row) => Object.values(row || {}).join(" ")).join(" "),
       notes.filter((note) => note.clip_id === clip.id).map((note) => note.body).join(" "),
       learnings.filter((row) => row.clip_id === clip.id).map(learningWords).join(" ")
     ].filter(Boolean).join(" ").toLowerCase();
@@ -353,6 +363,7 @@ async function runFetch(env, userId, args) {
   const lines = [];
 
   lines.push(`Saved on ${istDate(clip.created_at)}.`);
+  if (clip.creator) lines.push(`Made by: ${clip.creator}`);
   if (clip.topic) {
     lines.push(`Filed under: ${clip.topic}${clip.sub_topic ? ` › ${clip.sub_topic}` : ""}`);
   }
@@ -373,12 +384,29 @@ async function runFetch(env, userId, args) {
   const learn = jsonList(clip.learn_more);
   if (learn.length) lines.push("", "WORTH STUDYING:", ...learn.map((item) => `- ${item}`));
 
+  // A long video's chapters, with the times written into them (D33). Without these an
+  // hour-long talk reaches the AI as a summary and an undifferentiated wall of speech, and
+  // "where did they talk about pricing" has no answer but re-reading the whole thing.
+  const chapters = jsonList(clip.sections);
+  if (chapters.length) {
+    lines.push("", "HOW IT RUNS, IN ORDER:");
+    for (const chapter of chapters) {
+      const at = chapter?.at ? `[${chapter.at}] ` : "";
+      lines.push(`- ${at}${chapter?.heading || ""}${chapter?.detail ? ` — ${chapter.detail}` : ""}`);
+    }
+  }
+
   // The rows a product or tool video carries (D34). Handed over as named facts rather
   // than as prose, so the AI can be asked "which of these is under thirty rupees" and
   // answer from the notebook instead of re-reading the transcript and guessing.
   const rows = jsonList(clip.items);
   if (rows.length) {
-    lines.push("", clip.kind === "product" ? "THINGS IT SHOWED:" : "TOOLS IT NAMED:");
+    lines.push("", {
+      product: "THINGS IT SHOWED:",
+      tool: "TOOLS IT NAMED:",
+      prompt: "WORDING IT GAVE, TO PASTE INTO AN AI:",
+      tactic: "WHAT IT SAYS IS WORTH TRYING:"
+    }[clip.kind] || "WHAT IT NAMED:");
     for (const row of rows) {
       const said = Object.entries(row || {})
         .filter(([, value]) => value !== null && value !== undefined && value !== "")
@@ -429,7 +457,10 @@ async function runFetch(env, userId, args) {
       saved_at: istStamp(clip.created_at),
       status: clip.status || "",
       topic: clip.topic || "",
-      sub_topic: clip.sub_topic || ""
+      sub_topic: clip.sub_topic || "",
+      // D40 and D33. Both were already stored and neither was reachable from here.
+      creator: clip.creator || "",
+      duration_sec: Number(clip.duration_sec || 0)
     }
   };
 }

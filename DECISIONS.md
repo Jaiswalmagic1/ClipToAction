@@ -63,6 +63,7 @@ The reel is a seed, not the destination.
 | D41 | The look back | Every fortnight by default, changeable to weekly, monthly or never. It is an offer with a number on it and a button — one call over the reels that have been sitting unlooked-at, and no timer anywhere. Nothing is marked until the round-up is stored. |
 | D42 | Very long videos | Past 30 minutes nothing downloads until he has been told the length, the time his PC is tied up, that everything queues behind it and that it can spend a day of a key - then said yes. A refusal parks it, and parked is never failed. The ceiling goes from 3 hours to 6, and the transcript limit moves with it so the refusal cannot come after the work. Whoever approves pays. |
 | D43 | Home screen | The app opens on four sections he chose - what to act on, what he is learning about, what needs attention, what is new since he last looked. All of it computed from what the device already holds, so opening the app spends nothing. The notebook is one tab away and nothing in it was moved or removed. |
+| D44 | The leftovers | Chapters, creators and the new tracker rows now reach the connector - they were stored, drawn in the app and reachable from it by nothing. The stale project dashboard is deleted, HANDOVER.md says it is a snapshot, and the merged branches are gone. |
 
 ---
 
@@ -87,13 +88,15 @@ The reel is a seed, not the destination.
 |---|---|---|
 | 1 | D1 schema + Worker API (auth, dedupe, delta sync, copy-paste tier) | Built and **deployed to staging** 2026-08-21 |
 | 2 | PC worker (yt-dlp → faster-whisper → transcript) + Worker-side analysis | **Proven end to end on staging** 2026-08-21 — save → claim → download → transcribe → post back → Gemini analysis → read back |
-| 3 | App rewrite — Google sign-in, delta sync, notebook view | **In progress** — decided in D21–D23, being built on a branch |
-| 4 | The six value features (below) | **Topics built and proven end to end** 2026-08-22 (D27) — migration, contract, filing, the sort button and the app's topic view. A real reel came back named and filed on staging |
-| 5 | Compliance + launch gates | Not started |
+| 3 | App rewrite — Google sign-in, delta sync, notebook view | **Done and live.** `index.html` IS the app since the D21 swap (D37); the old capture page and its GitHub-token sync are in git history |
+| 4 | The six value features (below) | **Four of six built.** Topics (D27), the learning loop (D29), kinds and trackers (D34, D38), and the fortnightly look back (D41) — the last of which is the weekly nudge, in the app rather than by email |
+| 5 | Compliance + launch gates | Not started. Production is parked and is not raised until he says the app is open to the public (D36) |
 
-The six agreed value features: merge clips into one topic · "you already know this" ·
-turn advice into a task · weekly nudge · credibility flag · share a notebook.
-Their tables exist in `backend/schema.sql`; none have endpoints yet.
+The six agreed value features: merge clips into one topic (built, D27) · "you already
+know this" (built as the learning loop, D29) · turn advice into a task (still only a
+`suggested_task` field) · weekly nudge (built as the fortnightly look back, D41) ·
+credibility flag (built — claims carry a confidence, and D43 surfaces the doubted ones) ·
+share a notebook (not started).
 
 ---
 
@@ -104,7 +107,7 @@ Their tables exist in `backend/schema.sql`; none have endpoints yet.
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | 190 tests, `cd backend && npm test`. Covers canonicalisation, paste parsing, analysis validation, the auth surface end to end, topics — that one analysis serves every saver, that topic rows never cross between notebooks, and that a hand-set topic is never moved — whether the app can tell the PC worker is running, the connector that lets an AI app read and write the notebook (both handshake versions, that saved keys are never stored in plain text, that one user can never see another's notebook, and that what the AI learns gets written back), and that every time shows in India time (D31), and long videos end to end (D33) -- that a reel is left exactly as it was, that the tidied transcript is never the stored one, and that both AI tiers are handed the same prompt. Plus 12 in `worker-pc`, `python -m unittest discover -p "test_*.py"`, guarding the transcription settings (D28) |
+| Test suite | **377 tests**, `cd backend && npm test`, plus **25** in `worker-pc`, `python -m unittest discover -p "test_*.py"`. They cover canonicalisation and dedupe, paste parsing, analysis validation, the auth surface end to end, topics (one analysis serves every saver, topic rows never cross notebooks, a hand-set topic is never moved), whether the app can tell the PC worker is running, the connector (both handshake versions, saved keys never in plain text, one notebook never visible from another, learnings written back, and since D38–D40 the chapters, creators and tracker rows that used to be reachable from nowhere), India time (D31), long videos (D33), several AI keys (D35), the new tables and the ask-before-backfill rule (D38, D39), the fortnightly look back (D41), the warning before a very long video (D42), and — new — **the app itself**, run out of `index.html` in Node against a real-shaped sync response (D43). The `worker-pc` tests guard the transcription settings (D28), the creator backfill's pacing (D40) and that a long video is asked about before it is downloaded (D42) |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |

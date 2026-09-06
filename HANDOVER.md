@@ -1,5 +1,14 @@
 # ClipToAction — session handover, 2026-08-21
 
+> **This is a snapshot of one day and it has not been kept up to date.** Much of it is now
+> wrong: the app is `index.html` and not `app.html` (D37), topics are long built (D27), and
+> several of the "outstanding" items below have shipped. It is kept because the reasoning in
+> it is still worth reading, not because it describes today.
+>
+> **For where things actually stand, read `CLAUDE.md` → `DECISION_LOG.md` → `DECISIONS.md`,
+> and then the project memory.** Those three are maintained; this file is not.
+
+
 Paste this into a new session. It is written to be read cold.
 
 ## Before anything else
@@ -156,8 +165,8 @@ touched.
 - Every per-user table carries `updated_at` (D6).
 - No silent failures (Golden Rule 29).
 - Check `git status` for pre-existing changes before staging anything (Golden Rule 30).
-  **`project_dashboard.html` and `data/` are Jaiswal's, uncommitted, and not yours to
-  commit.**
+  (`project_dashboard.html` was removed in 2026-09: it was a hand-written status page that
+  had gone stale, and `DECISIONS.md` is the maintained answer to the same question.)
 
 ## The commit gate
 

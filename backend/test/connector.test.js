@@ -362,6 +362,97 @@ describe("reading the notebook", () => {
   });
 });
 
+describe("what a long video and a creator look like through the connector", () => {
+  let longClip;
+
+  before(async () => {
+    await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token: amy,
+      body: { url: "https://www.facebook.com/share/r/ANHOURTALK/" }
+    });
+    const source = harness.database
+      .prepare("SELECT * FROM sources WHERE url_canonical LIKE ?")
+      .get("%ANHOURTALK%");
+
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(source.id);
+    await harness.call(worker, `/v1/sources/${source.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: {
+        text: "[0:00:00] hello [0:12:00] now about pricing",
+        lang: "en",
+        engine: "test",
+        title: "An hour with a seller",
+        duration_sec: 69 * 60,
+        creator: "Ecom Guruji"
+      }
+    });
+
+    harness.database
+      .prepare(
+        `INSERT INTO analyses (source_id, user_id, provider, model, summary, key_points,
+                               learn_more, claims, sections, kind, items, created_at)
+         VALUES (?, '', 'gemini', 'test', ?, '[]', '[]', '[]', ?, 'prompt', ?, ?)`
+      )
+      .run(
+        source.id,
+        "An hour of talk about selling online.",
+        JSON.stringify([
+          { at: "0:00:00", heading: "Introductions", detail: "Who he is." },
+          { at: "0:12:00", heading: "Pricing", detail: "How he works out a margin." }
+        ]),
+        JSON.stringify([{ name: "/botanical leaf", does: "puts the product among leaves" }]),
+        Date.now()
+      );
+
+    longClip = harness.database
+      .prepare("SELECT * FROM clips WHERE user_id = ? AND source_id = ?")
+      .get("amy", source.id);
+  });
+
+  // These were all being written, stored and shown in the app, and were reachable from
+  // here by nothing at all. An hour-long talk arrived as a summary and a wall of speech.
+  test("the chapters come across, with their times (D33)", async () => {
+    const found = structured(await callTool(amysSecret, "fetch", { id: longClip.id }));
+    assert.match(found.text, /HOW IT RUNS, IN ORDER/);
+    assert.match(found.text, /\[0:12:00\] Pricing/);
+    assert.match(found.text, /How he works out a margin/);
+  });
+
+  test("a chapter heading is searchable, so 'where did they talk about pricing' works", async () => {
+    const results = structured(await callTool(amysSecret, "search", { query: "margin" })).results;
+    assert.equal(results.length, 1);
+    assert.equal(results[0].id, longClip.id);
+  });
+
+  test("who made it comes across, and can be searched for (D40)", async () => {
+    const found = structured(await callTool(amysSecret, "fetch", { id: longClip.id }));
+    assert.match(found.text, /Made by: Ecom Guruji/);
+    assert.equal(found.metadata.creator, "Ecom Guruji");
+    assert.equal(found.metadata.duration_sec, 69 * 60);
+
+    const results = structured(await callTool(amysSecret, "search", { query: "ecom guruji" })).results;
+    assert.equal(results.length, 1);
+    assert.equal(results[0].id, longClip.id);
+  });
+
+  test("the rows of the new kinds are named for what they are (D38)", async () => {
+    const found = structured(await callTool(amysSecret, "fetch", { id: longClip.id }));
+    assert.match(found.text, /WORDING IT GAVE, TO PASTE INTO AN AI/);
+    assert.match(found.text, /botanical leaf/);
+
+    const results = structured(await callTool(amysSecret, "search", { query: "botanical" })).results;
+    assert.equal(results.length, 1, "a tracker row must be findable, not only readable");
+  });
+
+  test("a reel with no chapters is exactly as it was", async () => {
+    const found = structured(await callTool(amysSecret, "fetch", { id: amysClip.id }));
+    assert.ok(!found.text.includes("HOW IT RUNS"));
+    assert.equal(found.metadata.creator, "", "nobody named is empty, never a guess");
+  });
+});
+
 describe("Ben's connector is not a way into Amy's notebook", () => {
   test("his search never returns her reels", async () => {
     const response = await callTool(bensSecret, "search", { query: "keyword first" });

@@ -1571,3 +1571,48 @@ to say about each. `backend/test/helpers/appharness.js` runs the real module out
 Firebase imports are swapped on the way through because they are network modules; everything
 else is the app's own code. **There is no test hook in the shipped app** and nothing in
 `index.html` was changed to make this possible.
+
+---
+
+### D44 — Clearing the leftovers, and one of them was a real hole
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "clear the leftover list", meaning the things already flagged to
+him and never done.
+
+**1. Chapters, creators and tracker rows now reach the connector.** This was not
+housekeeping. `backend/src/mcp.js` named its columns one by one, and three things the app
+had been storing and drawing for weeks were reachable from the connector by nothing at all:
+
+| Missing | What it cost |
+|---|---|
+| `a.sections` (D33) | An hour-long talk arrived at his AI as a summary and an undifferentiated wall of speech. "Where did they talk about pricing" had no answer but re-reading the whole transcript — which is the exact shape chapters exist to avoid. |
+| `s.creator` (D40) | Searching by creator worked in the app and silently found nothing through the connector. |
+| `a.items` for the new kinds (D38) | A prompt or a tactic row could be read but not found — the rows were in `fetch` and not in `search`. |
+
+All three are now in both the search text and the fetched page, the chapters with their
+times, and the tracker heading names the kind it belongs to. A reel with no chapters is
+byte-for-byte what it was.
+
+**The lesson, since this is the second time:** a column named explicitly in a query is a
+list that silently stops being complete. Every future column on `sources` or `analyses`
+should be checked against `ownRows` in `mcp.js` before the change is called done.
+
+**2. `project_dashboard.html` is deleted.** A hand-written HTML status page, published to
+GitHub Pages, still saying the Telegram bot was active — a thing D17 removed in August. It
+answered the same question `DECISIONS.md` answers, by hand, with nobody updating it, which
+guarantees it is wrong again in a month. It is in git history if the layout is ever wanted.
+
+**3. `HANDOVER.md` carries a banner saying it is a snapshot.** Same failure, smaller: it is
+dated 2026-08-21, names topics as "the next job", and describes `app.html` as the app. The
+reasoning in it is still worth reading, so it is kept — with the first thing anyone reads
+being that it is not current and where to look instead.
+
+**4. The merged branches are deleted.** Eight of them, every one fully contained in `main`
+(checked with `git rev-list main..<branch>`, not assumed). The one with a commit of its own,
+`claude/nervous-lalande-9efa55`, corrected the test-count row in `DECISIONS.md` — that row
+has now been rewritten from a real run, so its content is superseded rather than dropped.
+
+**5. Nobody has signed in on the GitHub Pages address yet, and that is still true.** Both
+halves are provably in place (the Worker allows the origin, Firebase has the domain), but
+only he can open it and sign in. After D37 the address to test is the plain
+`https://jaiswalmagic1.github.io/ClipToAction/` — the app is the root page now.
