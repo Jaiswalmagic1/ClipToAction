@@ -260,6 +260,31 @@ describe("what I'm learning about", () => {
     const home = app.text("homeView");
     assert.ok(home.indexOf("e-commerce — 4") < home.indexOf("jewellery — 3"));
   });
+
+  // Pressing a subject has to ARRIVE at that subject. The first version searched for the
+  // folder's name in text that does not contain it and showed "Nothing here matches"; the
+  // second opened the folder view and stopped, which lands somewhere in the middle of two
+  // hundred cards with the folder a few hundred rows away and nothing marking it.
+  test("pressing a subject opens the folders and marks the one he pressed", () => {
+    const row = app
+      .$("homeView")
+      .walk()
+      .find((node) => node.classList.contains("tappable") && node.textContent.includes("jewellery"));
+    assert.ok(row, "the subject is not pressable");
+    row.onclick();
+
+    assert.equal(app.$("listView").hidden, false, "it must open the notebook");
+    const marked = app.$("clipList").byClass("landed");
+    assert.equal(marked.length, 1, "exactly one folder is marked as the one he pressed");
+    assert.equal(marked[0].textContent, "jewellery");
+    assert.equal(app.$("search").value, "", "and it is not a search — the name is not in the text");
+  });
+
+  test("and the mark does not stay on every later draw", () => {
+    app.tab("home");
+    app.tab("notebook");
+    assert.equal(app.$("clipList").byClass("landed").length, 0);
+  });
 });
 
 // ------------------------------------------------------------------ 3. needs attention

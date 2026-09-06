@@ -242,6 +242,13 @@
       vertical-align: top;
       white-space: nowrap;
     }
+    /* The folder he arrived at from Home, so he can see which one he pressed. */
+    h3.group.landed {
+      background: var(--pill-topic-bg);
+      color: var(--pill-topic-text);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
     /* One line of the home screen (D43). */
     .homerow { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
     .homerow:last-child { border-bottom: 0; }
@@ -2028,12 +2035,26 @@ function renderByTopic(wanted) {
     subs.get(path.subTopic).push(clip);
   }
 
-  const ordered = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const ordered = [...groups.entries()]
+    .map(([id, group]) => ({ id, ...group }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // The folder he pressed on Home, if he pressed one. Taken and cleared here, so it moves
+  // the page once and does not jump on every later draw.
+  const wantedTopic = focusTopicId;
+  focusTopicId = null;
+  let landOn = null;
 
   for (const group of ordered) {
     const heading = document.createElement("h3");
     heading.className = "group";
     heading.textContent = group.name;
+    if (group.id === wantedTopic) {
+      // Marked as well as scrolled to. Two hundred cards is a lot of page, and arriving
+      // near the right heading with nothing saying which one is only half an arrival.
+      heading.classList.add("landed");
+      landOn = heading;
+    }
     host.append(heading);
 
     // The clips filed straight under the topic come first, then each sub-topic.
@@ -2056,6 +2077,9 @@ function renderByTopic(wanted) {
     host.append(heading);
     for (const clip of unfiled) host.append(clipCard(clip, { showTopic: false }));
   }
+
+  // After the whole list exists, or there is nothing to scroll within yet.
+  if (landOn) landOn.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 /**
