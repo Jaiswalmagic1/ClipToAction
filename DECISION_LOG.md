@@ -2199,3 +2199,71 @@ everything else it examined came back verified: the shrunken cache's next start 
 to end with no loop and no loss, both placeholder lists checked one by one, `ignoreSearch`
 proved unable to serve a wrong page, the race's rejection proved to pass through unchanged,
 and cross-user isolation, the fence, the migrations and CI all clean.
+
+---
+
+### D50 — Round six: the front door D48 believed it had closed
+**Date:** 2026-09-07
+**Amends:** D48, D49.
+
+Round six verified every one of D49's six fixes against the files rather than the log —
+after D49 recorded a fix that did not exist — and found all six genuinely present and
+correct. It then found two things five rounds had missed.
+
+#### Anybody could put a reel in his notebook by sending him a link
+
+D48 closed the `#/share/<url>` route on the reasoning that a link carried in the address
+can come from anybody, while a link stored by `share-target.html` can only have come from
+this app. **The second half of that is false.** `share-target.html` is a page on a public
+address, and anybody can link straight to it:
+`.../share-target.html?url=<any reel they choose>`. Tapping it, `setItem` succeeds, no
+address fallback is used, the trust check is never consulted, and the app saves it with no
+press at all — his PC downloads and transcribes it, a day of an AI key goes on it, and
+content of the sender's choosing lands in the notebook his AI reads through the connector.
+
+The shape predates this branch. What this branch changed is the cost: on `main` a save was
+a row in a list. Here it is real work on his machine, real money on a free allowance, and
+real content in front of a model that can write back.
+
+**How it is closed.** The share sheet is a navigation from the operating system and carries
+no referring page. A link somebody sent carries the page it was tapped on. So
+`share-target.html` now looks at where it was opened FROM, and sends the two cases to two
+different addresses: `#/share/` for a genuine share it could not store, `#/share-ask/` for
+a link. The app saves the first and puts the second in the box for him to press. Both
+arrive with the share target as their referrer, so the ROUTE is what separates them — the
+referrer check alone would have let this straight through, which is why the first attempt
+at this fix was wrong.
+
+**What is not closed, said plainly.** A page that sends no referrer at all still looks like
+a share. Closing that completely would mean a confirmation on every capture, which is a
+press on the one path D17 says must be effortless. The residual is bounded and visible: the
+save is announced on screen, only allowlisted video hosts are accepted at all, there is a
+daily cap, and he can delete it. That is an accepted risk, not an oversight.
+
+#### Two guarantees asserted by tests that could not fail
+
+The test named "when nothing will fit, the last complete copy is left alone" wrote the
+complete copy into the store **by hand** and then read it back. It never called `saveCache`
+at all — the same shape as the fake `batch` D48 found in the harness, and the second time
+this exact mistake has been made. It now seeds a device with a real earlier cache, runs the
+app against a box that refuses everything, and checks what the app did to it.
+
+And D49 changed the harness's quota *specifically* so the share target's fallback could be
+exercised, and then wrote neither new test using it. Both do now.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+| Four | 7 | 5 |
+| Five | 3 | 3 |
+| Six | 2 | 1 |
+
+**Fifty-nine.** Round six also confirmed, file by file, that D49's migration drop is real,
+that the referrer meta does what it claims, that `cameFromShareTarget` cannot be spoofed and
+does not wrongly refuse a real share, and that the service worker's share skip does not cost
+the offline fallback. What it found instead was older than any of the review rounds: a
+premise stated in D48 that had never been true.

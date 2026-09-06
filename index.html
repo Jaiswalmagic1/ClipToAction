@@ -3577,13 +3577,17 @@ const cameFromShareTarget = () => {
 };
 
 function pendingShare() {
-  const carried = /^#\/share\/(.+)$/.exec(location.hash);
+  // Two routes, and only one of them is his own. `#/share/` is the share target saying it
+  // could not store the link; `#/share-ask/` is the share target saying somebody LINKED to
+  // it rather than sharing through it — that address is public and guessable, and until
+  // this existed, tapping such a link saved a reel with no press from him at all.
+  const carried = /^#\/(share|share-ask)\/(.+)$/.exec(location.hash);
   if (carried) {
-    const own = cameFromShareTarget();
+    const own = carried[1] === "share" && cameFromShareTarget();
     // Out of the address straight away, so a reload does not offer it twice.
     history.replaceState(null, "", location.pathname + location.search);
     try {
-      return { url: decodeURIComponent(carried[1]), own };
+      return { url: decodeURIComponent(carried[2]), own };
     } catch {
       // The address is already gone, so a link that cannot be read has to say so here or
       // it disappears without a word — on the one path a reel gets in by (D17).

@@ -11,7 +11,13 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
 import { loadApp, syncPayload } from "./helpers/appharness.js";
+
+const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const now = Date.now();
 
@@ -195,18 +201,31 @@ describe("when the device will not hold the whole notebook", () => {
   });
 
   test("and when nothing will fit, the last complete copy is left alone", async () => {
-    const app = await loadApp(payload(), { quotaChars: 100000 });
+    // Written so it can actually fail. An earlier version of this test put the complete
+    // copy into the store BY HAND and then read it back, which proves nothing about
+    // saveCache — the same shape of vacuous test the harness's fake `batch` was.
+    const first = await loadApp(payload(), { quotaChars: 100000 });
     const key = "cliptoaction-notebook-vish";
-    const complete = app.localStore.get(key);
-    assert.ok(complete);
-    app.restore();
+    const complete = first.localStore.get(key);
+    assert.ok(complete, "the first run must have cached something");
+    assert.ok(JSON.parse(complete).since > 0, "and it must be a complete copy");
+    first.restore();
 
-    // Now the box refuses everything. The previous copy must survive: stale and whole
-    // beats current and gutted.
-    const tiny = await loadApp(payload(), { quotaChars: 1 });
-    tiny.localStore.set(key, complete);
-    assert.equal(tiny.localStore.get(key), complete);
-    tiny.restore();
+    // Same device, same account, and now the box will not take anything at all. The app
+    // runs its whole save path against it — and must leave what is there alone. Stale and
+    // whole beats current with pieces missing.
+    const later = payload();
+    later.clips[0].status = "keep";
+    const second = await loadApp(later, { quotaChars: 1, seed: [[key, complete]] });
+
+    assert.equal(
+      second.localStore.get(key),
+      complete,
+      "a save that cannot fit must not damage the copy already there"
+    );
+    // And the app itself is working from the new data regardless.
+    assert.ok(second.text("homeView").length > 100);
+    second.restore();
   });
 });
 
@@ -245,7 +264,9 @@ describe("a link somebody sent him", () => {
   test("but his own share sheet still saves itself, even with the box full", async () => {
     const app = await loadApp(payload(), {
       hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FHISOWN%2F",
-      referrer: "https://app.test/share-target.html?url=x"
+      referrer: "https://app.test/share-target.html?url=x",
+      // The condition that puts the link in the address in the first place.
+      quotaChars: 1
     });
 
     assert.ok(
@@ -264,6 +285,41 @@ describe("a link somebody sent him", () => {
     assert.ok(!app.calls.some((url) => url.includes("/v1/clips")));
     assert.match(app.text("saveMsg"), /Press Save/);
     app.restore();
+  });
+});
+
+describe("somebody linking straight to the share target", () => {
+  // That address is public and guessable. Tapping such a link used to save the reel with
+  // no press at all: his PC downloads and transcribes it, a day of an AI key goes on it,
+  // and content of the sender's choosing lands in the notebook his AI reads.
+  test("is asked about, not saved", async () => {
+    const app = await loadApp(payload(), {
+      hash: "#/share-ask/https%3A%2F%2Fwww.instagram.com%2Freel%2FLINKED%2F",
+      // Even with the referrer of the real share target — the route is what decides,
+      // because a link to that page produces that referrer too.
+      referrer: "https://app.test/share-target.html?url=x"
+    });
+
+    assert.equal(app.$("saveUrl").value, "https://www.instagram.com/reel/LINKED/");
+    assert.ok(
+      !app.calls.some((url) => url.includes("/v1/clips")),
+      "a link he did not share must not save itself"
+    );
+    assert.match(app.text("saveMsg"), /Press Save/);
+    app.restore();
+  });
+
+  test("and the share target itself decides which route to use", () => {
+    // The two halves have to agree, and they live in different files.
+    const page = readFileSync(join(repo, "share-target.html"), "utf8");
+    assert.ok(page.includes('"#/share-ask/"'), "the share target cannot ask");
+    assert.ok(page.includes('"#/share/"'), "the share target cannot save");
+    assert.ok(
+      page.indexOf("external =") < page.indexOf("#/share-ask/"),
+      "it must work out where it was opened from BEFORE choosing"
+    );
+    // A cross-origin referrer means somebody linked here rather than sharing through it.
+    assert.ok(page.includes("!== window.location.origin"));
   });
 });
 

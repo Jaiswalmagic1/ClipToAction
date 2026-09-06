@@ -197,7 +197,8 @@ export async function loadApp(
     storageBlocked = false,
     failAfter = null,
     quotaChars = null,
-    referrer = ""
+    referrer = "",
+    seed = []
   } = {}
 ) {
   const html = readFileSync(join(repo, "index.html"), "utf8");
@@ -266,7 +267,9 @@ export async function loadApp(
     setInterval: globalThis.setInterval
   };
 
-  const store = new Map();
+  // What this device already had before the app started — a cache written by an earlier
+  // run, so a test can watch what the app does to it rather than only what it writes.
+  const store = new Map(seed);
   globalThis.document = document;
   globalThis.window = {
     addEventListener: (name, handler) => listeners.push([name, handler]),

@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Saving to ClipToAction</title>
   <!-- The address of the next page carries the link when storage will not, and the app
-       decides whether to trust it by where it came FROM. So the referrer has to survive
-       this navigation, and the default policy would strip it down to the bare origin. -->
+       decides whether to trust it by where it came FROM. The browser's own default already
+       sends the full URL for a same-origin navigation, so this is belt and braces against
+       a stricter policy arriving in a header later — not the thing that makes it work. -->
   <meta name="referrer" content="same-origin">
 </head>
 <body>
@@ -25,25 +26,58 @@
       url: params.get("url") || ""
     };
 
-    var stored = false;
+    // WHERE THIS PAGE WAS OPENED FROM, and it is the security question, not a detail.
+    //
+    // This address is public and guessable. Somebody can send him
+    // `.../share-target.html?url=<anything>` in a message, and until now tapping it saved
+    // that reel with no press: his PC downloads and transcribes it, a day of an AI key
+    // goes on it, and content of the sender's choosing lands in the notebook his AI reads.
+    //
+    // The share sheet itself is a navigation from the operating system, which carries no
+    // referring page. A link somebody sent carries the page it was tapped on. So a
+    // CROSS-ORIGIN referrer means this was a link, not a share, and the app is told to ask
+    // rather than to save.
+    //
+    // Not airtight, and deliberately not sold as such: a page that sends no referrer at
+    // all still looks like a share. The residual is bounded — the save is announced on
+    // screen, only allowlisted video hosts are accepted, and there is a daily cap — and
+    // closing it completely would cost a press on the one path that has to be effortless.
+    var external = true;
     try {
-      localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
-      stored = true;
+      external = Boolean(document.referrer)
+        && new URL(document.referrer).origin !== window.location.origin;
     } catch (error) {
-      // Storage is not available. Fall through -- the address carries it instead.
+      external = true;
     }
 
-    // When storage would not take it, the link travels in the address of the very next
-    // page. Same site, and it is a public video link he has just chosen to share, so
-    // nothing private is being put anywhere it was not already going.
+    var stored = false;
+    if (!external) {
+      try {
+        localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
+        stored = true;
+      } catch (storageError) {
+        // Storage is not available. Fall through -- the address carries it instead.
+      }
+    }
+
+    // When storage would not take it, or this was a link rather than a share, the link
+    // travels in the address of the very next page. Same site, and it is a public video
+    // link, so nothing private is being put anywhere it was not already going.
     //
-    // The app treats an address-carried link as somebody else's unless it arrived FROM
-    // this page -- which is what the referrer above is for. Without that marker his own
-    // share sheet would degrade, the moment his storage filled up, into "somebody shared
-    // this with you, press Save", which is both wrong and an extra press on the one path
-    // that has to be effortless.
+    // The app trusts an address-carried link only when it arrived FROM this page, which is
+    // what the referrer policy above is for. Without that marker his own share sheet would
+    // degrade, the moment his storage filled up, into "somebody shared this with you,
+    // press Save" -- an extra press and a false statement on the one path that has to be
+    // effortless.
+    // Two different addresses, because they mean two different things and the app must
+    // not have to guess. `#/share/` is "this app could not store it, save it for him";
+    // `#/share-ask/` is "somebody linked here, put it in the box and let him decide". Both
+    // arrive with this page as the referrer, so the route is what separates them.
     var found = (share.url + " " + share.text).match(/https?:\/\/\S+/);
-    var carry = !stored && found ? "#/share/" + encodeURIComponent(found[0]) : "";
+    var carry = "";
+    if (!stored && found) {
+      carry = (external ? "#/share-ask/" : "#/share/") + encodeURIComponent(found[0]);
+    }
     window.location.replace("index.html" + carry);
   </script>
   <noscript><p><a href="index.html">Open ClipToAction</a></p></noscript>
