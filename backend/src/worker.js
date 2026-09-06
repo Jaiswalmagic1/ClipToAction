@@ -732,7 +732,9 @@ async function storeTranscript(request, env, sourceId) {
            duration_sec = COALESCE(?2, duration_sec), error = NULL, error_detail = NULL,
            claimed_at = NULL,
            creator = COALESCE(?5, creator),
-           creator_checked_at = COALESCE(?3, creator_checked_at),
+           -- Always set, never coalesced: a download that reported no creator has still
+           -- LOOKED for one, and the backfill queue must not ask about it again (D40).
+           creator_checked_at = ?3,
            updated_at = ?3
        WHERE id = ?4 AND state = 'downloading'`
     ).bind(
@@ -897,11 +899,11 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
          (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
           suggested_task, topic, sub_topic, sections, kind, items, shapes_version,
           created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?15)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
          claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, sections = ?12,
-         kind = ?13, items = ?14, shapes_version = ?16, created_at = ?15`
+         kind = ?13, items = ?14, shapes_version = ?15, created_at = ?16`
     ).bind(
       sourceId,
       ownerId,
@@ -921,11 +923,11 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
         : null,
       kind,
       rows && rows.length ? JSON.stringify(rows) : null,
-      timestamp,
       // Which set of row shapes this reply was asked for. Written whatever came back,
       // including "nothing to track": the point of the number is that a reel which was
       // ASKED and had nothing is never offered for re-reading again (D39).
-      ITEM_SHAPES_VERSION
+      ITEM_SHAPES_VERSION,
+      timestamp
     )
   ];
 
