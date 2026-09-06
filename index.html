@@ -242,6 +242,13 @@
       vertical-align: top;
       white-space: nowrap;
     }
+    /* One line of the home screen (D43). */
+    .homerow { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+    .homerow:last-child { border-bottom: 0; }
+    .homerow.tappable { cursor: pointer; }
+    .homerow.tappable:hover { background: var(--chip-bg); }
+    .homerow .muted { font-size: 13px; margin-top: 2px; }
+    #homeView h3 { margin: 16px 0 4px; font-size: 14px; }
     .pill.creator { cursor: pointer; }
     .pill.creator:hover { text-decoration: underline; }
     table.tracker td.wrap { white-space: normal; min-width: 200px; }
@@ -396,6 +403,14 @@
   </div>
 
   <div id="appView" hidden>
+    <!-- D43. Home is what opens now, and the notebook is one press away and unchanged.
+         Nothing that was here before has been removed - that is the whole reason he chose
+         this over a redesign. -->
+    <div class="filters" id="tabs">
+      <button data-tab="home" class="active">Home</button>
+      <button data-tab="notebook">Notebook</button>
+    </div>
+
     <div class="panel" id="saveView">
       <h2>Save a link</h2>
       <form class="row" id="saveForm">
@@ -405,6 +420,8 @@
       <p class="muted">A link is all it needs. Everything else is worked out for you.</p>
       <div id="saveMsg"></div>
     </div>
+
+    <div id="homeView" hidden></div>
 
     <div id="listView">
       <div class="panel">
@@ -1092,11 +1109,21 @@ function learningText(learning) {
 }
 
 function show(view) {
-  for (const name of ["listView", "clipView", "settingsView"]) {
+  for (const name of ["homeView", "listView", "clipView", "settingsView"]) {
     $(name).hidden = name !== view;
   }
-  // A clip has its own page (D22) — the save box belongs to the notebook, not on top of it.
-  $("saveView").hidden = view !== "listView";
+  // A clip has its own page (D22) — the save box belongs on the two screens you land on,
+  // not on top of one reel.
+  $("saveView").hidden = view !== "listView" && view !== "homeView";
+  // The tabs belong to the two screens they switch between. On a clip's page or in
+  // settings they would be a control that does not describe where you are (D43).
+  $("tabs").hidden = view !== "listView" && view !== "homeView";
+  for (const button of $("tabs").children) {
+    button.classList.toggle(
+      "active",
+      button.dataset.tab === (view === "homeView" ? "home" : "notebook")
+    );
+  }
 }
 
 /** "3 days", "2 hours", "a few minutes" — how long since something happened. */
@@ -1245,15 +1272,14 @@ const latestRelook = () =>
  * panel rather than a notice so it can sit on the home screen and in the notebook without
  * being two different things.
  */
-function relookPanel(row, { heading = true } = {}) {
+function relookPanel(row) {
   const panel = document.createElement("div");
   panel.className = "panel";
 
-  if (heading) {
-    const title = document.createElement("h2");
-    title.textContent = "Your last look back";
-    panel.append(title);
-  }
+  const title = document.createElement("h2");
+  title.textContent = "Your last look back";
+  panel.append(title);
+
   const when = document.createElement("p");
   when.className = "muted";
   when.textContent = `${whenText(row.created_at)} — over ${row.clip_count} `
@@ -1332,8 +1358,8 @@ function renderList() {
   const health = workerNotice();
   if (health) $("clipList").append(health);
 
-  const lookBack = relookBanner();
-  if (lookBack) $("clipList").append(lookBack);
+  // The look back and its round-up live on Home now (D43), where they are the first thing
+  // seen rather than something sitting on top of the notebook every visit.
 
   // Videos waiting on an answer about their length (D42). At the top, because a question
   // sitting two hundred cards down is a question nobody answers — and because nothing is
@@ -1349,17 +1375,6 @@ function renderList() {
     title.style.marginBottom = "6px";
     ask.prepend(title);
     $("clipList").append(ask);
-  }
-
-  // The last round-up, folded away. It is a page of reading and it must not sit on top of
-  // the notebook every visit — but it must also not be somewhere you have to remember.
-  const last = latestRelook();
-  if (last) {
-    const fold = document.createElement("details");
-    const title = document.createElement("summary");
-    title.textContent = `Your last look back — ${whenText(last.created_at).toLowerCase()}`;
-    fold.append(title, relookPanel(last, { heading: false }));
-    $("clipList").append(fold);
   }
 
   // Nothing anywhere told a new person that saving reels does not, on its own, produce
@@ -1851,8 +1866,8 @@ function searchFor(phrase) {
   for (const button of $("views").children) {
     button.classList.toggle("active", button.dataset.view === "list");
   }
-  if (location.hash) location.hash = "";
-  else { show("listView"); renderList(); }
+  if (location.hash === "#/notebook") { show("listView"); renderList(); }
+  else location.hash = "#/notebook";
 }
 
 function clipCard(clip, { showTopic = true } = {}) {
@@ -2720,10 +2735,13 @@ const REFRESH_MS = 45 * 1000;
 let refreshTimer = null;
 
 async function refreshQuietly() {
-  if (!signedIn || document.hidden || location.hash) return;
+  // Home and the notebook only. A clip's page, settings and the guide all hold something
+  // half-typed, and a refresh must stop at the one screen where anything can be lost.
+  const landing = !location.hash || location.hash === "#/notebook";
+  if (!signedIn || document.hidden || !landing) return;
   try {
     await sync();
-    renderList();
+    render();
   } catch {
     // Offline. The device copy stands and the next pass will pick it up — a background
     // refresh must never put an error where the user did not ask for anything.
@@ -2737,6 +2755,470 @@ function startRefreshing() {
 
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshQuietly(); });
 window.addEventListener("focus", refreshQuietly);
+
+// ---------------------------------------------------------------- the home screen (D43)
+//
+// Four sections, and he picked all four himself. What they have in common is that every
+// one of them answers a question the notebook could not: a list of two hundred cards
+// newest-first cannot tell you what you owe yourself, what you are actually learning, what
+// is stuck, or what has happened since Tuesday.
+//
+// Everything here is computed from what the device already holds. Not one line of it costs
+// a call, a sync or an allowance — opening the app must never spend anything.
+//
+// The notebook is untouched and one press away. That is the whole reason he chose this
+// over a redesign: nothing he uses today has moved.
+
+/** How many rows one section shows before it starts hiding things. */
+const HOME_ROWS = 6;
+const DAY = 24 * 60 * 60 * 1000;
+
+const SEEN_KEY = "cliptoaction-home-last-seen";
+
+/**
+ * When he last opened this screen, read ONCE per session.
+ *
+ * Read once and then immediately moved on, so "what's new" holds still while he is reading
+ * it. Updating it on every render would empty the section the moment it drew, which is the
+ * obvious way to build this and is useless.
+ */
+let seenBefore = null;
+
+function markHomeSeen() {
+  if (seenBefore !== null) return;
+  try {
+    seenBefore = Number(localStorage.getItem(SEEN_KEY) || 0);
+    localStorage.setItem(SEEN_KEY, String(Date.now()));
+  } catch {
+    seenBefore = 0;
+  }
+  // Nothing remembered: a first visit, a new device, or storage that was cleared. A week
+  // is the honest answer to "since you last looked" when nobody knows.
+  if (!seenBefore) seenBefore = Date.now() - 7 * DAY;
+}
+
+function section(title, note) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  panel.append(heading);
+  if (note) {
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.textContent = note;
+    panel.append(line);
+  }
+  return panel;
+}
+
+/** A line of the home screen: some words, and pressing it opens the reel behind them. */
+function homeRow(text, { detail = "", clip = null, onClick = null } = {}) {
+  const row = document.createElement("div");
+  row.className = "homerow";
+
+  const main = document.createElement("div");
+  main.textContent = text;
+  row.append(main);
+
+  if (detail) {
+    const under = document.createElement("div");
+    under.className = "muted";
+    under.textContent = detail;
+    row.append(under);
+  }
+
+  const go = onClick || (clip ? () => { location.hash = `#/clip/${clip.id}`; } : null);
+  if (go) {
+    row.classList.add("tappable");
+    row.onclick = go;
+  }
+  return row;
+}
+
+/** "and 14 more" — said plainly rather than by silently cutting the list. */
+function andMore(hidden, where) {
+  const line = document.createElement("p");
+  line.className = "muted";
+  line.textContent = `and ${hidden} more — ${where}`;
+  return line;
+}
+
+function emptyLine(text) {
+  const line = document.createElement("p");
+  line.className = "muted";
+  line.textContent = text;
+  return line;
+}
+
+// ------------------------------------------------------------------ 1. act on
+
+/** Every tracker row in the notebook, whatever kind it came from. */
+function allTrackerRows() {
+  const rows = [];
+  for (const kind of Object.keys(TRACKERS)) {
+    for (const row of trackerRows(kind)) rows.push({ ...row, kind });
+  }
+  return rows;
+}
+
+function actOnSection() {
+  const panel = section(
+    "What I should act on",
+    "Things to buy, tools and prompts to try, and tactics to test — with where you left "
+      + "each one."
+  );
+
+  // The things the last look back said were worth doing. They are the closest thing in the
+  // notebook to a list somebody wrote for him, so they go first (D41).
+  const last = latestRelook();
+  const suggested = last ? jsonList(last.act_now) : [];
+  if (suggested.length) {
+    const heading = document.createElement("h3");
+    heading.textContent = "From your last look back";
+    panel.append(heading);
+    for (const action of suggested.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(String(action?.do || ""), {
+        detail: [action?.because, action?.from && `from “${action.from}”`]
+          .filter(Boolean).join(" — ")
+      }));
+    }
+  }
+
+  const rows = allTrackerRows();
+  const chosen = rows.filter((row) => row.status === "want" || row.status === "doing");
+  const undecided = rows.filter((row) => !row.status);
+
+  if (chosen.length) {
+    const heading = document.createElement("h3");
+    heading.textContent = "You said you would";
+    panel.append(heading);
+    // Started before wanted: the ones already in flight are the ones with something at
+    // stake. Newest first inside each, because an old "want" is usually a stale one.
+    const order = { doing: 0, want: 1 };
+    const sorted = chosen.slice().sort((a, b) =>
+      (order[a.status] - order[b.status]) || (b.clip.created_at - a.clip.created_at));
+    for (const row of sorted.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(String(row.item.name || "Something"), {
+        detail: `${TRACKERS[row.kind].statuses.find(([value]) => value === row.status)?.[1]}`
+          + ` · ${titleOf(row.clip)}`,
+        clip: row.clip
+      }));
+    }
+    if (sorted.length > HOME_ROWS) {
+      panel.append(andMore(sorted.length - HOME_ROWS, "see the tables in your notebook"));
+    }
+  }
+
+  if (undecided.length) {
+    const heading = document.createElement("h3");
+    heading.textContent = "Waiting on a decision from you";
+    panel.append(heading);
+    const newest = undecided.slice().sort((a, b) => b.clip.created_at - a.clip.created_at);
+    for (const row of newest.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(String(row.item.name || "Something"), {
+        detail: `${row.item.does || row.item.cost || row.item.note || ""} · ${titleOf(row.clip)}`
+          .replace(/^ · /, ""),
+        clip: row.clip
+      }));
+    }
+    if (newest.length > HOME_ROWS) {
+      panel.append(andMore(newest.length - HOME_ROWS, "see the tables in your notebook"));
+    }
+  }
+
+  if (!suggested.length && !chosen.length && !undecided.length) {
+    panel.append(emptyLine(
+      "Nothing yet. Save a video that shows things to buy, an app to try, wording to paste "
+      + "into an AI, or a method to test, and each thing it names will turn up here."
+    ));
+  }
+
+  return panel;
+}
+
+// ------------------------------------------------------------------ 2. learning about
+
+/**
+ * The subjects, by weight, and which way each is going.
+ *
+ * Counted on the TOP-LEVEL folder, because that is the level a person thinks in — nine
+ * sub-topics under "e-commerce" is one interest, not nine.
+ *
+ * "Growing" and "gone quiet" are counted from when the clips were SAVED, not when the
+ * folder was made: a folder created in June that he has been filling all August is a live
+ * interest, and the other way round is a dead one.
+ */
+function subjectsByWeight() {
+  const now = Date.now();
+  const totals = new Map();
+
+  for (const clip of store.clips) {
+    if (clip.deleted_at) continue;
+    const path = topicPathOf(clip);
+    if (!path) continue;
+    const entry = totals.get(path.parentId) || { name: path.topic, all: 0, recent: 0, before: 0, last: 0 };
+    entry.all += 1;
+    if (clip.created_at > now - 30 * DAY) entry.recent += 1;
+    else if (clip.created_at > now - 60 * DAY) entry.before += 1;
+    entry.last = Math.max(entry.last, clip.created_at);
+    totals.set(path.parentId, entry);
+  }
+
+  return [...totals.entries()]
+    .map(([id, entry]) => ({
+      id,
+      ...entry,
+      growing: entry.recent > entry.before && entry.recent > 1,
+      // Three or more saved, and nothing for two months. Two videos is a passing look, not
+      // an interest you have drifted from.
+      drifted: entry.all >= 3 && entry.last < now - 60 * DAY
+    }))
+    .sort((a, b) => b.all - a.all);
+}
+
+function learningSection() {
+  const panel = section(
+    "What I'm learning about",
+    "Your folders by weight, which way each is going, and the ones you have not come back to."
+  );
+
+  const subjects = subjectsByWeight();
+  if (!subjects.length) {
+    panel.append(emptyLine(
+      "Nothing filed yet. Once a few videos have been summarised they are put into folders "
+      + "by themselves, and this is where the shape of them shows up."
+    ));
+    return panel;
+  }
+
+  for (const subject of subjects.slice(0, HOME_ROWS + 2)) {
+    const shape = subject.growing
+      ? `growing — ${subject.recent} in the last month`
+      : subject.drifted
+        ? `you have not added to this since ${whenText(subject.last).toLowerCase()}`
+        : subject.recent
+          ? `${subject.recent} in the last month`
+          : "steady";
+    panel.append(homeRow(`${subject.name} — ${subject.all} ${subject.all === 1 ? "video" : "videos"}`, {
+      detail: shape,
+      onClick: () => openTopic(subject.id)
+    }));
+  }
+
+  const drifted = subjects.filter((subject) => subject.drifted);
+  if (drifted.length) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = `${drifted.length} ${drifted.length === 1 ? "subject has" : "subjects have"} `
+      + "gone quiet for two months or more. That is not a problem — it is just worth knowing.";
+    panel.append(note);
+  }
+
+  return panel;
+}
+
+/** Opens the notebook grouped by folder, with this one searched for. */
+function openTopic(topicId) {
+  const topic = topicById(topicId);
+  grouping = "topics";
+  for (const button of $("views").children) {
+    button.classList.toggle("active", button.dataset.view === "topics");
+  }
+  if (topic) searchFor(topic.name);
+  else showTab("notebook");
+}
+
+// ------------------------------------------------------------------ 3. needs attention
+
+/**
+ * Everything that is stuck, waiting on him, or was doubted and never checked.
+ *
+ * This section is Golden Rule 29 given a room of its own: every failure in this product
+ * has a visible home somewhere, and this is where they are all visible at once instead of
+ * scattered through two hundred cards.
+ */
+function attentionSection() {
+  const panel = section(
+    "What needs attention",
+    "Videos that are stuck, waiting on an answer from you, or made a claim nobody has checked."
+  );
+
+  const live = store.clips.filter((clip) => !clip.deleted_at);
+  let anything = false;
+
+  const asking = live.filter((clip) => sourceOf(clip)?.state === "needs_ok");
+  if (asking.length) {
+    anything = true;
+    const heading = document.createElement("h3");
+    heading.textContent = "Waiting for your go-ahead";
+    panel.append(heading);
+    for (const clip of asking.slice(0, HOME_ROWS)) {
+      const minutes = whatItCosts(sourceOf(clip).duration_sec).minutes;
+      panel.append(homeRow(titleOf(clip), {
+        detail: `${spellOutMinutes(minutes)} long — nothing has been downloaded yet`,
+        clip
+      }));
+    }
+  }
+
+  const parked = live.filter((clip) => sourceOf(clip)?.state === "parked");
+  if (parked.length) {
+    anything = true;
+    const heading = document.createElement("h3");
+    heading.textContent = "Parked";
+    panel.append(heading);
+    for (const clip of parked.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(titleOf(clip), {
+        detail: "You put this one off. Open it and press go ahead whenever you want.",
+        clip
+      }));
+    }
+  }
+
+  const broken = live.filter((clip) => {
+    const source = sourceOf(clip);
+    return source && (source.error || source.state === "failed");
+  });
+  if (broken.length) {
+    anything = true;
+    const heading = document.createElement("h3");
+    heading.textContent = "Could not be read";
+    panel.append(heading);
+    for (const clip of broken.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(titleOf(clip), { detail: sourceOf(clip).error || "Something went wrong", clip }));
+    }
+    if (broken.length > HOME_ROWS) panel.append(andMore(broken.length - HOME_ROWS, "search your notebook"));
+  }
+
+  // Written down and then nothing. Almost always means no AI account is connected, which
+  // is the one thing a person cannot work out for themselves from a card that says
+  // "written down".
+  const unsummarised = live.filter((clip) => sourceOf(clip)?.state === "transcribed");
+  if (unsummarised.length) {
+    anything = true;
+    const heading = document.createElement("h3");
+    heading.textContent = "Written down, never summarised";
+    panel.append(heading);
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = `${unsummarised.length} ${unsummarised.length === 1 ? "video is" : "videos are"} `
+      + "written down but have no summary. That usually means no AI account is connected, "
+      + "or its allowance ran out.";
+    panel.append(note);
+    for (const clip of unsummarised.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(titleOf(clip), { detail: savedText(clip.created_at), clip }));
+    }
+  }
+
+  // A claim the AI itself rated "low", on a reel he has never taken to an AI to discuss.
+  // The notebook already stores both halves and has never put them together.
+  const doubted = live.filter((clip) => {
+    if (learningsOf(clip).length) return false;
+    return jsonList(analysisOf(clip)?.claims)
+      .some((claim) => String(claim?.confidence || "").toLowerCase() === "low");
+  });
+  if (doubted.length) {
+    anything = true;
+    const heading = document.createElement("h3");
+    heading.textContent = "Doubted, and not checked";
+    panel.append(heading);
+    for (const clip of doubted.slice(0, HOME_ROWS)) {
+      const claim = jsonList(analysisOf(clip).claims)
+        .find((entry) => String(entry?.confidence || "").toLowerCase() === "low");
+      panel.append(homeRow(titleOf(clip), { detail: `“${String(claim?.claim || "")}”`, clip }));
+    }
+    if (doubted.length > HOME_ROWS) {
+      panel.append(andMore(doubted.length - HOME_ROWS, "open one and take it to your AI"));
+    }
+  }
+
+  if (!anything) {
+    panel.append(emptyLine("Nothing is stuck and nothing is waiting on you."));
+  }
+  return panel;
+}
+
+// ------------------------------------------------------------------ 4. what's new
+
+function newSection() {
+  const panel = section(
+    "What's new since you last looked",
+    whenText(seenBefore) ? `Since ${whenText(seenBefore).toLowerCase()}.` : ""
+  );
+
+  const live = store.clips.filter((clip) => !clip.deleted_at);
+  const saved = live.filter((clip) => clip.created_at > seenBefore)
+    .sort((a, b) => b.created_at - a.created_at);
+
+  // Analysed since he last looked, and not among the ones he has only just saved — those
+  // are already above and saying them twice is noise.
+  const summarised = live
+    .filter((clip) => clip.created_at <= seenBefore)
+    .map((clip) => ({ clip, analysis: analysisOf(clip) }))
+    .filter((entry) => entry.analysis && entry.analysis.created_at > seenBefore)
+    .sort((a, b) => b.analysis.created_at - a.analysis.created_at);
+
+  if (saved.length) {
+    const heading = document.createElement("h3");
+    heading.textContent = `${saved.length} ${saved.length === 1 ? "video" : "videos"} you saved`;
+    panel.append(heading);
+    for (const clip of saved.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(titleOf(clip), { detail: progressOf(clip).text, clip }));
+    }
+    if (saved.length > HOME_ROWS) panel.append(andMore(saved.length - HOME_ROWS, "see your notebook"));
+  }
+
+  if (summarised.length) {
+    const heading = document.createElement("h3");
+    heading.textContent = `${summarised.length} older `
+      + `${summarised.length === 1 ? "video has" : "videos have"} been summarised`;
+    panel.append(heading);
+    for (const entry of summarised.slice(0, HOME_ROWS)) {
+      panel.append(homeRow(titleOf(entry.clip), {
+        detail: String(entry.analysis.summary || "").slice(0, 140),
+        clip: entry.clip
+      }));
+    }
+  }
+
+  if (!saved.length && !summarised.length) {
+    panel.append(emptyLine("Nothing new. Share a reel and it turns up here."));
+  }
+  return panel;
+}
+
+// ------------------------------------------------------------------ drawing it
+
+function renderHome() {
+  markHomeSeen();
+  const host = $("homeView");
+  host.innerHTML = "";
+
+  // The two things that are about the whole notebook rather than any one section, and both
+  // of them are questions. They go above everything, because a question further down is a
+  // question nobody answers.
+  const health = workerNotice();
+  if (health) {
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    wrap.append(health);
+    host.append(wrap);
+  }
+
+  const lookBack = relookBanner();
+  if (lookBack) {
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    wrap.append(lookBack);
+    host.append(wrap);
+  }
+
+  host.append(actOnSection(), learningSection(), attentionSection(), newSection());
+
+  const last = latestRelook();
+  if (last) host.append(relookPanel(last));
+}
 
 // ---------------------------------------------------------------- routing
 /**
@@ -2769,9 +3251,30 @@ function render() {
     renderSettings();
     return;
   }
-  show("listView");
-  renderList();
+  // D43. The plain address opens Home now. The notebook is `#/notebook` and is one press
+  // away — every link anybody already has is to a clip, to settings or to the guide, and
+  // none of those moved.
+  if (location.hash === "#/notebook") {
+    show("listView");
+    renderList();
+    return;
+  }
+  show("homeView");
+  renderHome();
 }
+
+/** Switches between Home and the notebook, through the address so Back works. */
+function showTab(tab) {
+  location.hash = tab === "notebook" ? "#/notebook" : "";
+  // Going from "#/notebook" to "" leaves no hash to change on some browsers, so nothing
+  // would be redrawn. Ask for it directly rather than relying on the event.
+  render();
+}
+
+$("tabs").onclick = (event) => {
+  const button = event.target.closest("button");
+  if (button) showTab(button.dataset.tab);
+};
 
 window.addEventListener("hashchange", render);
 
@@ -3304,7 +3807,7 @@ $("addKey").onclick = addKey;
 $("navSettings").onclick = () => { location.hash = "#/settings"; };
 $("navGuide").onclick = () => { location.hash = "#/guide"; };
 $("guideBack").onclick = () => { location.hash = ""; };
-$("home").onclick = () => { location.hash = ""; };
+$("home").onclick = () => { showTab("home"); };
 
 // ---------------------------------------------------------------- search and filters
 $("search").oninput = () => { query = $("search").value.trim().toLowerCase(); renderList(); };

@@ -1509,3 +1509,65 @@ that enforces it would quietly tell him the wrong thing.
 `state='pending', attempts=0, error=NULL`. Under this decision they come back as three
 questions with their real lengths on them rather than starting three long downloads at
 once — which is exactly the behaviour he asked for.
+
+---
+
+### D43 — A home screen with four sections, and the notebook untouched behind it
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "new home screen, and the reel list stays, one tab away", with all
+four sections chosen by him by name. His condition: **nothing he uses today may be removed**,
+and that is why he chose this over a redesign.
+
+**What the notebook could not answer.** Two hundred cards, newest first, with a search box.
+It answers "where is that reel" perfectly and nothing else. It cannot say what he owes
+himself, what he is actually accumulating, what is stuck, or what has happened since
+Tuesday — and every one of those was already in the database.
+
+**The four sections, and where each gets its answer.**
+
+| Section | Reads |
+|---|---|
+| **What I should act on** | Every tracker row across all four kinds (D34, D38), split into what he has already said he would do and what is still waiting on a decision — plus the things the last look back named (D41), first, because that is the closest thing in the notebook to a list somebody wrote for him. |
+| **What I'm learning about** | Folders by weight, counted on the TOP-LEVEL folder because that is the level a person thinks in — nine sub-topics under "e-commerce" is one interest, not nine. "Growing" and "gone quiet" are counted from when the clips were SAVED, not when the folder was made. |
+| **What needs attention** | Videos waiting on a length answer, parked ones, failures, videos written down but never summarised, and claims the AI itself rated "low" on reels he has never discussed anywhere. |
+| **What's new since I last looked** | Saved since, and — separately — older reels that have only just been summarised, which is the case a "recently saved" list misses entirely. |
+
+**"Doubted, and not checked" is the one that had both halves already.** The AI has rated
+its own claims high, medium or low since the first version, and D29 records what he
+concluded when he took a reel to an AI. Nothing had ever put the two together, so a reel
+that made a claim the AI itself doubted and that he never checked was indistinguishable
+from one he had verified.
+
+**Opening the app spends nothing.** Every number on this screen is computed from what the
+device already holds. No call, no sync of its own, no allowance. A home screen that
+summarised something on open would be exactly the thing D39, D41 and D42 all exist to stop,
+and a test walks every request the app makes while starting up and fails on anything that
+is not a sync.
+
+**"Since you last looked" is read once per session and then moved on.** The obvious way to
+build it — stamp the time on every draw — empties the section the moment it appears. So the
+mark is read once, immediately advanced, and every draw in that session uses the value it
+started with. Going to the notebook and back does not wipe it, and a test pins that.
+
+**On a first visit it says "the last week"** rather than nothing or everything. Nothing
+remembered means a new device or cleared storage, and a week is the honest answer.
+
+**Routing.** The plain address opens Home; the notebook is `#/notebook`. Every link anybody
+already holds is to a clip, to settings or to the guide, and none of those moved. The two
+tabs go through the address, so Back works.
+
+**What moved, and it is only one thing.** The look-back banner and its round-up (D41) were
+on the notebook list for one commit and now live on Home, where they are the first thing
+seen instead of sitting on top of the notebook every visit. Nothing else was moved, renamed
+or removed: the save box, the search, the status chips, the four table views, the topic
+grouping, the offer to sort old clips, the offer to fill in the tables and the worker's
+state are all exactly where they were.
+
+**The app has tests now, and this is the change that forced it.** Everything the app draws
+is built by hand out of `createElement`, and none of it had a single test — survivable while
+it was one list, not survivable now that Home reads seven different shapes and decides what
+to say about each. `backend/test/helpers/appharness.js` runs the real module out of
+`index.html` in Node against a real-shaped sync response, with a small DOM stand-in. The two
+Firebase imports are swapped on the way through because they are network modules; everything
+else is the app's own code. **There is no test hook in the shipped app** and nothing in
+`index.html` was changed to make this possible.
