@@ -21,6 +21,7 @@ import {
   analyzeSource,
   parseAnalysis,
   proposeTopic,
+  askOnTheirOwnKeys,
   cleanKind,
   cleanItems,
   itemKey,
@@ -41,6 +42,15 @@ import {
   validateLearning
 } from "./learnings.js";
 import { handleMcp, hashSecret, newConnectorSecret } from "./mcp.js";
+import {
+  DEFAULT_RELOOK_DAYS,
+  RELOOK_CHOICES,
+  RELOOK_PROMPT,
+  MAX_RELOOK_CLIPS,
+  relookLines,
+  relookState,
+  validateRelook
+} from "./relook.js";
 
 const PROVIDERS = ["gemini", "groq", "openai", "anthropic", "xai", "manual"];
 
@@ -249,15 +259,17 @@ async function deltaSync(request, env, userId) {
       .bind(userId, since)
       .all();
 
-  const [clips, notes, questions, topics, tasks, learnings, itemStatus] = await Promise.all([
-    scoped("clips"),
-    scoped("notes"),
-    scoped("questions"),
-    scoped("topics"),
-    scoped("tasks"),
-    scoped("learnings"),
-    scoped("item_status")
-  ]);
+  const [clips, notes, questions, topics, tasks, learnings, itemStatus, relooks] =
+    await Promise.all([
+      scoped("clips"),
+      scoped("notes"),
+      scoped("questions"),
+      scoped("topics"),
+      scoped("tasks"),
+      scoped("learnings"),
+      scoped("item_status"),
+      scoped("relooks")
+    ]);
 
   // Shared rows are pivoted on the joining clip, not on their own timestamp. A reel
   // transcribed last week and saved today has an old transcript and a new clip — filtering
@@ -333,9 +345,15 @@ async function deltaSync(request, env, userId) {
     .bind(userId)
     .all();
 
+  // Whether a re-look is being offered, and over how many reels (D41). Sent on every sync
+  // like `settings`: it is one small object, it depends on the clock as much as on the
+  // rows, and the banner has to be able to appear the moment enough time has passed.
+  const relook = await relookFor(env, userId, timestamp);
+
   return json(env, {
     now: timestamp,
     connectors: connectors.results,
+    relook,
     settings: {
       ai_provider: user?.ai_provider || null,
       // The list IS the setting now. Having any key at all is what makes the Worker
@@ -354,6 +372,7 @@ async function deltaSync(request, env, userId) {
     tasks: tasks.results,
     learnings: learnings.results,
     item_status: itemStatus.results,
+    relooks: relooks.results,
     sources: sources.results,
     transcripts: transcripts.results,
     analyses: analyses.results
@@ -1447,6 +1466,158 @@ async function fillInKinds(request, env, userId) {
   return json(env, { done, remaining: Math.max(queue.length - attempted, 0), error: failure });
 }
 
+// ---------------------------------------------------------------- the re-look (D41)
+
+/**
+ * Every reel of this person's that has a summary and has never been in a re-look.
+ *
+ * Ordered oldest first, because the ones that have waited longest are the ones a re-look
+ * is for. A batch bigger than MAX_RELOOK_CLIPS leaves the rest due, so nothing is dropped
+ * — it simply comes round next time.
+ */
+// One clip, one line, and the summary it is due to be looked at through. Their own pasted
+// analysis wins over the shared one where they have both, exactly as the learning prompt
+// does — somebody on the copy-paste tier has no shared summary at all, and a re-look that
+// silently skipped them would be a feature only key-holders get.
+const RELOOK_ROWS = `
+  SELECT * FROM (
+    SELECT c.id AS id, c.created_at AS created_at, s.title AS title,
+           COALESCE(
+             (SELECT summary FROM analyses WHERE source_id = c.source_id AND user_id = ?1),
+             (SELECT summary FROM analyses WHERE source_id = c.source_id AND user_id = ?2)
+           ) AS summary
+    FROM clips c
+    JOIN sources s ON s.id = c.source_id
+    WHERE c.user_id = ?1
+      AND c.deleted_at IS NULL
+      AND c.relooked_at IS NULL
+  )
+  WHERE summary IS NOT NULL`;
+
+async function relookQueue(env, userId, limit) {
+  const rows = await env.DB.prepare(`${RELOOK_ROWS} ORDER BY created_at LIMIT ?3`)
+    .bind(userId, SHARED, limit)
+    .all();
+  return rows.results;
+}
+
+/** How many are due, and when the oldest of them was saved. The same set, counted. */
+async function relookDue(env, userId) {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS due, MIN(created_at) AS oldest FROM (${RELOOK_ROWS})`
+  )
+    .bind(userId, SHARED)
+    .first();
+  return { due: Number(row?.due || 0), oldest: row?.oldest || null };
+}
+
+/** How often this person wants to be offered one, and whether one is offered now. */
+async function relookFor(env, userId, timestamp) {
+  const user = await env.DB.prepare(
+    `SELECT relook_days, relooked_at FROM users WHERE id = ?1`
+  )
+    .bind(userId)
+    .first();
+  const { due, oldest } = await relookDue(env, userId);
+  return relookState({
+    everyDays: user?.relook_days ?? null,
+    lastAt: user?.relooked_at ?? null,
+    dueCount: due,
+    oldestDueAt: oldest,
+    at: timestamp
+  });
+}
+
+/** How often to offer one. 0 is "stop asking me", and is stored rather than assumed. */
+async function setRelookEvery(request, env, userId) {
+  const body = await readJson(request);
+  // A number and nothing else. `Number(null)` and `Number("")` are both 0, which is the
+  // value that means "stop offering" — so a request that simply forgot the field would
+  // quietly switch the feature off.
+  const days = body.days;
+  if (typeof days !== "number" || !RELOOK_CHOICES.includes(days)) {
+    return fail(env, `That is not one of the choices: ${RELOOK_CHOICES.join(", ")}`);
+  }
+  await env.DB.prepare(`UPDATE users SET relook_days = ?1, last_seen_at = ?2 WHERE id = ?3`)
+    .bind(days, now(), userId)
+    .run();
+  return json(env, { ok: true, every_days: days });
+}
+
+/**
+ * Does one re-look, because he pressed the button that said how many it would cover.
+ *
+ * One call for the whole batch. The value of a re-look is what forty reels have in common,
+ * which forty separate calls could not see and would cost forty times as much to miss.
+ *
+ * Nothing is marked until the round-up is safely stored. A failure therefore leaves every
+ * reel exactly as due as it was, and the reason goes back to the person watching — never
+ * onto a shared row, because one person's key failing is not a fact about anybody's reel.
+ */
+async function doRelook(request, env, userId) {
+  const timestamp = now();
+  const batch = await relookQueue(env, userId, MAX_RELOOK_CLIPS);
+  if (!batch.length) {
+    return json(env, { ok: true, nothing_due: true });
+  }
+
+  let answer;
+  try {
+    answer = await askOnTheirOwnKeys(env, userId, RELOOK_PROMPT + relookLines(batch));
+  } catch (error) {
+    const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+    return json(env, { error: `Could not look back over them: ${reason}` }, 400);
+  }
+  if (!answer) {
+    return fail(env, "Connect an AI account in Settings first — a re-look needs one.", 400);
+  }
+
+  const problems = validateRelook(answer.payload);
+  if (problems.length) {
+    // Nothing half-stored and nothing marked, so pressing again is safe and covers exactly
+    // the same reels.
+    return fail(env, `The AI's reply was malformed: ${problems.join(", ")}. Nothing was saved.`);
+  }
+
+  const id = newId();
+  const statements = [
+    env.DB.prepare(
+      `INSERT INTO relooks
+         (id, user_id, themes, act_now, note, clip_count, covers_from, covers_to,
+          provider, model, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
+    ).bind(
+      id,
+      userId,
+      JSON.stringify(answer.payload.themes),
+      JSON.stringify(answer.payload.act_now),
+      answer.payload.note ? String(answer.payload.note) : null,
+      batch.length,
+      batch[0].created_at,
+      batch[batch.length - 1].created_at,
+      answer.provider,
+      answer.model || null,
+      timestamp
+    ),
+    env.DB.prepare(`UPDATE users SET relooked_at = ?1 WHERE id = ?2`).bind(timestamp, userId)
+  ];
+
+  // Only the reels this round-up actually covered are marked. Anything past the cap stays
+  // due and comes round next time rather than being silently skipped.
+  for (const row of batch) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE clips SET relooked_at = ?1, updated_at = ?1 WHERE id = ?2 AND user_id = ?3`
+      ).bind(timestamp, row.id, userId)
+    );
+  }
+
+  await env.DB.batch(statements);
+
+  const left = await relookDue(env, userId);
+  return json(env, { ok: true, id, covered: batch.length, still_due: left.due }, 201);
+}
+
 /** Sets a clip's topic by hand. The user's choice is final (D27). */
 async function setTopic(request, env, userId, clipId) {
   const body = await readJson(request);
@@ -1577,6 +1748,12 @@ export default {
       }
       if (segments[1] === "kinds" && !segments[2] && request.method === "POST") {
         return await fillInKinds(request, env, userId);
+      }
+      if (segments[1] === "relook" && !segments[2] && request.method === "POST") {
+        return await doRelook(request, env, userId);
+      }
+      if (segments[1] === "relook" && segments[2] === "every" && request.method === "PUT") {
+        return await setRelookEvery(request, env, userId);
       }
 
       return fail(env, "Not found.", 404);

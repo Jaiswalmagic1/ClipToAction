@@ -541,19 +541,26 @@ async function callProvider(prompt, apiKey, provider, maxTokens = MAX_OUTPUT_TOK
 }
 
 /**
- * Names a topic for a summary that already exists, using this user's own key — they
- * pressed the button, so it is their allowance being spent, never an earlier saver's.
- * Returns null when they have no key connected.
+ * Asks one question on THIS person's own keys, and reads the answer as JSON.
+ *
+ * Their own list only, never another saver's. Every caller of this is a button somebody
+ * pressed — naming a topic, looking back over a fortnight — and pressing a button is what
+ * volunteers an allowance. The automatic run, where the first saver with a key pays, is
+ * `analyzeSource` and is deliberately not this (D10).
+ *
+ * Returns null when they have no key connected, which is the copy-paste tier and not a
+ * failure. Throws an AnalysisError for anything else, carrying only text that is safe to
+ * show.
  */
-export async function proposeTopic(env, userId, summary) {
-  // Their own list only, never another saver's — naming a topic is their button press.
+export async function askOnTheirOwnKeys(env, userId, prompt, maxTokens = MAX_OUTPUT_TOKENS) {
   return spendKeys(env, await usableKeys(env, null, userId), async (key) => {
     const apiKey = await decryptSecret(key.key_cipher, env.KEY_ENCRYPTION_SECRET);
+    // The call and the reading of it are retried together: a reply that came back as prose
+    // instead of JSON is the same kind of one-off as one that did not come back at all.
     return withOneRetry(async () => {
-      const result = await callProvider(TOPIC_PROMPT + summary, apiKey, key.provider);
+      const result = await callProvider(prompt, apiKey, key.provider, maxTokens);
       try {
-        const payload = parseAnalysis(result.text);
-        return { topic: payload?.topic, sub_topic: payload?.sub_topic };
+        return { payload: parseAnalysis(result.text), provider: key.provider, model: result.model };
       } catch {
         throw new AnalysisError(
           "the AI's reply was not in the expected format",
@@ -562,6 +569,16 @@ export async function proposeTopic(env, userId, summary) {
       }
     });
   });
+}
+
+/**
+ * Names a topic for a summary that already exists, using this user's own key — they
+ * pressed the button, so it is their allowance being spent, never an earlier saver's.
+ * Returns null when they have no key connected.
+ */
+export async function proposeTopic(env, userId, summary) {
+  const answer = await askOnTheirOwnKeys(env, userId, TOPIC_PROMPT + summary);
+  return answer ? { topic: answer.payload?.topic, sub_topic: answer.payload?.sub_topic } : null;
 }
 
 /**

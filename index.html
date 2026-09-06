@@ -467,6 +467,18 @@
         </div>
       </div>
 
+      <div class="panel" id="relookPanel">
+        <h2>Looking back over what you saved</h2>
+        <p class="muted">Saving a video is not the same as using it. Every so often the app
+          offers to look back over the ones you saved and never returned to, and tell you
+          what they add up to and the few things worth doing. It only ever offers — nothing
+          is read or spent until you press the button, and there is no timer running in the
+          background.</p>
+        <label for="relookEvery">Offer me one</label>
+        <select id="relookEvery"></select>
+        <div id="relookMsg"></div>
+      </div>
+
       <div class="panel" id="keysPanel">
         <h2>Your keys</h2>
         <p class="muted">Free allowances run out. Add more than one key — different AIs, or
@@ -656,7 +668,9 @@ const EMPTY = {
   since: 0, settings: null, worker: null, clips: [], notes: [], questions: [], topics: [],
   tasks: [], sources: [], transcripts: [], analyses: [], learnings: [], connectors: [],
   aiKeys: [],
-  item_status: []
+  item_status: [],
+  // D41 — the round-ups themselves, and whether one is being offered right now.
+  relooks: [], relook: null
 };
 let store = structuredClone(EMPTY);
 let user = null;
@@ -713,6 +727,7 @@ function applyDelta(delta) {
   store.tasks = mergeRows(store.tasks, delta.tasks || [], byId);
   store.learnings = mergeRows(store.learnings, delta.learnings || [], byId);
   store.item_status = mergeRows(store.item_status, delta.item_status || [], byId);
+  store.relooks = mergeRows(store.relooks, delta.relooks || [], byId);
   store.sources = mergeRows(store.sources, delta.sources || [], byId);
   store.transcripts = mergeRows(store.transcripts, delta.transcripts || [], bySource);
   store.analyses = mergeRows(
@@ -724,6 +739,9 @@ function applyDelta(delta) {
   if (delta.ai_keys) store.aiKeys = delta.ai_keys;
   if (delta.settings) store.settings = delta.settings;
   if (delta.worker) store.worker = delta.worker;
+  // Whole every time, never merged: whether a re-look is offered depends on the clock as
+  // much as on the rows, so yesterday's answer must not survive into today.
+  if (delta.relook) store.relook = delta.relook;
   store.since = delta.now || store.since;
   saveCache();
 }
@@ -997,6 +1015,177 @@ function workerNotice() {
   return notice;
 }
 
+// ---------------------------------------------------------------- the re-look (D41)
+//
+// Saving is not the same as using, and that stays true after a reel is summarised and
+// filed. Every so often the app offers to look back over what has been saved and not
+// looked at again, and hand back the few things worth doing.
+//
+// It is an OFFER with a number on it, and nothing happens until it is pressed. There is
+// no timer here and no background call anywhere — the same rule as summarising one clip
+// on demand, and as the offer to fill in a new table (D39).
+
+const SNOOZE_KEY = "cliptoaction-relook-snoozed-until";
+const SNOOZE_MS = 24 * 60 * 60 * 1000;
+
+/** "Not now" means not today, on this device. It is a convenience, not a setting. */
+function relookSnoozed() {
+  try {
+    return Number(localStorage.getItem(SNOOZE_KEY) || 0) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function snoozeRelook() {
+  try {
+    localStorage.setItem(SNOOZE_KEY, String(Date.now() + SNOOZE_MS));
+  } catch {
+    // Nothing is lost — the offer simply stays on screen until it is used.
+  }
+}
+
+/** How often he has said he wants one, in the words the settings screen uses. */
+const RELOOK_EVERY = [
+  [0, "Never — stop offering"],
+  [7, "Every week"],
+  [14, "Every two weeks"],
+  [30, "Every month"]
+];
+
+function relookBanner() {
+  const state = store.relook;
+  if (!state || !state.ready || !state.due || relookSnoozed()) return null;
+
+  const offer = document.createElement("div");
+  offer.className = "notice";
+  offer.style.background = "var(--pill-topic-bg)";
+  offer.style.color = "var(--pill-topic-text)";
+  offer.append(document.createTextNode(
+    `${state.due} ${state.due === 1 ? "video has" : "videos have"} been sitting here since `
+    + "you saved them and you have not looked at any of them again. Want a look back over "
+    + "them — what they add up to, and the few things worth doing? It runs on your own AI "
+    + "account, once, and nothing starts until you press. "
+  ));
+
+  const go = document.createElement("button");
+  go.textContent = "Look back over them";
+  go.style.marginTop = "8px";
+  go.onclick = () => runRelook(go);
+
+  const later = document.createElement("button");
+  later.className = "secondary";
+  later.textContent = "Not now";
+  later.style.marginTop = "8px";
+  later.style.marginLeft = "8px";
+  later.onclick = () => { snoozeRelook(); renderList(); };
+
+  offer.append(document.createElement("br"), go, later);
+  return offer;
+}
+
+async function runRelook(button) {
+  button.disabled = true;
+  button.textContent = "Looking back…";
+  try {
+    const result = await api("/v1/relook", { method: "POST" });
+    await sync();
+    if (result.nothing_due) {
+      say("syncMsg", "Nothing was waiting for a look back.", "warn");
+    } else {
+      say("syncMsg",
+        `Looked back over ${result.covered} ${result.covered === 1 ? "video" : "videos"}.`
+        + (result.still_due ? ` ${result.still_due} more are waiting for the next one.` : ""),
+        "ok");
+    }
+    renderList();
+  } catch (error) {
+    say("syncMsg", error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Look back over them";
+  }
+}
+
+/** The most recent round-up, newest first. */
+const latestRelook = () =>
+  store.relooks.filter((row) => !row.deleted_at).sort((a, b) => b.created_at - a.created_at)[0];
+
+/**
+ * One round-up drawn out: what it kept coming back to, and what to do about it. Built as a
+ * panel rather than a notice so it can sit on the home screen and in the notebook without
+ * being two different things.
+ */
+function relookPanel(row, { heading = true } = {}) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+
+  if (heading) {
+    const title = document.createElement("h2");
+    title.textContent = "Your last look back";
+    panel.append(title);
+  }
+  const when = document.createElement("p");
+  when.className = "muted";
+  when.textContent = `${whenText(row.created_at)} — over ${row.clip_count} `
+    + `${row.clip_count === 1 ? "video" : "videos"} you had not returned to.`;
+  panel.append(when);
+
+  const actions = jsonList(row.act_now);
+  if (actions.length) {
+    const h = document.createElement("h3");
+    h.textContent = "Worth doing now";
+    const list = document.createElement("ul");
+    list.className = "plain";
+    for (const action of actions) {
+      const item = document.createElement("li");
+      const what = document.createElement("strong");
+      what.textContent = String(action?.do || "");
+      item.append(what);
+      if (action?.because) {
+        const why = document.createElement("div");
+        why.className = "muted";
+        why.textContent = String(action.because)
+          + (action?.from ? ` — from “${String(action.from)}”` : "");
+        item.append(why);
+      }
+      list.append(item);
+    }
+    panel.append(h, list);
+  }
+
+  const themes = jsonList(row.themes);
+  if (themes.length) {
+    const h = document.createElement("h3");
+    h.textContent = "What it kept coming back to";
+    const list = document.createElement("ul");
+    list.className = "plain";
+    for (const theme of themes) {
+      const item = document.createElement("li");
+      const name = document.createElement("strong");
+      name.textContent = String(theme?.name || "");
+      item.append(name);
+      if (theme?.why) {
+        const why = document.createElement("div");
+        why.className = "muted";
+        why.textContent = String(theme.why);
+        item.append(why);
+      }
+      list.append(item);
+    }
+    panel.append(h, list);
+  }
+
+  if (row.note) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = String(row.note);
+    panel.append(note);
+  }
+
+  return panel;
+}
+
 // ---------------------------------------------------------------- the notebook list
 function renderList() {
   const wanted = store.clips
@@ -1013,6 +1202,20 @@ function renderList() {
 
   const health = workerNotice();
   if (health) $("clipList").append(health);
+
+  const lookBack = relookBanner();
+  if (lookBack) $("clipList").append(lookBack);
+
+  // The last round-up, folded away. It is a page of reading and it must not sit on top of
+  // the notebook every visit — but it must also not be somewhere you have to remember.
+  const last = latestRelook();
+  if (last) {
+    const fold = document.createElement("details");
+    const title = document.createElement("summary");
+    title.textContent = `Your last look back — ${whenText(last.created_at).toLowerCase()}`;
+    fold.append(title, relookPanel(last, { heading: false }));
+    $("clipList").append(fold);
+  }
 
   // Nothing anywhere told a new person that saving reels does not, on its own, produce
   // anything. They sign in, share a reel, see it accepted, and quietly get no summary.
@@ -2802,9 +3005,46 @@ async function addKey() {
   }
 }
 
+/** How often a look back is offered, and what the last one covered (D41). */
+function renderRelookSetting() {
+  const chooser = $("relookEvery");
+  const state = store.relook;
+  const chosen = state ? Number(state.every_days) : 14;
+
+  chooser.innerHTML = "";
+  for (const [days, label] of RELOOK_EVERY) {
+    const option = document.createElement("option");
+    option.value = String(days);
+    option.textContent = label;
+    option.selected = days === chosen;
+    chooser.append(option);
+  }
+
+  const parts = [];
+  if (state?.last_at) parts.push(`Last look back: ${whenText(state.last_at).toLowerCase()}.`);
+  else parts.push("You have not had one yet.");
+  if (state?.due) {
+    parts.push(`${state.due} ${state.due === 1 ? "video is" : "videos are"} waiting for one.`);
+  }
+  say("relookMsg", parts.join(" "), "");
+}
+
+$("relookEvery").onchange = async () => {
+  const days = Number($("relookEvery").value);
+  try {
+    await api("/v1/relook/every", { method: "PUT", body: JSON.stringify({ days }) });
+    await sync();
+    renderRelookSetting();
+  } catch (error) {
+    say("relookMsg", error.message);
+    renderRelookSetting();
+  }
+};
+
 function renderSettings() {
   renderConnectors();
   renderKeys();
+  renderRelookSetting();
   const settings = store.settings;
   if (settings?.ai_provider) $("provider").value = settings.ai_provider;
   $("apiKey").value = "";

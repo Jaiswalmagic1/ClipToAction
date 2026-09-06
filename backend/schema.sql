@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS users (
   -- D35: no longer read. The keys live in ai_keys below; this is kept only so a rollback
   -- to the pre-D35 Worker finds a working key rather than an empty account.
   ai_key_cipher TEXT,                      -- AES-GCM ciphertext, never returned to client
+  -- D41. How often a re-look is OFFERED, in days. NULL is the default of 14; 0 is "stop
+  -- asking me", which is a real answer and not the same as never having chosen.
+  relook_days   INTEGER,
+  relooked_at   INTEGER,                   -- when they last did one. NULL means never
   created_at    INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL
 );
@@ -133,6 +137,11 @@ CREATE TABLE IF NOT EXISTS clips (
   -- (D6) carries it for free.
   topic_id     TEXT REFERENCES topics (id) ON DELETE SET NULL,
   topic_set_by TEXT,                        -- 'ai' | 'user'. 'user' is final (D27)
+  -- D41. When this clip was last included in a re-look. NULL means never, so every clip
+  -- is due exactly once and none can come round twice. Here rather than in a table of its
+  -- own for the same reason topic_id is: clips already carries user_id and updated_at, so
+  -- delta sync (D6) carries it for free.
+  relooked_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted_at INTEGER,                       -- soft delete, so delta sync can propagate it
@@ -259,6 +268,29 @@ CREATE TABLE IF NOT EXISTS item_status (
 );
 
 CREATE INDEX IF NOT EXISTS idx_item_status_sync ON item_status (user_id, updated_at);
+
+-- One fortnightly round-up over the reels that had not been looked at again (D41).
+--
+-- Per-user, because it is about what THIS person saved rather than about any one reel, so
+-- D10's sharing does not apply and must not: two people who saved the same forty reels
+-- have not saved the same notebook.
+CREATE TABLE IF NOT EXISTS relooks (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  themes      TEXT NOT NULL,             -- JSON [{name, why}]
+  act_now     TEXT NOT NULL,             -- JSON [{do, because, from}]
+  note        TEXT,                      -- a few sentences, or NULL
+  clip_count  INTEGER NOT NULL,          -- how many reels this looked across
+  covers_from INTEGER,                   -- the oldest of them, as saved
+  covers_to   INTEGER,                   -- the newest of them
+  provider    TEXT,                      -- which AI produced it
+  model       TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  deleted_at  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_relooks_sync ON relooks (user_id, updated_at);
 
 -- The address a user gives their AI app so it can read their notebook itself (D29).
 --

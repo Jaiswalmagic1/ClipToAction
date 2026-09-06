@@ -1333,3 +1333,58 @@ shrink to zero and stay there.
 `backend/src/analyze.js` and the offer appears by itself, with the right number in it. The
 app carries the same number and a test compares the two files — an app one version behind
 would offer to re-read the same reels for ever.
+
+---
+
+### D41 — A look back every fortnight, offered and never taken
+**Date:** 2026-09-07
+**Decided by:** Jaiswal — "notify inside the app and ASK PERMISSION — never spend allowance
+unattended", with the gap "as a setting, biweekly by default".
+
+**Why it exists.** Saving is not the same as using. That is the complaint this whole
+product was built to answer, and it does not stop being true once a reel is summarised and
+filed: two hundred videos nobody returns to is the same dead end in a tidier shape.
+
+**What it is.** An offer with a number on it — "38 videos have been sitting here since you
+saved them and you have not looked at any of them again" — and a button. Pressing it makes
+**one** call over the summaries of the reels that are due, and stores a round-up: what they
+kept coming back to, and between two and five things worth doing this week, each traced to
+the video it came from.
+
+**One call for the whole batch, not one per reel.** Forty separate calls would be forty
+times the allowance for a worse answer: the value of a look back is what forty reels have
+in common, which no single-reel call can see.
+
+**No timer. Anywhere.** There is no cron, no scheduled worker, and no background call. The
+banner is drawn by the app when a sync says one is ready, and nothing is spent until the
+button is pressed. This is the same rule as `summariseOnDemand` (D9), as the backfill offer
+(D39) and as the warning before a long video (D42): **nothing expensive happens while he is
+not watching.**
+
+**When it appears.** Three conditions, and all three must hold: the gap is not "never";
+something has actually been waiting for at least the length of the gap; and the last look
+back was at least a gap ago. The middle one is what stops a notebook started this afternoon
+being nagged about the three reels in it.
+
+**The gap is a setting**, stored per user: never, weekly, fortnightly (the default) or
+monthly. "Never" is stored as a real answer — 0 — rather than left unset, because "I turned
+that off" and "I have never chosen" are different things and only one of them should ever
+be reconsidered.
+
+**Only reels that have not been in one are included.** `clips.relooked_at` is what carries
+that, on `clips` rather than in a table of its own for the same reason `topic_id` is:
+`clips` already carries `user_id` and `updated_at`, so delta sync carries it for free (D6).
+Nothing is marked until the round-up is safely stored, so a malformed reply or a refused key
+leaves every reel exactly as due as it was — press again and it covers the same ones.
+
+**The round-up is per-user, and deliberately not shared.** D10 shares what is a fact about a
+*reel*. What forty reels add up to is a fact about the person who saved those forty, and two
+people who saved the same forty reels have not saved the same notebook.
+
+**Sixty reels a time.** A batch bigger than that leaves the rest due and they come round in
+the next look back — nothing is dropped, and one Worker request stays inside its budget.
+
+**What this does NOT do**, so nobody assumes otherwise: it sends no email, no notification
+and no message. The open question "weekly digest delivery" in `DECISIONS.md` is about
+getting a nudge somewhere other than the app, and it is still open. This is the in-app half,
+which is the half that can exist without a delivery channel or a privacy policy.
