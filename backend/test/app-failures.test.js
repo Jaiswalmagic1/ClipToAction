@@ -1,0 +1,186 @@
+// What he sees when something goes wrong.
+//
+// A reviewer pointed out that the app's tests had never executed a single failure path:
+// the harness answered every request with `ok: true` and never let browser storage throw.
+// So every message Golden Rule 29 exists to guarantee — "you appear to be offline",
+// "could not save that", "back in the queue" — was unproven, and two of them were being
+// written into a hidden element where nobody could have seen them anyway.
+//
+// These tests break things on purpose.
+
+import { test, describe } from "node:test";
+import assert from "node:assert/strict";
+
+import { loadApp, syncPayload } from "./helpers/appharness.js";
+
+const now = Date.now();
+
+function payload(overrides = {}) {
+  return syncPayload({
+    clips: [
+      {
+        id: "c1", user_id: "vish", source_id: "s1", status: "inbox",
+        topic_id: null, topic_set_by: null, relooked_at: null,
+        created_at: now - 86400000, updated_at: now, deleted_at: null
+      }
+    ],
+    sources: [
+      {
+        id: "s1", url_canonical: "https://x/1", url_original: "https://x/1",
+        platform: "Facebook", title: "A reel", creator: null,
+        duration_sec: 45, state: "analyzed", error: null, error_detail: null,
+        attempts: 0, created_at: now - 86400000, updated_at: now
+      }
+    ],
+    analyses: [
+      {
+        source_id: "s1", user_id: "", provider: "gemini", model: "t",
+        summary: "It said some things.", key_points: "[]", learn_more: "[]",
+        claims: "[]", suggested_task: null, topic: null, sub_topic: null,
+        sections: null, kind: "other", items: null, shapes_version: 2,
+        created_at: now - 86400000
+      }
+    ],
+    ...overrides
+  });
+}
+
+describe("when the first sync fails", () => {
+  test("he is told, on the screen he is actually looking at", async () => {
+    // `syncMsg` used to live inside the notebook. Home became the screen that opens, so
+    // this message went into a hidden box and he saw a normal-looking Home built from
+    // stale data with nothing saying anything had failed.
+    const app = await loadApp(payload(), { failAfter: 0 });
+    assert.equal(app.$("homeView").hidden, false, "Home must still draw");
+    assert.match(app.text("syncMsg"), /offline/i);
+    assert.equal(app.$("syncMsg").hidden, false);
+    app.restore();
+  });
+
+  test("the message is not buried inside a view that can be hidden", async () => {
+    const app = await loadApp(payload(), { failAfter: 0 });
+    // Walk up from the message to the top: it must not sit inside any of the four views,
+    // because three of them are hidden at any moment.
+    const views = new Set(["homeView", "listView", "clipView", "settingsView"]);
+    let node = app.$("syncMsg").parentNode;
+    while (node) {
+      assert.ok(!views.has(node.id), `the message sits inside ${node.id}`);
+      node = node.parentNode;
+    }
+    app.restore();
+  });
+});
+
+describe("when browser storage is blocked", () => {
+  test("the notebook still loads and still syncs", async () => {
+    // Safari's private window, and any browser set to block site data, THROWS on
+    // localStorage rather than returning null. One unguarded read sat between the first
+    // render and the first sync: it threw, the sign-in handler stopped there, and he was
+    // left signed in looking at an empty notebook with nothing explaining it.
+    const app = await loadApp(payload(), { storageBlocked: true });
+    assert.ok(app.calls.some((url) => url.includes("/v1/sync")), "the sync never ran");
+    assert.ok(app.text("homeView").includes("What needs attention"));
+    app.restore();
+  });
+
+  test("and the look back is still offered rather than crashing on the snooze", async () => {
+    const app = await loadApp(
+      payload({ relook: { every_days: 14, last_at: null, due: 5, ready: true } }),
+      { storageBlocked: true }
+    );
+    assert.ok(app.text("homeView").includes("Look back over them"));
+    app.restore();
+  });
+});
+
+describe("when a request fails after he has walked away from the page", () => {
+  test("nothing throws, and the reason still reaches him", async () => {
+    // A clip's page builds its own message box, and leaving the page destroys it. Three
+    // handlers wrote to that box by name — so a request that answered after he had gone
+    // back hit `null.innerHTML`, threw where nobody catches it, and the note was lost with
+    // nothing on screen.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    assert.equal(app.$("clipView").hidden, false);
+
+    app.tab("notebook");
+    app.goOffline();
+
+    // The status chips on the notebook write to `clipMsg` if it is still there.
+    const filters = app.$("filters");
+    const done = filters.children.find((one) => one.dataset.status === "done");
+    assert.ok(done);
+    filters.onclick({ target: done });
+
+    // Whatever happens, it must not be a crash, and Home/the notebook must still be drawn.
+    assert.equal(app.$("listView").hidden, false);
+    app.restore();
+  });
+});
+
+describe("a video that could not be read is not a dead end", () => {
+  test("its page offers to put it back in the queue", async () => {
+    const broken = payload();
+    broken.sources[0].state = "failed";
+    broken.sources[0].error = "Could not be downloaded.";
+
+    const app = await loadApp(broken, { hash: "#/clip/c1" });
+    const page = app.text("clipView");
+    assert.ok(page.includes("It is not gone"), "nothing offers a way back");
+    assert.ok(page.includes("Try it again"));
+    app.restore();
+  });
+
+  test("pressing it asks the Worker, and says so", async () => {
+    const broken = payload();
+    broken.sources[0].state = "failed";
+    broken.sources[0].error = "Could not be downloaded.";
+
+    const app = await loadApp(broken, { hash: "#/clip/c1" });
+    const button = app
+      .$("clipView")
+      .walk()
+      .find((node) => node.tag === "button" && node.textContent === "Try it again");
+    assert.ok(button, "the button is not there");
+
+    await button.onclick();
+    assert.ok(
+      app.calls.some((url) => url.includes("/v1/clips/c1/retry")),
+      "pressing it asked the Worker for nothing"
+    );
+    app.restore();
+  });
+
+  test("a failure to put it back is shown, not swallowed", async () => {
+    const broken = payload();
+    broken.sources[0].state = "failed";
+    broken.sources[0].error = "Could not be downloaded.";
+
+    const app = await loadApp(broken, { hash: "#/clip/c1" });
+    app.goOffline();
+    const button = app
+      .$("clipView")
+      .walk()
+      .find((node) => node.tag === "button" && node.textContent === "Try it again");
+
+    await button.onclick();
+    const shown = `${app.text("clipMsg")} ${app.text("syncMsg")}`;
+    assert.match(shown, /offline/i, "the failure went nowhere he could see it");
+    assert.equal(button.disabled, false, "and the button is usable again");
+    app.restore();
+  });
+});
+
+describe("a parked video never claims he parked it", () => {
+  test("because on a shared pipeline somebody else may have", async () => {
+    const parked = payload();
+    parked.sources[0].state = "parked";
+    parked.sources[0].duration_sec = 69 * 60;
+
+    const app = await loadApp(parked, { hash: "#/clip/c1" });
+    const page = app.text("clipView");
+    assert.ok(page.includes("This one is parked"));
+    assert.ok(!page.includes("You parked"), "it must not assert a decision he may not have made");
+    assert.ok(page.includes("Go ahead now"));
+    app.restore();
+  });
+});

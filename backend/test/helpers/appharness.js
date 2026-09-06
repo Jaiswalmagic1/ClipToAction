@@ -187,7 +187,7 @@ function makeDocument() {
  * Loads the app with `sync` as the answer to every sync request, signs a fake person in,
  * and returns the document so a test can read what was drawn.
  */
-export async function loadApp(sync, { hash = "" } = {}) {
+export async function loadApp(sync, { hash = "", storageBlocked = false, failAfter = null } = {}) {
   const html = readFileSync(join(repo, "index.html"), "utf8");
   const found = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
   if (!found) throw new Error("index.html has no module script");
@@ -251,11 +251,18 @@ export async function loadApp(sync, { hash = "" } = {}) {
     location: fakeLocation
   };
   globalThis.location = fakeLocation;
-  globalThis.localStorage = {
-    getItem: (key) => (store.has(key) ? store.get(key) : null),
-    setItem: (key, value) => store.set(key, String(value)),
-    removeItem: (key) => store.delete(key)
+  // A browser in a private window, or one set to block site data, THROWS on every one of
+  // these rather than returning null. Every use in the app is supposed to survive that.
+  const blocked = () => {
+    throw new Error("SecurityError: the operation is insecure");
   };
+  globalThis.localStorage = storageBlocked
+    ? { getItem: blocked, setItem: blocked, removeItem: blocked }
+    : {
+        getItem: (key) => (store.has(key) ? store.get(key) : null),
+        setItem: (key, value) => store.set(key, String(value)),
+        removeItem: (key) => store.delete(key)
+      };
   // Node defines `navigator` as a getter-only global, so it has to be redefined rather
   // than assigned. The app only reads `navigator.clipboard` and `navigator.serviceWorker`.
   Object.defineProperty(globalThis, "navigator", {
@@ -274,8 +281,12 @@ export async function loadApp(sync, { hash = "" } = {}) {
   const renderCount = { value: 0 };
 
   const calls = [];
+  // `failAfter` makes every request past that many fail the way a lost connection does —
+  // `fetch` rejecting. Without it no error path in the app is ever executed by a test, and
+  // the messages Golden Rule 29 exists to guarantee are all unproven.
   globalThis.fetch = async (url) => {
     calls.push(String(url));
+    if (failAfter !== null && calls.length > failAfter) throw new TypeError("Failed to fetch");
     return {
       ok: true,
       status: 200,
@@ -317,6 +328,13 @@ export async function loadApp(sync, { hash = "" } = {}) {
     localStore: store,
     /** How many times the app has drawn a screen. A press should cost exactly one. */
     renders: () => renderCount.value,
+    /** Makes every request from now on fail, the way a lost connection does. */
+    goOffline() {
+      globalThis.fetch = async (url) => {
+        calls.push(String(url));
+        throw new TypeError("Failed to fetch");
+      };
+    },
     /** Presses one of the two tabs, the way a finger does. */
     tab(which) {
       const tabs = document.getElementById("tabs");

@@ -28,7 +28,13 @@ jobs:
         run: node --test
 
       - name: Worker syntax check
-        run: for f in backend/src/*.js; do node --check "$f"; done
+        # service-worker.js ships to a phone and was checked by nothing. It is the file
+        # that decides whether an installed app can ever update itself, so a typo in it is
+        # a phone stuck on an old build with no way to say so.
+        run: |
+          for f in backend/src/*.js backend/scripts/*.mjs service-worker.js; do
+            node --check "$f"
+          done
 
       - name: PWA syntax check
         run: |

@@ -131,7 +131,7 @@ class LongVideoSettings(unittest.TestCase):
         """The condition above is dead code if the caller never passes the duration."""
         source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
         self.assertIn(
-            "transcribe(audio_path, duration)",
+            "transcribe(audio_path, duration,",
             source,
             "process() must hand transcribe() the duration it just measured",
         )
@@ -285,13 +285,45 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
     def setUp(self):
         self.source = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
 
+    def test_a_failure_reaching_the_api_is_never_pasted_onto_a_shared_row(self):
+        """InvalidURL, MissingSchema, InvalidSchema and InvalidHeader all inherit from BOTH
+        RequestException and ValueError. With ValueError tested first their raw text went
+        onto sources.error -- and InvalidHeader's message QUOTES the offending header, which
+        here is the service token."""
+        body = self.source[self.source.index("def classify_failure"):]
+        body = body[: body.index("def cleanup")]
+        self.assertLess(
+            body.index("requests.RequestException"),
+            body.index("isinstance(error, ValueError)"),
+            "a requests exception must be classified before the ValueError branch",
+        )
+
+    def test_the_rules_come_from_the_api_not_from_this_machine(self):
+        """MAX_DURATION_SEC and WARN_ABOVE_SEC live in a gitignored .env that overrides the
+        code, and a stale value there silently changes what the app is telling him -- the
+        trap that left three of his videos failed for a month. The API sends its own
+        thresholds with the work now, and those win."""
+        self.assertIn('payload.get("limits")', self.source)
+        for name in ("warn_above_sec", "max_video_sec", "max_transcript_chars"):
+            self.assertIn(f'limits["{name}"]', self.source, f"{name} is not read from the API")
+        # And the local settings are still the fallback, so an older API keeps working.
+        self.assertIn("or WARN_ABOVE_SEC", self.source)
+        self.assertIn("or MAX_DURATION_SEC", self.source)
+
+    def test_the_refusal_message_names_no_setting_and_no_machine(self):
+        """It goes onto a row every saver of the reel reads."""
+        body = self.source[self.source.index("def download_audio"):]
+        body = body[: body.index("def creator_from")]
+        self.assertNotIn("MAX_DURATION_SEC of", body)
+        self.assertIn("more than can be", body)
+
     def test_a_rejected_question_is_not_mistaken_for_an_asked_one(self):
         """requests does not raise on a 4xx or a 5xx. Without this, a rejected report reads
         as an accepted one: the video stays claimed, is re-claimed until its attempts run
         out, and is retired as "gave up after 3 attempts" -- a video he was supposed to be
         ASKED about, thrown away instead, with no visible cause."""
         asker = self.source[self.source.index("def ask_about_length"):]
-        asker = asker[: asker.index("def process(source)")]
+        asker = asker[: asker.index("def process(source, limits)")]
         self.assertIn("response.raise_for_status()", asker)
 
     def test_the_warning_sits_clear_of_the_videos_he_saves_all_the_time(self):
@@ -320,7 +352,7 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
         body = body[: body.index("def creator_from")]
         self.assertLess(
             body.index("raise NeedsPermission"),
-            body.index("over this machine's"),
+            body.index("more than can be"),
             "the permission check must come before this machine's own ceiling (D42)",
         )
 
@@ -334,7 +366,7 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
     def test_waiting_for_an_answer_is_not_reported_as_a_failure(self):
         """`parked` and `needs_ok` must never reach report_failure -- a video he has not
         answered about yet is not a video that could not be read."""
-        process = self.source[self.source.index("def process(source)"):]
+        process = self.source[self.source.index("def process(source, limits)"):]
         process = process[: process.index("def main()")]
         self.assertLess(
             process.index("except NeedsPermission"),
@@ -351,8 +383,8 @@ class AskingBeforeAVeryLongVideo(unittest.TestCase):
         self.assertIn("MAX_TRANSCRIPT_CHARS", self.source)
         transcribe = self.source[self.source.index("def transcribe("):]
         transcribe = transcribe[: transcribe.index("def post_transcript")]
-        self.assertIn("len(text) > MAX_TRANSCRIPT_CHARS", transcribe)
-        self.assertNotIn("text[:MAX_TRANSCRIPT_CHARS]", transcribe)
+        self.assertIn("len(text) > ceiling", transcribe)
+        self.assertNotIn("text[:", transcribe)
 
 
 if __name__ == "__main__":

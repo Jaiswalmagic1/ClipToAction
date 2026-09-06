@@ -344,21 +344,27 @@ describe("a worker whose lease expired cannot bury finished work", () => {
     assert.equal(row.duration_sec, 90, "and its length was not rewritten either");
   });
 
-  test("the Worker decides what is long, not the machine that reported it", async () => {
-    // The threshold and the ceiling otherwise live only in a gitignored .env on one PC,
-    // and a stale value there silently changes the rules the app is telling him about.
+  test("the Worker decides what is long, and puts a short one back in the queue", async () => {
+    // The threshold otherwise lives only in a gitignored .env on one PC, and a stale value
+    // there silently changes the rules the app is telling him about.
+    //
+    // Refusing outright would have STRANDED it: the source stays claimed, the lease
+    // expires, it is claimed again, and after three goes it is retired as "gave up after 3
+    // attempts" — a reel thrown away over a disagreement about a number.
     const other = await saveAndClaim(harness, token, "NOTEVENLONG");
     const asked = await harness.call(worker, `/v1/sources/${other.source_id}/too-long`, {
       method: "POST",
       serviceToken: SERVICE_TOKEN,
       body: { duration_sec: 5 * 60 }
     });
-    assert.equal(asked.status, 400);
-    assert.equal(
-      harness.database.prepare("SELECT state FROM sources WHERE id = ?").get(other.source_id).state,
-      "downloading",
-      "a five-minute reel must not be parked waiting for permission"
-    );
+    assert.equal(asked.status, 200);
+    assert.equal(asked.body.not_long, true);
+
+    const row = harness.database
+      .prepare("SELECT state, duration_sec FROM sources WHERE id = ?")
+      .get(other.source_id);
+    assert.equal(row.state, "pending", "it goes back to be downloaded normally");
+    assert.equal(row.duration_sec, 5 * 60, "and what was measured is kept");
   });
 });
 

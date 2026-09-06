@@ -668,14 +668,64 @@ describe("the download queue", () => {
       const second = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
       assert.equal(second.body.sources.length, 0, "still leased");
 
-      // Age the claim past the 15-minute lease.
+      // Age the claim past the lease. A video nobody has measured yet — which is every
+      // video on its first claim, because the length is only known after the work — gets
+      // 90 minutes rather than 15, so that a 28-minute video is not handed to a second
+      // machine while the first is still transcribing it (D45).
       local.database
         .prepare("UPDATE sources SET claimed_at = ?")
-        .run(Date.now() - 20 * 60 * 1000);
+        .run(Date.now() - 2 * 60 * 60 * 1000);
 
       const third = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
       assert.equal(third.body.sources.length, 1, "an expired lease must be reclaimable");
       assert.equal(third.body.sources[0].attempts, 1, "attempts reflects the earlier claim");
+    } finally {
+      local.restore();
+    }
+  });
+
+  // D45. A measured video gets a lease that fits the work: 15 minutes for a reel, 90 for
+  // one nobody has measured, 8 hours for one known to be long. Before this a six-hour job
+  // was handed to a second machine four times over while the first was still on it.
+  test("how long a claim lasts depends on how big the job is", async () => {
+    const local = await queueHarness(1);
+    try {
+      await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+
+      // A reel, measured: back in the queue after 20 minutes.
+      local.database
+        .prepare("UPDATE sources SET duration_sec = 45, claimed_at = ?")
+        .run(Date.now() - 20 * 60 * 1000);
+      let again = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      assert.equal(again.body.sources.length, 1, "a reel's claim still expires in minutes");
+
+      // The same 20 minutes, but the video is two hours long: still being worked on.
+      local.database
+        .prepare("UPDATE sources SET duration_sec = ?, claimed_at = ?")
+        .run(2 * 3600, Date.now() - 20 * 60 * 1000);
+      again = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      assert.equal(again.body.sources.length, 0, "a two-hour job must not be handed out again");
+
+      // Unmeasured, half an hour in: still being worked on, because it could be a
+      // 28-minute video, which is never asked about and therefore never measured.
+      local.database
+        .prepare("UPDATE sources SET duration_sec = NULL, claimed_at = ?")
+        .run(Date.now() - 30 * 60 * 1000);
+      again = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      assert.equal(again.body.sources.length, 0, "an unmeasured job gets room to finish");
+    } finally {
+      local.restore();
+    }
+  });
+
+  test("the rules travel with the work, so one machine's settings cannot drift", async () => {
+    const local = await queueHarness(1);
+    try {
+      const claimed = await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
+      // The threshold and the ceiling used to live only in a gitignored .env on one PC.
+      assert.equal(claimed.body.limits.warn_above_sec, 30 * 60);
+      assert.equal(claimed.body.limits.max_video_sec, 6 * 60 * 60);
+      assert.ok(claimed.body.limits.max_transcript_chars > 300000);
     } finally {
       local.restore();
     }
@@ -688,7 +738,7 @@ describe("the download queue", () => {
         await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });
         local.database
           .prepare("UPDATE sources SET claimed_at = ?")
-          .run(Date.now() - 20 * 60 * 1000);
+          .run(Date.now() - 2 * 60 * 60 * 1000);
       }
       // One more poll runs the sweeper.
       await local.call(worker, "/v1/queue?limit=10", { serviceToken: SERVICE });

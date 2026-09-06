@@ -428,7 +428,7 @@
 
     <div id="homeView" hidden></div>
 
-    <div id="listView">
+    <div id="listView" hidden>
       <div class="panel">
         <h2>Notebook</h2>
         <input type="search" id="search" placeholder="Search your notebook">
@@ -713,6 +713,9 @@ let grouping = "list";
 const SHAPES_VERSION = 2;
 // Which column a tracker is sorted by, and which way (D34).
 let trackerSort = { column: "saved", ascending: false };
+// The folder to scroll to on the next draw of the grouped notebook, set by pressing a
+// subject on Home (D43). Cleared once it has been used, so it does not jump on every draw.
+let focusTopicId = null;
 
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
@@ -805,7 +808,11 @@ async function sync() {
 const $ = (id) => document.getElementById(id);
 
 function say(target, text, kind = "err") {
-  const host = $(target);
+  // Falls back rather than throwing. A clip's page builds its own message box and leaving
+  // the page destroys it, so a request that answers AFTER he has walked away would
+  // otherwise hit `null.innerHTML` — a TypeError nobody catches, and a note silently lost
+  // with nothing on screen (Golden Rule 29). `syncMsg` lives outside every view.
+  const host = $(target) || $("syncMsg");
   host.innerHTML = "";
   if (!text) return;
   const notice = document.createElement("div");
@@ -831,7 +838,29 @@ function jsonList(value) {
 
 const sourceOf = (clip) => store.sources.find((s) => s.id === clip.source_id);
 const transcriptOf = (clip) => store.transcripts.find((t) => t.source_id === clip.source_id);
-const analysisOf = (clip) => store.analyses.find((a) => a.source_id === clip.source_id);
+/**
+ * The analysis to SHOW for a clip.
+ *
+ * There can be two: the shared one the Worker wrote, and this person's own pasted one if
+ * they are on the copy-and-paste tier (D9, D10). Both arrive through sync, both sit in the
+ * same array, and `find` used to return whichever happened to be first — so which summary,
+ * which kind and which rows appeared was decided by insertion order and could change
+ * between syncs. Their own paste wins, deliberately: they chose to paste it.
+ */
+const analysisOf = (clip) =>
+  store.analyses.find((a) => a.source_id === clip.source_id && a.user_id === (user ? user.uid : ""))
+  || store.analyses.find((a) => a.source_id === clip.source_id && a.user_id === "")
+  || store.analyses.find((a) => a.source_id === clip.source_id);
+
+/**
+ * The SHARED analysis, and only that.
+ *
+ * What the "read these again" offer counts, because the Worker's own queue joins on the
+ * shared row alone. Counting a pasted row instead offers reels the Worker will not touch,
+ * and the offer then sits there for ever saying "nothing more could be read".
+ */
+const sharedAnalysisOf = (clip) =>
+  store.analyses.find((a) => a.source_id === clip.source_id && a.user_id === "");
 const notesOf = (clip) =>
   store.notes.filter((n) => n.clip_id === clip.id && !n.deleted_at)
     .sort((a, b) => a.created_at - b.created_at);
@@ -905,7 +934,9 @@ const NEAR_CEILING_FRACTION = 0.7;
 
 /** How long something takes, said the way a person says it. */
 function spellOutMinutes(minutes) {
-  const whole = Math.max(Math.round(minutes), 1);
+  const whole = Math.max(Math.round(minutes), 0);
+  if (whole === 0) return "under a minute";
+  if (whole === 1) return "a minute";
   if (whole < 60) return `${whole} minutes`;
   const hours = Math.floor(whole / 60);
   const rest = whole % 60;
@@ -942,8 +973,11 @@ function longVideoNotice(clip) {
   box.className = "notice warn";
 
   const heading = document.createElement("strong");
+  // Not "you parked this one". The pipeline is shared (D10), so anybody who saved the
+  // same link may have answered — and telling him he made a decision he did not make is a
+  // worse fault than not naming who did.
   heading.textContent = parked
-    ? "You parked this one. It is still here."
+    ? `This one is parked — ${spellOutMinutes(cost.minutes)}, and nothing has been started.`
     : `This one is long — ${spellOutMinutes(cost.minutes)}. Shall I do it?`;
   box.append(heading);
 
@@ -987,6 +1021,22 @@ function longVideoNotice(clip) {
 
   box.append(row);
   return box;
+}
+
+async function retryClip(clip, button) {
+  button.disabled = true;
+  button.textContent = "Putting it back…";
+  try {
+    await api(`/v1/clips/${clip.id}/retry`, { method: "POST" });
+    await sync();
+    render();
+    say($("clipMsg") ? "clipMsg" : "syncMsg",
+      "Back in the queue. It will be picked up within a minute or two.", "ok");
+  } catch (error) {
+    say($("clipMsg") ? "clipMsg" : "syncMsg", error.message);
+    button.disabled = false;
+    button.textContent = "Try it again";
+  }
 }
 
 async function answerLongVideo(clip, action, button) {
@@ -1049,6 +1099,10 @@ function searchText(clip) {
     // What the reel claimed, and why it was doubted. Already stored and already drawn on
     // the page, but never findable — so "that reel that said X" missed it.
     jsonList(analysis?.claims).map((c) => `${c?.claim || ""} ${c?.why || ""}`).join(" "),
+    // The rows a video carries (D34, D38). The connector was given these in D44 and the
+    // app's own search box was not — so a product or a prompt was findable from Claude and
+    // not from the box directly above the notebook.
+    jsonList(analysis?.items).map((row) => Object.values(row || {}).join(" ")).join(" "),
     notesOf(clip).map((n) => n.body).join(" "),
     // D29, and the reason the feature is worth building: with 200 reels you cannot scroll
     // to find what you learned from the fiftieth. Every field of every learning goes in,
@@ -1609,7 +1663,7 @@ function sortRows(rows, columns) {
 const behindClips = () =>
   store.clips.filter((clip) => {
     if (clip.deleted_at) return false;
-    const analysis = analysisOf(clip);
+    const analysis = sharedAnalysisOf(clip);
     if (!analysis || !analysis.summary) return false;
     // Word for word the Worker's rule, and it has to stay that way or the app offers to
     // re-read reels the Worker will refuse to touch. Behind the current shapes, AND
@@ -2457,7 +2511,30 @@ function learnSection(clip) {
 // ---------------------------------------------------------------- one clip's own page
 function renderClip(clipId) {
   const clip = store.clips.find((c) => c.id === clipId);
-  if (!clip) { location.hash = ""; return; }
+
+  // Not here — but "not here" has two meanings and they are not the same. On a device that
+  // has never opened this notebook the local copy is empty until the first sync lands, and
+  // bouncing to Home would throw away a link he had just followed and never bring it back:
+  // the address is gone by the time the reel arrives. So it waits, and the render that
+  // follows the sync draws the page properly.
+  if (!clip) {
+    $("clipView").innerHTML = "";
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    const back = document.createElement("button");
+    back.className = "secondary";
+    back.textContent = "Back to notebook";
+    back.onclick = () => { showTab("notebook"); };
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.style.marginTop = "14px";
+    line.textContent = store.since
+      ? "That reel is not in this notebook. It may have been saved on another account."
+      : "Fetching your notebook…";
+    panel.append(back, line);
+    $("clipView").append(panel);
+    return;
+  }
 
   const source = sourceOf(clip);
   const analysis = analysisOf(clip);
@@ -2501,6 +2578,26 @@ function renderClip(clipId) {
   // needs an answer (D42).
   const lengthAsk = longVideoNotice(clip);
   if (lengthAsk) panel.append(lengthAsk);
+
+  // A way back from a failure. Nothing could move a video out of `failed`: three
+  // interruptions and it was gone for good, for every saver, recoverable only by
+  // hand-written SQL. His is a home PC that gets switched off, and D42 raised the longest
+  // job to six hours — so a video he read the warning for and agreed to pay for was the
+  // most likely thing to be lost this way.
+  if (source?.state === "failed") {
+    const again = document.createElement("div");
+    again.className = "notice warn";
+    again.append(document.createTextNode(
+      "This one could not be read. It is not gone — you can put it back in the queue and "
+      + "it will be tried again from the start. "
+    ));
+    const button = document.createElement("button");
+    button.textContent = "Try it again";
+    button.style.marginTop = "8px";
+    button.onclick = () => retryClip(clip, button);
+    again.append(document.createElement("br"), button);
+    panel.append(again);
+  }
 
   // The reason code, in small print, only when something actually went wrong (D34). It
   // means nothing to read and it is not meant to — it is the thing to quote when asking
@@ -2749,14 +2846,31 @@ function renderClip(clipId) {
 const REFRESH_MS = 45 * 1000;
 let refreshTimer = null;
 
+/** A cheap description of what is on screen, so a refresh that changed nothing draws nothing. */
+const notebookShape = () =>
+  [
+    store.since,
+    store.clips.length,
+    store.sources.length,
+    store.analyses.length,
+    store.item_status.length,
+    store.relooks.length,
+    store.relook && store.relook.due,
+    store.relook && store.relook.ready
+  ].join("|");
+
 async function refreshQuietly() {
   // Home and the notebook only. A clip's page, settings and the guide all hold something
   // half-typed, and a refresh must stop at the one screen where anything can be lost.
   const landing = !location.hash || location.hash === "#/notebook";
   if (!signedIn || document.hidden || !landing) return;
   try {
+    const before = notebookShape();
     await sync();
-    render();
+    // Only when something actually arrived. Redrawing rebuilds the page from the top,
+    // which throws away where he had scrolled to — every forty-five seconds, for a screen
+    // that in almost every case is identical to the one already in front of him.
+    if (notebookShape() !== before) render();
   } catch {
     // Offline. The device copy stands and the next pass will pick it up — a background
     // refresh must never put an error where the user did not ask for anything.
@@ -2895,7 +3009,10 @@ function actOnSection() {
     heading.textContent = "From your last look back";
     panel.append(heading);
     for (const action of suggested.slice(0, HOME_ROWS)) {
-      panel.append(homeRow(String(action?.do || ""), {
+      // A reply that came back as a list of strings rather than objects would otherwise
+      // draw a row of nothing that he could press.
+      if (!action || !String(action.do || "").trim()) continue;
+      panel.append(homeRow(String(action.do), {
         detail: [action?.because, action?.from && `from “${action.from}”`]
           .filter(Boolean).join(" — ")
       }));
@@ -3019,7 +3136,7 @@ function learningSection() {
           : "steady";
     panel.append(homeRow(`${subject.name} — ${subject.all} ${subject.all === 1 ? "video" : "videos"}`, {
       detail: shape,
-      onClick: () => openTopic()
+      onClick: () => openTopic(subject.id)
     }));
   }
 
@@ -3043,9 +3160,14 @@ function learningSection() {
  * clip is filed. So pressing "e-commerce — 41 videos" showed "Nothing here matches",
  * because the words "e-commerce" appear in none of those forty-one transcripts.
  */
-function openTopic() {
+function openTopic(topicId) {
   query = "";
   $("search").value = "";
+  // Which folder to bring into view once the notebook is drawn. Without it he lands
+  // somewhere in the middle of two hundred cards with the folder he pressed a few hundred
+  // rows away and nothing marking it — which is arriving at the notebook, not at the
+  // subject.
+  focusTopicId = topicId || null;
   setGrouping("topics");
   showTab("notebook");
 }
@@ -3103,7 +3225,7 @@ function attentionSection() {
     panel.append(heading);
     for (const clip of parked.slice(0, HOME_ROWS)) {
       panel.append(homeRow(titleOf(clip), {
-        detail: "You put this one off. Open it and press go ahead whenever you want.",
+        detail: "Nothing has been started. Open it and press go ahead whenever you want.",
         clip
       }));
     }
@@ -3119,7 +3241,10 @@ function attentionSection() {
     heading.textContent = "Could not be read";
     panel.append(heading);
     for (const clip of broken.slice(0, HOME_ROWS)) {
-      panel.append(homeRow(titleOf(clip), { detail: sourceOf(clip).error || "Something went wrong", clip }));
+      panel.append(homeRow(titleOf(clip), {
+        detail: `${sourceOf(clip).error || "Something went wrong"} — open it to try again`,
+        clip
+      }));
     }
     if (broken.length > HOME_ROWS) panel.append(andMore(broken.length - HOME_ROWS, "search your notebook"));
   }
@@ -3127,7 +3252,12 @@ function attentionSection() {
   // Written down and then nothing. Almost always means no AI account is connected, which
   // is the one thing a person cannot work out for themselves from a card that says
   // "written down".
-  const unsummarised = live.filter((clip) => sourceOf(clip)?.state === "transcribed");
+  // Not the ones that already appear above under "could not be read": an analysis that
+  // failed leaves the state at 'transcribed' AND writes an error, so without this the same
+  // reel is listed twice, once as broken and once as merely waiting.
+  const unsummarised = live.filter(
+    (clip) => sourceOf(clip)?.state === "transcribed" && !sourceOf(clip)?.error
+  );
   if (unsummarised.length) {
     anything = true;
     const heading = document.createElement("h3");
@@ -3339,9 +3469,20 @@ $("saveForm").onsubmit = (event) => {
 
 /** A link handed over by the Android share sheet (D17). */
 function pendingShare() {
-  const raw = localStorage.getItem("cliptoaction-pending-share");
+  // Every other use of localStorage in this file is guarded and this one was not — and it
+  // sits between the first render and the first sync. In a private window, or a browser
+  // set to block site data, `getItem` THROWS: the sign-in handler stopped there, the sync
+  // never ran, the background refresh never started, and the message that would have said
+  // so never ran either. He would be looking at an empty notebook with nothing explaining
+  // it, which is the one thing that must never happen (Golden Rule 29).
+  let raw = null;
+  try {
+    raw = localStorage.getItem("cliptoaction-pending-share");
+    if (raw) localStorage.removeItem("cliptoaction-pending-share");
+  } catch {
+    return "";
+  }
   if (!raw) return "";
-  localStorage.removeItem("cliptoaction-pending-share");
   try {
     const share = JSON.parse(raw);
     const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
@@ -3886,16 +4027,25 @@ $("signOut").onclick = () => {
     localStorage.removeItem(seenKey());
     localStorage.removeItem(snoozeKey());
   } catch { /* nothing to remove */ }
-  signOut(auth);
+  // The device copy has already gone by this point, so a sign-out that fails silently
+  // would leave him signed in and looking at an empty notebook.
+  signOut(auth).catch(() => {
+    say("syncMsg", "Could not sign out. Check your connection and try again.");
+  });
 };
 
 onAuthStateChanged(auth, async (account) => {
   user = account;
   signedIn = Boolean(account);
+  // Before the branch below, not inside it. Switching directly from one Google account to
+  // another fires this with the new user and no `null` in between, so leaving the reset in
+  // the signed-out branch meant the second account inherited the first's idea of when it
+  // last looked — and "what's new" was computed against somebody else's clock for the rest
+  // of the session.
+  seenBefore = null;
   applyChrome();
   if (!account) {
     store = structuredClone(EMPTY);
-    seenBefore = null;
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
     return;
   }

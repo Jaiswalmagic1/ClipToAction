@@ -79,8 +79,21 @@ describe("the root page is the app", () => {
     );
     assert.ok(sw.includes("caches.delete"), "older caches are never cleaned up");
     assert.ok(sw.includes("self.skipWaiting"), "a new version would wait for every tab to close");
-    // Nothing from another address may be written into a cache the app does not control.
-    assert.ok(sw.includes("!== self.location.origin"), "cross-origin requests are not left alone");
+    // Nothing from another address may be written into a cache the app does not control,
+    // with exactly one exception: the library the app cannot start without.
+    assert.ok(sw.includes("self.location.origin"), "cross-origin requests are not left alone");
+    assert.ok(
+      sw.includes("LIBRARY_ORIGIN") && sw.includes("https://www.gstatic.com"),
+      "the app imports Firebase at the top of its module — without that file cached, "
+        + "offline is a white page and not the app"
+    );
+    // Giving up on WAITING is not giving up on the REQUEST. Hanging the save off the race
+    // means a phone on a slow connection times out every time, never refreshes its copy,
+    // and stays on an old build for ever — the exact bug this file exists to kill.
+    assert.ok(
+      handler.indexOf("const live = fetch(request)") < handler.indexOf("cache.put"),
+      "the saved copy must be updated by the fetch, not by the race"
+    );
     // Nor the API, even where the app and the API share an address (D26) — a cached sync
     // response is somebody's whole notebook, served back to whoever opens the app next.
     assert.ok(sw.includes('startsWith("/v1/")'), "API responses could be cached");

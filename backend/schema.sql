@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS sources (
 
 CREATE INDEX IF NOT EXISTS idx_sources_state ON sources (state, updated_at);
 
+-- The creator backfill's queue (D40). Partial, so it holds only the rows still waiting and
+-- empties itself as the backfill finishes. Without it the worker's every-thirty-seconds
+-- "anything left?" is a full table scan, which on a free D1 allowance is a quarter of the
+-- daily read budget spent on a question whose answer is usually zero.
+CREATE INDEX IF NOT EXISTS idx_sources_creator_todo
+  ON sources (created_at)
+  WHERE creator IS NULL AND creator_checked_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS transcripts (
   source_id  TEXT PRIMARY KEY REFERENCES sources (id) ON DELETE CASCADE,
   text       TEXT NOT NULL,

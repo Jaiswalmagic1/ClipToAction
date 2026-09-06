@@ -74,24 +74,44 @@ print("Model ready.")
 
 
 def claim_batch():
+    """Claims work, and takes the rules with it.
+
+    `limits` is the API's own thresholds (D45). They used to live only in this machine's
+    gitignored .env, where a stale value silently changed what the app was telling him --
+    the trap that left three of his videos failed for a month. Falling back to the local
+    settings keeps this working against an older API, and nothing else reads them.
+    """
     response = requests.get(
         f"{API_BASE}/v1/queue", params={"limit": BATCH_SIZE}, headers=HEADERS, timeout=30
     )
     response.raise_for_status()
-    return response.json().get("sources", [])
+    payload = response.json()
+    limits = payload.get("limits") or {}
+    return payload.get("sources", []), {
+        "warn_above_sec": int(limits.get("warn_above_sec") or WARN_ABOVE_SEC),
+        "max_video_sec": int(limits.get("max_video_sec") or MAX_DURATION_SEC),
+        "max_transcript_chars": int(
+            limits.get("max_transcript_chars") or MAX_TRANSCRIPT_CHARS
+        ),
+    }
 
 
 def report_failure(source_id, message):
     """Every failure goes back to the API so the app can show it. Never swallowed."""
     try:
-        requests.post(
+        response = requests.post(
             f"{API_BASE}/v1/sources/{source_id}/error",
             json={"error": str(message)[:500]},
             headers=HEADERS,
             timeout=30,
         )
+        # requests does not raise on a 4xx or a 5xx, and this is the one reporter that had
+        # no check -- the helper whose whole job is that a failure is never swallowed. A
+        # rejected report looked exactly like an accepted one, so the real reason was lost
+        # and the video was eventually retired as "gave up after 3 attempts" instead.
+        response.raise_for_status()
     except requests.RequestException as error:
-        print(f"  ! could not report failure for {source_id}: {error}")
+        print(f"  !! could not report failure for {source_id}: {error}")
 
 
 UUID_PATTERN = re.compile(r"\A[0-9a-fA-F-]{36}\Z")
@@ -140,7 +160,7 @@ class NeedsPermission(Exception):
         self.creator = creator
 
 
-def download_audio(source):
+def download_audio(source, limits):
     """Downloads audio only and returns (path, title, duration_sec, creator).
 
     Reads the metadata first and stops there when the video is long enough to need his
@@ -177,15 +197,18 @@ def download_audio(source):
         # from this report. The ceiling below is only a guard for a video somebody has
         # already approved, so a stale value in this machine's gitignored .env can no
         # longer quietly refuse videos the app has just told him it would ask about.
-        if duration > WARN_ABOVE_SEC and not source.get("long_ok"):
+        if duration > limits["warn_above_sec"] and not source.get("long_ok"):
             raise NeedsPermission(duration, info.get("title"), creator_from(info))
 
-        # Approved, and still past what this machine will take on. Names the setting, so a
-        # mismatch between here and the API is diagnosable rather than mysterious.
-        if duration > MAX_DURATION_SEC:
+        # Approved, and still past what this machine will take on. The message is written
+        # to be READ -- it goes onto a row every saver of the reel sees -- so it names no
+        # setting and no machine. With the ceiling coming from the API this should be
+        # unreachable; it is here so that a machine which genuinely cannot take the job
+        # says so rather than starting it.
+        if duration > limits["max_video_sec"]:
             raise ValueError(
-                f"Video is {duration // 60} minutes long, over this machine's "
-                f"MAX_DURATION_SEC of {MAX_DURATION_SEC // 60} minutes."
+                f"This video is {duration // 60} minutes long, which is more than can be "
+                "processed in one go."
             )
 
         downloader.download([source["url_original"]])
@@ -323,7 +346,7 @@ def mark_times(segments):
     return " ".join(parts).strip()
 
 
-def transcribe(audio_path, duration_sec=0):
+def transcribe(audio_path, duration_sec=0, max_chars=None):
     """Always task="translate" -- the transcript comes back in English whatever was spoken.
 
     Asked to write Hindi down in Hindi, whisper produces broken Devanagari on the
@@ -342,12 +365,13 @@ def transcribe(audio_path, duration_sec=0):
         text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text:
         raise ValueError("No speech found in this video.")
-    if len(text) > MAX_TRANSCRIPT_CHARS:
+    ceiling = max_chars or MAX_TRANSCRIPT_CHARS
+    if len(text) > ceiling:
         # Said plainly rather than silently cut. A transcript with its last hour missing
         # would be worse than none: the summary would look complete and be wrong.
         raise ValueError(
             f"This video produced {len(text) // 1000}k characters of speech, more than the "
-            f"{MAX_TRANSCRIPT_CHARS // 1000}k a single video can hold."
+            f"{ceiling // 1000}k a single video can hold."
         )
     return text, info.language
 
@@ -374,12 +398,20 @@ def post_transcript(source_id, text, lang, title, duration, creator):
 
 
 def classify_failure(error):
-    """Turns an exception into text that is safe for every user of a shared row to read."""
+    """Turns an exception into text that is safe for every user of a shared row to read.
+
+    The order of these two matters and is not obvious. `InvalidURL`, `MissingSchema`,
+    `InvalidSchema` and `InvalidHeader` all inherit from BOTH RequestException and
+    ValueError -- so with ValueError first, their raw text went straight onto the shared
+    row. `InvalidHeader`'s message QUOTES the offending header value, and this worker's
+    only header is the service token: a token with a stray character in it would have
+    published itself into a column every saver of the reel can read.
+    """
+    if isinstance(error, requests.RequestException):
+        return "Could not reach ClipToAction while processing this video."
     if isinstance(error, ValueError):
         # Our own checks -- the messages are written to be shown (too long, private host).
         return str(error)[:200]
-    if isinstance(error, requests.RequestException):
-        return "Could not reach ClipToAction while processing this video."
     if isinstance(error, FileNotFoundError):
         return "The audio could not be extracted from this video."
     return "This video could not be downloaded or transcribed."
@@ -422,11 +454,11 @@ def ask_about_length(source_id, waiting):
         print(f"  !! could not ask about {source_id}: {error}")
 
 
-def process(source):
+def process(source, limits):
     print(f"- {source['platform']}: {source['url_canonical']}")
     try:
-        audio_path, title, duration, creator = download_audio(source)
-        text, lang = transcribe(audio_path, duration)
+        audio_path, title, duration, creator = download_audio(source, limits)
+        text, lang = transcribe(audio_path, duration, limits["max_transcript_chars"])
         post_transcript(source["id"], text, lang, title, duration, creator)
         print(f"  transcribed {len(text)} chars ({lang})")
     except NeedsPermission as waiting:
@@ -452,14 +484,14 @@ def main():
 
     while True:
         try:
-            batch = claim_batch()
+            batch, limits = claim_batch()
         except requests.RequestException as error:
             print(f"Queue unreachable: {error}")
             time.sleep(POLL_SECONDS)
             continue
 
         for source in batch:
-            process(source)
+            process(source, limits)
 
         if not batch:
             # Only when there is nothing anybody is waiting for (D40).

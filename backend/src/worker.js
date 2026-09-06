@@ -89,6 +89,15 @@ const CLAIM_LEASE_MS = 15 * 60 * 1000;
 // mark it failed while the first machine was still working on it. So a video whose length
 // is known to be long gets a lease that covers the work it actually is.
 const LONG_CLAIM_LEASE_MS = 8 * 60 * 60 * 1000;
+// And the lease for a video nobody has measured yet, which is EVERY video on its first
+// claim: `duration_sec` is written after the work, not before it. A 28-minute video is
+// under the threshold, so it is never asked about and never measured — and at roughly 0.6
+// of its length it takes longer to transcribe than fifteen minutes. The server would hand
+// it out again while a machine still held it, and a second machine's late transcript would
+// re-run the analysis on somebody's key and REPLACE the rows, orphaning any decision he
+// had recorded against them. Ninety minutes covers anything that can reach here unasked,
+// and still frees a genuinely dead worker's claim the same day.
+const UNMEASURED_CLAIM_LEASE_MS = 90 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
 // How many old clips one press of "sort my old clips" may name. Each one is a call out
 // to a provider, and a Worker request has a hard ceiling on how many of those it may
@@ -148,8 +157,10 @@ function limitsFor(durationSec) {
  * wrong silently.
  */
 const LEASE_SQL =
-  `(CASE WHEN COALESCE(duration_sec, 0) > ${WARN_ABOVE_SEC}`
-  + ` THEN ${LONG_CLAIM_LEASE_MS} ELSE ${CLAIM_LEASE_MS} END)`;
+  "(CASE"
+  + ` WHEN duration_sec IS NULL THEN ${UNMEASURED_CLAIM_LEASE_MS}`
+  + ` WHEN duration_sec > ${WARN_ABOVE_SEC} THEN ${LONG_CLAIM_LEASE_MS}`
+  + ` ELSE ${CLAIM_LEASE_MS} END)`;
 
 function corsHeaders(env) {
   return {
@@ -183,7 +194,17 @@ class RequestError extends Error {
   }
 }
 
-/** Rejects oversized bodies before spending CPU parsing them. */
+/**
+ * Rejects oversized bodies before spending CPU parsing them.
+ *
+ * `Content-Length` is bytes and `text.length` is characters, and both are compared against
+ * the same number. That is only safe because the one body that comes near the cap is a
+ * transcript, and a transcript is always English — whisper is asked to TRANSLATE, never to
+ * write down what was spoken (D28), so it is effectively one byte per character. If that
+ * ever changes, this comparison has to change with it: 400,000 characters of Devanagari is
+ * about 1.2MB and would be refused by the byte check with a length the caller was told
+ * was fine.
+ */
 async function readJson(request, cap = MAX_BODY_BYTES) {
   const declared = Number(request.headers.get("Content-Length") || 0);
   if (declared > cap) throw new RequestError("That request is too large.", 413);
@@ -751,7 +772,18 @@ async function claimQueue(request, env) {
     if (result.meta.changes) claimed.push(row);
   }
 
-  return json(env, { sources: claimed });
+  // The rules travel with the work (D45). The threshold and the ceiling used to live only
+  // in a gitignored `.env` on one PC, where a stale value silently changed what the app was
+  // telling him — the exact trap that left three of his videos failed for a month. The
+  // worker prefers these over its own settings, so there is one authority and it is here.
+  return json(env, {
+    sources: claimed,
+    limits: {
+      warn_above_sec: WARN_ABOVE_SEC,
+      max_video_sec: MAX_VIDEO_SEC,
+      max_transcript_chars: MAX_TRANSCRIPT_CHARS
+    }
+  });
 }
 
 async function storeTranscript(request, env, sourceId) {
@@ -766,35 +798,54 @@ async function storeTranscript(request, env, sourceId) {
   const durationSec = Number(body.duration_sec || 0) || facts.duration_sec;
 
   const timestamp = now();
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO transcripts (source_id, text, lang, engine, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5)
-       ON CONFLICT (source_id) DO UPDATE SET text = ?2, lang = ?3, engine = ?4, created_at = ?5`
-    ).bind(sourceId, text, body.lang || null, body.engine || "unknown", timestamp),
-    env.DB.prepare(
-      // Only a source still in flight may be completed. A worker whose lease expired can
-      // come back late, and without this it would overwrite a newer transcript.
+
+  // The source moves FIRST, and whether it moved decides whether anything else happens.
+  //
+  // The guard on this UPDATE has always been here; nothing ever read its result. So a
+  // worker whose lease had expired — while a second machine was already transcribing the
+  // same video — could still write its transcript, run the analysis AGAIN on somebody's
+  // key, and REPLACE the stored rows. `item_status` is keyed on a row's flattened name
+  // (D34), so a re-run that reworded one silently orphaned a decision he had made.
+  const moved = await env.DB.prepare(
+      // Only a source still in flight may be completed.
       `UPDATE sources
        SET state = 'transcribed', title = COALESCE(?1, title),
            duration_sec = COALESCE(?2, duration_sec), error = NULL, error_detail = NULL,
            claimed_at = NULL,
            creator = COALESCE(?5, creator),
-           -- Always set, never coalesced: a download that reported no creator has still
-           -- LOOKED for one, and the backfill queue must not ask about it again (D40).
-           creator_checked_at = ?3,
+           -- Only when the worker actually LOOKED. A machine still running the code from
+           -- before D40 sends no creator field at all, and marking those as settled
+           -- would put every reel saved between deploying the Worker and restarting that
+           -- machine permanently beyond the backfill — no creator, ever, with nothing on
+           -- screen saying why. Absent means "not asked", not "asked and nobody named".
+           creator_checked_at = CASE WHEN ?6 = 1 THEN ?3 ELSE creator_checked_at END,
            updated_at = ?3
        WHERE id = ?4 AND state = 'downloading'`
-    ).bind(
-      body.title || null,
+  )
+    .bind(
+      cleanTitle(body.title),
       body.duration_sec || null,
       timestamp,
       sourceId,
       // D40. Whoever made it, as the platform reported it, alongside the title it came
-      // with. Marked as looked-for either way, so the backfill never asks about it again.
-      cleanCreator(body.creator)
+      // with. Marked as looked-for only when the field was sent at all — see above.
+      cleanCreator(body.creator),
+      Object.prototype.hasOwnProperty.call(body, "creator") ? 1 : 0
     )
-  ]);
+    .run();
+
+  if (!moved.meta.changes) {
+    // Somebody else finished this one. Nothing is written and nothing is spent.
+    return json(env, { ok: true, applied: false });
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO transcripts (source_id, text, lang, engine, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT (source_id) DO UPDATE SET text = ?2, lang = ?3, engine = ?4, created_at = ?5`
+  )
+    .bind(sourceId, text, body.lang || null, body.engine || "unknown", timestamp)
+    .run();
 
   // If anyone who saved this reel has a key connected, analyse it now and share the result
   // with everyone else who saved it. If nobody has one, the source stays at 'transcribed'
@@ -1092,11 +1143,22 @@ async function reportTooLong(request, env, sourceId) {
     return json(env, { ok: true, refused: true });
   }
 
-  // The Worker decides what is long, not the machine that reported it. Without this the
-  // ceiling and the threshold live only in a gitignored `.env` on one PC, and a stale
-  // value there silently changes the rules the app is telling him about (D42).
+  // The Worker decides what is long, not the machine that reported it (D42).
+  //
+  // Refusing outright would have stranded it: the source stays claimed, the lease expires,
+  // it is claimed again, and after three goes it is retired as "gave up after 3 attempts"
+  // — a reel thrown away over a disagreement about a number. So it goes back in the queue
+  // to be downloaded normally, which is what should have happened in the first place.
   if (!needsPermission(durationSec)) {
-    return fail(env, "That video is not long enough to need permission.");
+    await env.DB.prepare(
+      `UPDATE sources
+       SET state = 'pending', claimed_at = NULL,
+           duration_sec = COALESCE(?1, duration_sec), updated_at = ?2
+       WHERE id = ?3 AND state = 'downloading'`
+    )
+      .bind(durationSec || null, timestamp, sourceId)
+      .run();
+    return json(env, { ok: true, not_long: true });
   }
 
   // Only a source the worker actually holds may be moved. A worker whose lease expired can
@@ -1234,9 +1296,16 @@ async function creatorQueue(request, env) {
     .bind(limit)
     .all();
 
-  const left = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM sources WHERE creator IS NULL AND creator_checked_at IS NULL`
-  ).first();
+  // Counted only when there is something to count. This runs on every idle poll — every
+  // thirty seconds, for ever — and an unconditional COUNT(*) over `sources` is a table
+  // scan whether or not the backfill has anything left to do. On a free D1 allowance that
+  // is a quarter of the daily read budget spent on asking a question whose answer is zero
+  // (D5: this has to stay free to run). The index added in migration 0014 covers both.
+  const left = rows.results.length
+    ? await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM sources WHERE creator IS NULL AND creator_checked_at IS NULL`
+      ).first()
+    : { n: 0 };
 
   return json(env, { sources: rows.results, remaining: Number(left?.n || 0) });
 }
@@ -1266,7 +1335,7 @@ async function storeCreator(request, env, sourceId) {
 
   const result = await env.DB.prepare(
     `UPDATE sources
-     SET creator = COALESCE(?1, creator),
+     SET creator = CASE WHEN creator IS NULL THEN ?1 ELSE creator END,
          creator_tries = creator_tries + ?4,
          creator_checked_at = CASE
            WHEN ?5 = 1 OR creator_tries + ?4 >= ?6 THEN ?2 ELSE creator_checked_at END,
@@ -1974,6 +2043,43 @@ async function doRelook(request, env, userId) {
   return json(env, { ok: true, id, covered: batch.length, still_due: left.due }, 201);
 }
 
+/**
+ * "Try this one again" — the way back from `failed`.
+ *
+ * Nothing could move a source out of `failed`. Three interruptions and it was gone for
+ * good, for every saver of that link, recoverable only by hand-written SQL — which is
+ * exactly the rescue D42 records performing on his three stuck videos. Raising the ceiling
+ * to six hours made that far likelier, not less: his is a home PC that gets switched off,
+ * and a long job that is interrupted three times is a long job he approved and paid for
+ * and then lost.
+ *
+ * Costs nothing and calls nobody: it puts the video back in the queue with its attempts
+ * reset. A video that genuinely cannot be downloaded simply fails again and says so.
+ */
+async function retryClip(env, userId, clipId) {
+  const clip = await env.DB.prepare(
+    `SELECT c.source_id, s.state FROM clips c
+     JOIN sources s ON s.id = c.source_id
+     WHERE c.id = ?1 AND c.user_id = ?2 AND c.deleted_at IS NULL`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!clip) return fail(env, "No such clip.", 404);
+  if (clip.state !== "failed") return fail(env, "That video has not failed.");
+
+  const timestamp = now();
+  await env.DB.prepare(
+    `UPDATE sources
+     SET state = 'pending', attempts = 0, error = NULL, error_detail = NULL,
+         claimed_at = NULL, updated_at = ?1
+     WHERE id = ?2 AND state = 'failed'`
+  )
+    .bind(timestamp, clip.source_id)
+    .run();
+
+  return json(env, { ok: true });
+}
+
 /** Sets a clip's topic by hand. The user's choice is final (D27). */
 async function setTopic(request, env, userId, clipId) {
   const body = await readJson(request);
@@ -2104,6 +2210,9 @@ export default {
         }
         if (segments[3] === "long-park" && request.method === "POST") {
           return await parkLongVideo(env, userId, segments[2]);
+        }
+        if (segments[3] === "retry" && request.method === "POST") {
+          return await retryClip(env, userId, segments[2]);
         }
       }
       if (segments[1] === "connector" && !segments[2] && request.method === "POST") {
