@@ -193,7 +193,14 @@ function makeDocument() {
       return node;
     },
     createRange: () => ({ selectNodeContents() {} }),
-    addEventListener() {},
+    // Recorded, not thrown away. A no-op here meant `visibilitychange` — which is how a
+    // phone tells the app it has come back — could not be fired by any test, so the one
+    // event that happens more than any other on the device he actually uses had never once
+    // been executed. `documentListeners` is filled in by createEnv; `fire` reaches both.
+    addEventListener(name, handler) {
+      if (this.listeners) this.listeners.push([name, handler]);
+    },
+    listeners: null,
     // Where the page before this one was. The app uses it to tell its OWN share target's
     // fallback from a link somebody pasted.
     referrer: "",
@@ -254,6 +261,9 @@ export async function loadApp(
   document.referrer = referrer;
   document._seed(html);
   const listeners = [];
+  // The document and the window share one list, so `fire` reaches a handler wherever the
+  // app happened to register it.
+  document.listeners = listeners;
 
   /**
    * A `location` that fires `hashchange` when its hash is assigned, the way a browser does.

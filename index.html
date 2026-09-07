@@ -3308,11 +3308,19 @@ const notebookShape = () =>
     store.relook && store.relook.ready
   ].join("|");
 
+// Whether a quiet refresh is already in the air. Coming back to a backgrounded phone
+// fires `visibilitychange` AND `focus`, and both call this — so every single resume, which
+// is the most frequent event in a phone's life, was fetching the whole delta twice. The
+// merge is by key so nothing was ever wrong; it simply cost double the row reads D59 spent
+// a round measuring.
+let refreshInFlight = false;
+
 async function refreshQuietly() {
   // Home and the notebook only. A clip's page, settings and the guide all hold something
   // half-typed, and a refresh must stop at the one screen where anything can be lost.
   const landing = !location.hash || location.hash === "#/notebook";
-  if (!signedIn || document.hidden || !landing) return;
+  if (!signedIn || document.hidden || !landing || refreshInFlight) return;
+  refreshInFlight = true;
   try {
     const before = notebookShape();
     await sync();
@@ -3323,6 +3331,8 @@ async function refreshQuietly() {
   } catch {
     // Offline. The device copy stands and the next pass will pick it up — a background
     // refresh must never put an error where the user did not ask for anything.
+  } finally {
+    refreshInFlight = false;
   }
 }
 
@@ -4008,8 +4018,12 @@ async function saveLink(url) {
       : "Saved. It will start working on it shortly.", "ok");
     await sync();
     render();
+    // Whether the API took it. The share queue is drained on this and nothing else — a
+    // reel that could not be saved has to still be waiting the next time he opens the app.
+    return true;
   } catch (error) {
     say("saveMsg", error.message);
+    return false;
   } finally {
     $("saveBtn").disabled = false;
   }
@@ -4070,20 +4084,51 @@ function pendingShare() {
   // never ran, the background refresh never started, and the message that would have said
   // so never ran either. He would be looking at an empty notebook with nothing explaining
   // it, which is the one thing that must never happen (Golden Rule 29).
-  let raw = null;
-  try {
-    raw = localStorage.getItem("cliptoaction-pending-share");
-    if (raw) localStorage.removeItem("cliptoaction-pending-share");
-  } catch {
-    return { url: "", own: false };
+  //
+  // READ, and do not remove. What is queued here is removed by `shareIsSafeNow`, once the
+  // API has actually taken it. It used to be emptied on the way past, before the save was
+  // even attempted — and the save sits behind a sync that can fail. On the Underground the
+  // reel then existed only as text in an input box, which dies with the tab the moment the
+  // phone reclaims it. Nothing on screen ever mentioned it again.
+  const waiting = queuedShares();
+  if (!waiting.length) return { url: "", own: false };
+  const share = waiting[0];
+  const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
+  if (!found) {
+    // Something was shared that has no link in it — a photo, or plain text. It cannot be
+    // saved, so it is dropped, but he is told: a share that produces silence on the one
+    // path a reel gets in by is the exact shape Golden Rule 29 exists to stop.
+    dropShare(share);
+    return { url: "", own: false, notALink: true, more: waiting.length - 1 };
   }
-  if (!raw) return { url: "", own: false };
+  return { url: found[0], own: true, share, more: waiting.length - 1 };
+}
+
+/** Everything the share target has handed over and the API has not yet taken. */
+function queuedShares() {
   try {
-    const share = JSON.parse(raw);
-    const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
-    return { url: found ? found[0] : "", own: true };
+    const raw = localStorage.getItem("cliptoaction-pending-shares");
+    const waiting = raw ? JSON.parse(raw) : [];
+    return Array.isArray(waiting) ? waiting : [];
   } catch {
-    return { url: "", own: false };
+    return [];
+  }
+}
+
+/** One share, gone from the queue — called only when it no longer needs to be saved. */
+function dropShare(share) {
+  if (!share) return;
+  try {
+    const left = queuedShares().filter(
+      (one) => !(one.at === share.at && one.url === share.url && one.text === share.text)
+    );
+    if (left.length) {
+      localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(left));
+    } else {
+      localStorage.removeItem("cliptoaction-pending-shares");
+    }
+  } catch {
+    // Storage has gone away. The reel is already saved, so there is nothing to protect.
   }
 }
 
@@ -4151,6 +4196,25 @@ $("makeConnector").onclick = async () => {
       method: "POST",
       body: JSON.stringify({ label: $("connectorLabel").value.trim() })
     });
+
+    // The address, or nothing.
+    //
+    // `api` swallows a body it cannot read and hands back `{}` with the response still
+    // counted as fine — which is what a truncated reply on a dying mobile connection, or a
+    // hotel portal answering 200 with its own HTML, actually looks like. The connector row
+    // exists server-side by then and only its hash is kept (D29), so the address is gone
+    // for good: without this he was shown the literal word `undefined` in the box, under a
+    // sentence saying this was the only time it would ever be shown, and pasted that into
+    // his AI app.
+    if (typeof made.url !== "string" || !made.url) {
+      await sync();
+      renderConnectors();
+      throw new Error(
+        "The connection was made but its address did not arrive — most likely a broken"
+        + " connection. It cannot be shown again, so delete the one just made in the list"
+        + " below and make another."
+      );
+    }
 
     await sync();
     renderConnectors();
@@ -4711,13 +4775,53 @@ onAuthStateChanged(auth, async (account) => {
   startRefreshing();
   // Only a link this app's own share target handed over saves itself. One that arrived in
   // the address is filled in and waits for him — see pendingShare.
-  if (shared.url && shared.own) saveLink(shared.url);
-  else if (shared.url) {
+  if (shared.url && shared.own) {
+    const took = await saveLink(shared.url);
+    // ONLY on success. It used to be dropped from storage before the save was attempted,
+    // so an offline share was gone for good — the reel lived in an input box that dies
+    // with the tab. A failed one stays queued and is offered again next time.
+    if (took) dropShare(shared.share);
+    else if (shared.share) {
+      say(
+        "saveMsg",
+        "Could not save that yet — it is still here, and will go in the next time you open"
+        + " this with a connection.",
+        "warn"
+      );
+    }
+    // Three reels shared one after another used to leave one. Whatever is still queued is
+    // saved now, oldest first, and anything that fails stays queued.
+    if (took) await drainShares();
+  } else if (shared.url) {
     say("saveMsg", "Somebody shared this link with you. Press Save if you want it.", "warn");
   } else if (shared.broken) {
     say("saveMsg", "Something was shared but the link could not be read. Paste it here.");
+  } else if (shared.notALink) {
+    // A photo, or plain text. It used to reach exactly here and say nothing at all.
+    say("saveMsg", "That share had no video link in it, so there was nothing to save.", "warn");
   }
 });
+
+/**
+ * Everything still queued, saved oldest first.
+ *
+ * The share target writes one entry per share and the app removes an entry only when the
+ * API has taken it, so this is where a backlog — three reels shared in a row, or anything
+ * that failed while he was offline — actually gets in.
+ */
+async function drainShares() {
+  for (const share of queuedShares()) {
+    const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
+    if (!found) {
+      dropShare(share);
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const took = await saveLink(found[0]);
+    if (!took) return;
+    dropShare(share);
+  }
+}
 </script>
 </body>
 </html>

@@ -4165,3 +4165,100 @@ recording.
 **Two hundred and thirty-three.** Nine rounds running, the regression half has found only its
 predecessor's faults, and this is the **fifth** time it has caught a fix the log recorded as
 done that fixed nothing.
+
+---
+
+### D70 — Round nineteen: the thing in his pocket
+**Date:** 2026-09-08
+**Amends:** D17, D29, D37, D48.
+
+Nineteen rounds had reviewed this product from a desk. This one reviewed it as the app on
+his phone — installed to the home screen, opened by the share sheet, on a connection that
+comes and goes. **The one path a reel gets in by (D17) had no test on it at all.**
+
+#### A reel shared with no signal was thrown away without a word
+
+`pendingShare()` removed the stored share **on the way past** — before the save was
+attempted — and the save sits behind an `await sync()` that can fail. On the Underground the
+sequence is: the service worker correctly serves the share target from cache (D48's fix), the
+link is written to storage, the app opens, the share is read **and deleted**, the sync fails,
+the save fails. The reel now exists only as text in an input box, and Android reclaims a
+backgrounded tab. He reopens with signal to an empty box, empty storage, and nothing on any
+screen that has ever mentioned it.
+
+D48 fixed the *service-worker* half of "an offline share loses the reel" and stopped there.
+The page runs offline now; the app then discarded what the page produced. The two halves were
+reviewed a round apart and neither review crossed the join.
+
+**A share is removed only when the API has taken it.** `saveLink` says whether it did; a
+failure leaves the entry queued, says so on screen, and it goes in on the next open.
+
+#### And a fixed slot meant three reels shared in a row left one
+
+One storage key, overwritten each time — and the navigation for the second share destroyed
+the first share's page mid-save. Clearing a saved-posts list is exactly how somebody shares
+three things in ten seconds. It is a **queue** now, appended to, drained oldest first, capped
+at 25 so a bug that never drains it cannot fill his storage and take the app down with it.
+
+The queue also settles the upgrade hazard D37 left open, for free. After the merge his phone
+still has the old cache-first worker; a share fetches the NEW share target from the network
+(the query string misses the old worker's exact cache match), which then navigates to
+`index.html` — served from cache as the **retired capture page**, which read the old key,
+emptied it, and filed the reel into browser storage that nothing on this branch reads. The new
+share target writes a key the old page does not know about, so the reel simply waits for the
+new app, which installs seconds later.
+
+#### A share with no link in it said nothing at all
+
+He shares a photo, or plain text. No web address is found, the startup path falls off the end
+of its branches, and **both message boxes stay empty.** Golden Rule 29's exact failure, on the
+one path that matters most. It says so now.
+
+#### The connector address, on a dying connection, was the word `undefined`
+
+`api()` swallows a body it cannot read and returns an empty object with the response still
+counted as fine — which is what a truncated reply, or a hotel portal answering 200 with its
+own HTML, actually looks like. `makeConnector` then put that nothing into the box and said
+*"this is the only time it will be shown."* The row exists server-side by then and only its
+hash is kept (D29), so the address is genuinely gone. He would have pasted the word
+`undefined` into his AI app. It is checked, and he is told to delete that one and make
+another.
+
+#### Two full syncs on every single resume
+
+Coming back to a backgrounded phone fires `visibilitychange` **and** `focus`, and both call
+the quiet refresh, which had no in-flight guard. Nothing was ever wrong — the merge is by key
+— but the most frequent event in a phone's life cost double the row reads D59 spent a round
+measuring. One at a time now.
+
+The harness could not have caught it: `document.addEventListener` was a **no-op**, so
+`visibilitychange` had never once been executed by any test. It records now, and `fire`
+reaches handlers registered on either the document or the window.
+
+#### Written down, not fixed
+
+The product tracker (D34) is over 1100px of minimum table width inside a sideways-scrolling
+box on a 360px screen, with the status dropdown second from the right and nothing saying the
+box scrolls. It is reachable, so it is not a break — but it is the control D34 and D43 are
+built around, and it is the first thing to look at on a real phone. Two cosmetic notes with
+it: the tracker's sticky header never sticks (the scrollport has no height), and the maximum
+height on a long cell is ignored by browsers on table cells.
+
+#### What came back clean
+
+The service worker's own logic, line by line — network-first ordering, the clone before
+`caches.open`, the save hanging off the live request rather than the race, the `/v1`
+exclusion, the navigate fallback, cache cleanup on activate. `saveCache`'s two tiers, and two
+tabs writing the same key. Account switching mid-flight. D67's clock split, correctly applied.
+Message routing on every screen. No hover-only controls, no drag, no keyboard-only path.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Eighteen (regression included) | 233 | 86 |
+| Nineteen (the phone) | 6 | 0 |
+
+**Two hundred and thirty-nine.** The sixth round to find things by standing somewhere new
+rather than looking harder, and the sixth to create nothing of its own. Every one of those six
+asked about the product from outside the code.

@@ -50,10 +50,33 @@
       external = true;
     }
 
+    // A QUEUE, not one slot.
+    //
+    // One fixed key meant the second share overwrote the first, and the navigation for the
+    // second destroyed the first's page before it had finished saving. Three reels shared
+    // one after another -- which is exactly how somebody clears a saved-posts list -- left
+    // one. And the app used to empty this slot the moment it read it, so an offline save
+    // that then failed lost the reel for good: it existed only as text in a box, which
+    // dies with the tab when the phone reclaims it.
+    //
+    // So: append, and let the app remove an entry only once the API has taken it.
     var stored = false;
     if (!external) {
       try {
-        localStorage.setItem("cliptoaction-pending-share", JSON.stringify(share));
+        var waiting = [];
+        try {
+          waiting = JSON.parse(localStorage.getItem("cliptoaction-pending-shares") || "[]");
+          if (!Array.isArray(waiting)) waiting = [];
+        } catch (readError) {
+          waiting = [];
+        }
+        share.at = Date.now();
+        waiting.push(share);
+        // A ceiling, so a bug that never drains this cannot fill his storage and take the
+        // whole app down with it. The OLDEST go first: the newest share is the one he is
+        // watching happen.
+        if (waiting.length > 25) waiting = waiting.slice(waiting.length - 25);
+        localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(waiting));
         stored = true;
       } catch (storageError) {
         // Storage is not available. Fall through -- the address carries it instead.
