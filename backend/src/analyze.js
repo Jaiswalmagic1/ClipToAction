@@ -752,6 +752,19 @@ export async function proposeTopic(env, userId, summary) {
  *
  * Returns null for an empty list — that is the copy-paste tier, not a failure.
  */
+/**
+ * Whether two different accounts have failed on this provider for the same reason.
+ *
+ * One account failing says something about that account. Two saying the identical thing is
+ * about the provider, and is worth not asking a third.
+ */
+function agreedItCannot(failedOn, provider) {
+  for (const [reason, who] of failedOn) {
+    if (reason.startsWith(`${provider} :: `) && who.size >= 2) return true;
+  }
+  return false;
+}
+
 async function spendKeys(env, candidates, attempt) {
   if (!candidates.length) return null;
 
@@ -759,14 +772,15 @@ async function spendKeys(env, candidates, attempt) {
   // Whose list has already refused, and the first refusal, which is what gets reported if
   // nobody's keys work at all.
   const givenUp = new Set();
-  // Providers that have already said they cannot do this. A different account on the same
-  // provider will say the same thing.
-  const triedAndFailed = new Set();
+  // Provider-and-reason pairs that have already failed, and WHOSE accounts they failed on.
+  // A provider is only given up on once TWO different accounts have failed on it the same
+  // way — see the note further down.
+  const failedOn = new Map();
   let firstRefusal = null;
 
   for (const key of candidates) {
     if (givenUp.has(key.user_id)) continue;
-    if (triedAndFailed.has(key.provider)) continue;
+    if (agreedItCannot(failedOn, key.provider)) continue;
     try {
       const value = await attempt(key);
       await markKeyWorked(env, key.id);
@@ -808,16 +822,31 @@ async function spendKeys(env, candidates, attempt) {
       // outage or a mangled reply is not.
       firstRefusal = firstRefusal || error;
       givenUp.add(key.user_id);
-      // And the PROVIDER, when the failure was about what that provider could do.
+      // And a note against the PROVIDER, for the reason it gave.
       //
-      // "The model is not on this account" says nothing about a different provider — which
-      // is why this moves on at all — but it says everything about the same one, and the
-      // model names here are hard-coded, one per provider. So the commonest 404 there is,
-      // a model that has been retired, is identical on every account using it: without
-      // this, one reel that twelve people had saved cost TWENTY-FOUR full-transcript
-      // prompts, charged to people who pressed nothing, and past twenty-five savers the
-      // request died on the platform's own ceiling halfway through.
-      if (category === "unsuitable") triedAndFailed.add(key.provider);
+      // The saving this is here for is real: the model names are hard-coded, one per
+      // provider, so a model that has been RETIRED is missing from every account using it,
+      // and one reel twelve people had saved cost twenty-four full-transcript prompts —
+      // charged to people who pressed nothing — before dying on the platform's own ceiling
+      // partway through.
+      //
+      // But "unsuitable" is 400, 404 AND 200, and only some of that is about the provider.
+      // A 404 is per-ACCOUNT on every provider that gates models by tier or region; a 400
+      // is about this one request; a 200 is one reply that came back as prose. Giving up on
+      // the provider after a single account said any of those refused the reel for everyone
+      // — the newbie's perfectly good key on the same provider was never tried, and the
+      // sentence written on the shared row was about a stranger's account. That is the
+      // fault D65 was written to remove, reintroduced one commit later.
+      //
+      // So: two accounts have to AGREE, on the same provider, for the same reason. A
+      // retired model still costs two calls across twelve savers instead of twelve. A quirk
+      // of one account costs one, and never speaks for anybody else.
+      if (category === "unsuitable") {
+        const reason = `${key.provider} :: ${error.detail || ""}`;
+        const who = failedOn.get(reason) || new Set();
+        who.add(key.user_id);
+        failedOn.set(reason, who);
+      }
     }
   }
 

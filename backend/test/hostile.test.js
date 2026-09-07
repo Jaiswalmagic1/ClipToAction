@@ -1928,12 +1928,15 @@ describe("a model one account has not got", () => {
     assert.equal(first.state, "ready", "a working key was taken out of the rotation");
   });
 
-  test("but the SAME provider is not asked twice, however many people saved it", async () => {
+  test("and the same provider is dropped once TWO accounts agree, not after one", async () => {
     // The model names are hard-coded, one per provider, so the commonest 404 there is — a
     // model that has been retired — is identical on every account using it. Without this,
     // one reel twelve people had saved cost twenty-four full-transcript prompts charged to
     // people who pressed nothing, and past twenty-five savers the request died on the
     // platform's own ceiling halfway through.
+    //
+    // Two accounts have to say it, though — see the test below. Six savers cost two
+    // attempts and the retry, not twelve.
     let calls = 0;
     harness.answerProviderWith(() => {
       calls += 1;
@@ -1964,7 +1967,77 @@ describe("a model one account has not got", () => {
       body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
     });
 
-    // One attempt and its retry. Not one pair per person who saved it.
-    assert.ok(calls <= 2, `six savers on one provider cost ${calls} calls`);
+    // Two accounts agreeing, and the retry. Not one pair per person who saved it.
+    assert.ok(calls <= 4, `six savers on one provider cost ${calls} calls`);
+  });
+
+  test("but ONE account's 404 never speaks for the next person's key", async () => {
+    // A 404 is per-ACCOUNT on every provider that gates models by tier or region, and
+    // "unsuitable" also covers a 400 about one request and a 200 that came back as prose.
+    // Giving up on the provider after a single account said any of those refused the reel
+    // for everybody: the second saver's perfectly good key on the same provider was never
+    // tried, and the sentence written on the shared row was about a stranger's account.
+    // Keyed on WHOSE key it is, not on the call number: the run is retried once, and a
+    // fake that refuses only the first call hands the earlier account a working reply on
+    // the retry — so the test passes without the second account ever being reached.
+    const asked = [];
+    harness.answerProviderWith((url, options) => {
+      const sent = `${url} ${options?.headers ? JSON.stringify(options.headers) : ""}`;
+      const whose = sent.includes("a-key-for-earlier-here") ? "earlier" : "later";
+      asked.push(whose);
+      // The earlier saver's account has not got the model. The later saver's has.
+      if (whose === "earlier") {
+        return new Response(JSON.stringify({ error: { message: "model_not_found" } }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return harness.geminiReplyWith({
+        summary: "A reel two people saved.",
+        key_points: [],
+        learn_more: [],
+        claims: [],
+        suggested_task: null,
+        topic: "Selling",
+        sub_topic: "Pricing",
+        kind: "tactic"
+      });
+    });
+
+    const url = "https://www.instagram.com/reel/TIERED/";
+    for (const who of ["earlier", "later"]) {
+      const token = await harness.mintToken(who);
+      await harness.call(worker, "/v1/settings", {
+        method: "PUT",
+        token,
+        body: { provider: "gemini", api_key: `a-key-for-${who}-here` }
+      });
+      await harness.call(worker, "/v1/clips", { method: "POST", token, body: { url } });
+    }
+    const row = harness.database
+      .prepare("SELECT id FROM sources WHERE url_canonical LIKE ?")
+      .get("%TIERED%");
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(row.id);
+
+    await harness.call(worker, `/v1/sources/${row.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
+    });
+
+    const after = harness.database
+      .prepare("SELECT state, error FROM sources WHERE id = ?")
+      .get(row.id);
+    assert.equal(
+      after.state,
+      "analyzed",
+      `the second saver's working key was never tried — the reel is ${after.state}`
+        + ` and says "${after.error || ""}"`
+    );
+    assert.ok(!after.error, `a stranger's account was written onto the shared row: ${after.error}`);
+    assert.ok(
+      asked.includes("later"),
+      `the later saver's key was never asked — only ${asked.join(", ") || "nobody"} was`
+    );
   });
 });

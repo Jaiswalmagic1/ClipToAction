@@ -4070,3 +4070,98 @@ The ruleset stops the merge; nothing stops the publish.
 rather than looking harder, and the fifth to create nothing of its own. Two of the eight were
 invisible to every previous round by construction: one lived in a gitignored file, and one
 only in a log on his machine.
+
+---
+
+### D69 — Round eighteen's regression half: a question in his own language, answered with everything
+**Date:** 2026-09-08
+**Amends:** D35, D65, D66.
+
+The reviewer re-read the connector round and the clock round and applied **eleven mutations**
+— deleting a fix and running the whole suite. Nine were caught. **Eleven were not**, including
+the biggest cost fix in the connector and the entire ranking claim. It also found four things
+that were simply wrong, and every one of them fails by returning silence rather than an error.
+
+#### Search split words on anything outside a-z
+
+`wordsOf` used `/[^a-z0-9']+/`, so every Devanagari character was a separator. A question in
+Hindi reduced to **no words at all** — and no words falls into the branch that means "no
+query was asked", which returns the whole notebook. Measured on an eight-reel fixture:
+
+| query | before | after |
+|---|---|---|
+| `मीशो` | 1 result, the right one | **8, reported as matches** |
+| `कीमत मीशो` | 0 | **8** |
+| `!!!` | 0 | **8** |
+
+Nothing in the reply said the words had not been read. The AI was handed a notebook full of
+filler labelled as the answer to a question it would then answer from them. **Half of what he
+saves is in Hindi.** Words are split on anything that is not a letter or a number *in any
+script* now, and a query that yields no readable words returns nothing and says so — which is
+not the same thing as asking nothing at all.
+
+#### One saver's 404 refused the reel for everybody — the fault D65 removed, back one commit later
+
+D66 gave up on a whole provider once one account said `unsuitable`. The saving is real: model
+names are hard-coded, one per provider, so a **retired** model is missing from every account,
+and twelve savers cost twenty-four full-transcript prompts. But `unsuitable` is 400, 404 *and*
+200. A 404 is per-**account** on every provider that gates models by tier or region; a 400 is
+about one request; a 200 is one reply that came back as prose. So:
+
+| | provider calls | analysed? | what was written on the shared row |
+|---|---|---|---|
+| before | 3 | yes | nothing |
+| after D66 | 2 | **no** | "the provider does not have that model" — about a stranger's account |
+
+**Two accounts have to agree now**, on the same provider, for the same reason. Twelve savers
+on a retired model still cost two calls instead of twelve; one account's quirk costs one and
+speaks for nobody else.
+
+#### Three more that answer with silence
+
+- **The video's own title and its address were not searched at all.** The haystack was built
+  from `titleOf`, which was the *summary's first sentence*. A reel titled "Kundan haar
+  wholesale rates in Jaipur" could not be found by "kundan", and a shortcode — often the only
+  thing somebody has kept — found nothing. Both are in the app's own search box, so this broke
+  the one promise `ownRows` makes in writing: that a reel found in the app is never invisible
+  here. `titleOf` now prefers the platform's title, trimmed exactly as the app trims it.
+- **The `status` enum offered a word the notebook does not store.** It listed `keeping` — the
+  app's *button label*; the column holds `keep`. Because it is an enum, that was the only word
+  a strict client could send, so "what am I keeping?" was answered "nothing", with a straight
+  face, however much was in the pile. The enum lists the stored words and both are accepted.
+- **A date written any other way matched nothing, silently.** `saved_after: "2026-9-1"`, a
+  full timestamp, or "yesterday" all compared as strings against `YYYY-MM-DD` and read to the
+  AI as an empty notebook. A date that cannot be read is now said out loud and ignored — too
+  many reels, never too few.
+
+#### And the folder filter named folders that do not exist
+
+It matched the analysis's *proposed* topic as well as his filing, so `folder:"Selling"`
+returned reels filed nowhere — whose own `fetch` then says "Filed under: nothing yet". That is
+exactly the fault D66 removed from `fetch` and left standing three functions away.
+
+#### Eleven claims with nothing holding them in place
+
+Each of these could be deleted with all 585 tests green: `fetch` put back to reading the
+entire notebook, every ranking weight flattened to 1, "every word must appear" loosened to
+"any word", the `folder` and `status` filters removed outright, `saved_after` removed,
+`matched_in` and the snippet blanked, the phrase bonus zeroed, and `agoText` and
+`subjectsByWeight` put back on the frozen clock — **the second of which is a row in D67's own
+table.** There are ten tests now and every one was checked by reverting its fix.
+
+Two of them had to be sharpened twice before they bit. The link test was matching the word
+"filed" in a summary rather than the address, and the ranking test was decided by the
+shortcode in the URL rather than by the weights. A test that passes for the wrong reason is
+the thing these rounds keep finding, and writing one while fixing that exact fault is worth
+recording.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Eighteen | 223 | 81 |
+| Eighteen (regression) | 10 | 5 |
+
+**Two hundred and thirty-three.** Nine rounds running, the regression half has found only its
+predecessor's faults, and this is the **fifth** time it has caught a fix the log recorded as
+done that fixed nothing.
