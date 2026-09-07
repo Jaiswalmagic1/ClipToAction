@@ -51,6 +51,16 @@ const HOST_ALIASES = {
   "fb.com": "facebook.com"
 };
 
+/**
+ * Every host this product will fetch from, flattened.
+ *
+ * Exported so the PC worker's own copy of the same list can be compared against it. The
+ * copy is deliberate — a second check that reads the first one is not a second check — but
+ * a copy that has drifted is worse than none: a link the API accepts and his PC refuses
+ * sits in the queue failing for a reason nobody can see.
+ */
+export const ALL_PLATFORM_DOMAINS = PLATFORMS.flatMap((platform) => platform.domains);
+
 function normalisedHost(parsed) {
   return parsed.hostname.replace(/^www\./, "").toLowerCase();
 }

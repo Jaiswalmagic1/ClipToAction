@@ -153,6 +153,7 @@ ALLOWED_SUFFIXES = (
     "instagram.com",
     "facebook.com",
     "fb.watch",
+    "fb.com",
     "x.com",
     "twitter.com",
     "linkedin.com",

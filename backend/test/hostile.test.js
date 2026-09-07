@@ -11,7 +11,15 @@ import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../src/worker.js";
-import { isSupportedUrl, asItWasUnderstood } from "../src/canonical.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  isSupportedUrl,
+  asItWasUnderstood,
+  ALL_PLATFORM_DOMAINS
+} from "../src/canonical.js";
 import { ANALYSIS_PROMPT, LONG_ANALYSIS_PROMPT, UNTRUSTED_WARNING } from "../src/analyze.js";
 import { buildLearningPrompt } from "../src/learnings.js";
 import { createTestEnv } from "./helpers/testenv.js";
@@ -78,6 +86,23 @@ describe("a link that two parsers read differently", () => {
       assert.equal(isSupportedUrl(url), false, `${url} was accepted`);
     }
   });
+});
+
+test("the PC worker's own list of sites is the same list, or the second check is not one", () => {
+  // It is a COPY on purpose — a second opinion that reads the first one is not a second
+  // opinion. But a copy that has drifted is worse than no copy: the API would accept a
+  // link his PC then refuses, and the reel would sit in the queue failing for a reason
+  // nobody could see. So the two are compared here rather than shared.
+  const python = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker-pc", "worker.py"),
+    "utf8"
+  );
+  const block = /ALLOWED_SUFFIXES = \(([\s\S]*?)\)/.exec(python);
+  assert.ok(block, "the PC worker has no list of sites at all");
+  const theirs = [...block[1].matchAll(/"([^"]+)"/g)].map((found) => found[1]).sort();
+
+  const ours = [...ALL_PLATFORM_DOMAINS].sort();
+  assert.deepEqual(theirs, ours, "the two lists of sites have drifted apart");
 });
 
 // ---------------------------------------------------------------- words from a stranger
