@@ -270,6 +270,25 @@ function fail(env, message, status = 400) {
 const now = () => Date.now();
 
 /**
+ * A length in the words the app uses everywhere else.
+ *
+ * The app spells "5 hours and 30 minutes"; two places on this side wrote "330 minutes",
+ * which is a figure a reader has to convert. Kept in step with `spellOutMinutes` in
+ * index.html by a test.
+ */
+export function spellOutLength(seconds) {
+  const whole = Math.max(Math.round(Number(seconds || 0) / 60), 0);
+  if (whole === 0) return "under a minute";
+  if (whole === 1) return "a minute";
+  if (whole < 60) return `${whole} minutes`;
+  const hours = Math.floor(whole / 60);
+  const rest = whole % 60;
+  const hourPart = hours === 1 ? "an hour" : `${hours} hours`;
+  const restPart = rest === 1 ? "1 minute" : `${rest} minutes`;
+  return rest ? `${hourPart} and ${restPart}` : hourPart;
+}
+
+/**
  * How many the caller asked for, or the batch this queue was designed for.
  *
  * Exported so a test can call THIS rather than write the same arithmetic out again beside
@@ -558,6 +577,29 @@ async function deltaSync(request, env, userId) {
   //
   // `last_seen_at` and a plain verdict, never a hostname or an address — the worker is
   // somebody's home PC.
+  // Is the machine working, or is it off?
+  //
+  // "When did it last ask for work" was the whole answer, and that is wrong for exactly the
+  // job this product was extended to do. The worker asks for work, then transcribes the
+  // whole batch before asking again — and transcribing takes about six tenths of the
+  // video's length. So ANY video over about fourteen minutes made the app announce the
+  // machine was off, mid-job, while a card six lines below said "being watched now". His
+  // ordinary saves are eleven to eighteen minutes; a six-hour video says "off" for three
+  // and a half hours.
+  //
+  // What that sentence causes is the damage: he reads "off", goes and restarts the machine,
+  // and kills a transcription that was hours in.
+  //
+  // So a claim it is still holding counts as being alive. A claim is a lease and expires on
+  // its own (LEASE_SQL), so this cannot say "running" for ever after a machine dies — it
+  // says so for exactly as long as the work it took on is still its to do.
+  const holding = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM sources
+     WHERE state = 'downloading' AND COALESCE(claimed_at, 0) + ${LEASE_SQL} > ?1`
+  )
+    .bind(timestamp)
+    .first();
+
   const worker = await env.DB.prepare(`SELECT last_seen_at FROM workers WHERE id = ?1`)
     .bind(THE_WORKER)
     .first();
@@ -601,7 +643,13 @@ async function deltaSync(request, env, userId) {
     ai_keys: keys.results.map((row) => forDisplay(row, timestamp)),
     worker: {
       last_seen_at: worker?.last_seen_at || null,
-      running: Boolean(worker && timestamp - worker.last_seen_at < WORKER_QUIET_AFTER_MS)
+      running: Boolean(
+        (worker && timestamp - worker.last_seen_at < WORKER_QUIET_AFTER_MS)
+        || (holding?.n || 0) > 0
+      ),
+      // What it is doing right now, so the sentence can say "busy with one" rather than
+      // "off" — the two were indistinguishable and the app guessed wrong every time.
+      busy: (holding?.n || 0) > 0
     },
     clips: clips.results,
     notes: notes.results,
@@ -1082,7 +1130,11 @@ async function storeTranscript(request, env, sourceId) {
     // The specific reason is not lost: it is written against the key that gave it, on its
     // owner's settings screen, and the fixed code is in error_detail here.
     const sharedReason = /AI key|AI keys/i.test(reason)
-      ? "no AI account has been able to read this one yet — open it and press Summarise it now"
+      // NOT "press Summarise it now". That button only exists for somebody who has
+      // connected an AI account; on the copy-and-paste tier — the one this product
+      // supports on purpose (D9) — it is a button they will never find, on every failed
+      // reel they own.
+      ? "no AI account has been able to read this one yet — open it and summarise it there"
       : reason;
     await env.DB.prepare(
       `UPDATE sources SET error = ?1, error_detail = ?2, updated_at = ?3 WHERE id = ?4`
@@ -1427,7 +1479,9 @@ async function releaseClaim(request, env, sourceId) {
            WHEN releases >= ?3 AND attempts >= ?5 THEN 'failed' ELSE 'pending' END,
          error = CASE
            WHEN releases >= ?3 AND attempts >= ?5
-             THEN 'Your PC kept stopping partway through this one. Press try again when it is on.'
+             -- Not "your PC". This row is shared, and D60 fixed exactly this wording in the
+             -- app's own status line without fixing it here.
+             THEN 'The machine kept stopping partway through this one. Try it again when it is running.'
            ELSE error END,
          -- The code has to say the same thing the sentence does, or the one place that
          -- records WHY contradicts the one place that says what happened.
@@ -1506,7 +1560,9 @@ async function reportTooLong(request, env, sourceId) {
        WHERE id = ?6 AND state = 'downloading'`
     )
       .bind(
-        `This video is ${Math.round(durationSec / 60)} minutes long, past the ${hours}-hour limit.`,
+        // Said the way the app says every other length, rather than as a bare number of
+        // minutes: "420 minutes" is a figure to convert, not a sentence to read.
+        `This video is ${spellOutLength(durationSec)} long, past the ${hours}-hour limit.`,
         durationSec || null,
         cleanTitle(body.title),
         cleanCreator(body.creator),

@@ -255,7 +255,7 @@ describe("spending one person's list", () => {
     // about one person's AI account would be shown to people whose own accounts are fine —
     // and would send them to look at a key with nothing wrong with it.
     const reel = harness.database.prepare("SELECT error FROM sources WHERE id = ?").get(source.id);
-    assert.match(reel.error, /Summarise it now/, "and the reel says what to do about it");
+    assert.match(reel.error, /summarise it there/, "and the reel says what to do about it");
     assert.ok(!/key was rejected/.test(reel.error), "a stranger's account named on a shared row");
     // The specific reason is not lost: it is against the key, for its owner.
     assert.match(stateOf("first").last_error, /rejected/);

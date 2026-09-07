@@ -465,8 +465,10 @@
     <div id="settingsView" hidden>
       <div class="panel">
         <h2>Connect an AI account</h2>
-        <p class="muted">The summaries run on your own AI account, so it is your data and
-          your quota — not somebody else's.</p>
+        <p class="muted">The summaries run on a connected AI account rather than on ours.
+          A reel is read once and everyone who saved it gets that reading, so the account
+          that pays is the one belonging to whoever saved it first — yours for the reels you
+          find first, somebody else's for the ones you did not.</p>
         <div class="notice warn">
           Only <strong>Gemini</strong> and <strong>Groq</strong> give away genuinely free
           keys. OpenAI, Anthropic and xAI charge for this separately — and a ChatGPT Plus or
@@ -548,9 +550,10 @@
           — Google only allows it inside the US.
         </div>
         <div class="notice">
-          Anyone holding this address can read your whole notebook, so treat it like a
-          password: paste it into the app and nowhere else. Once connected, what that AI
-          reads goes to that company under their terms, not ours. You can turn an address
+          Anyone holding this address can read your whole notebook <strong>and write into
+          it</strong> — saving what a conversation concluded is the point of it. So treat it
+          like a password: paste it into the app and nowhere else. Once connected, what that
+          AI reads goes to that company under their terms, not ours. You can turn an address
           off here at any time.
         </div>
         <div id="connectorList"></div>
@@ -578,9 +581,12 @@
            worked out for you.</p>
 
         <h3>2. It listens to the video for you</h3>
-        <p>The reel is fetched, the speech is written down word for word, and then an AI
-           reads that and pulls out what was actually said. While that happens the clip
-           shows where it has got to:</p>
+        <p>The reel is fetched and the speech is written down <strong>in English</strong> —
+           translated as it goes, so a reel spoken in Hindi or Hinglish comes back in English
+           rather than in the words that were said. That is deliberate: written down as
+           spoken, mixed Hindi and English comes back as nonsense. An AI then reads that and
+           pulls out what was actually said. While that happens the clip shows where it has
+           got to:</p>
         <ul class="plain">
           <li><strong>Waiting to be picked up</strong> — saved, nothing has started yet.</li>
           <li><strong>Being watched now</strong> — it is fetching and listening.</li>
@@ -594,9 +600,11 @@
            their result straight away.</p>
 
         <h3>3. Choose who does the summarising — one setup step</h3>
-        <p>The summaries are not done on our account. They run on yours, so it is your
-           information and nobody else is paying for it. There are two ways, and one of
-           them costs nothing and needs no account:</p>
+        <p>The summaries are not done on our account. Each reel is read once and shared
+           with everyone who saved it, so the account that pays for a reading is the one
+           belonging to whoever saved that reel first. Yours pays for what you find first.
+           There are two ways to set this up, and one of them costs nothing and needs no
+           account:</p>
         <ul class="plain">
           <li><strong>Connect an AI account.</strong> Google Gemini and Groq both give
               these away free. Open <strong>Settings</strong>, pick one, and it shows you
@@ -633,8 +641,9 @@
            video, and your own notes. So you can search for something you half-remember
            hearing, not just a title.</p>
         <p>Mark clips <strong>Keeping</strong>, <strong>Done</strong> or
-           <strong>Archived</strong> to keep the list under control. Archived ones stay
-           searchable but drop out of the main list.</p>
+           <strong>Archived</strong> to keep the list under control. An archived clip drops
+           out of the main list, and searching still finds it — it comes back marked
+           <em>archived</em> so you can tell.</p>
 
         <h3>6. Put it on your phone</h3>
         <p>Open this page in your phone's browser, then use the browser menu and choose
@@ -647,7 +656,9 @@
               when you have no signal.</li>
           <li>Signing out clears that copy from the device.</li>
           <li>Free AI accounts usually allow the provider to read and learn from what is
-              sent to them. Settings says which ones do.</li>
+              sent to them. Settings repeats what each provider's own page said when it was
+              last checked — where it says nothing, nobody has checked, not that the answer
+              is no.</li>
         </ul>
 
         <div class="row" style="margin-top:16px">
@@ -1032,11 +1043,17 @@ const unsortedClips = () =>
  */
 function setupNudge() {
   if (!store.settings || store.settings.ai_provider) return null;
+  const saved = store.clips.filter((clip) => !clip.deleted_at).length;
   const prompt = document.createElement("div");
   prompt.className = "notice warn";
   prompt.append(document.createTextNode(
-    "Your reels are being saved, but nothing is being summarised yet — that needs one "
-    + "setup step. It takes a minute, and there is a free way that needs no account. "
+    // Two sentences, because the one sentence was untrue on a brand-new account: it said
+    // reels were being saved to somebody who had not saved any.
+    (saved
+      ? "Your reels are being saved, but nothing is being summarised yet"
+      : "Anything you save will be written down, but nothing will be summarised yet")
+    + " — that needs one setup step. It takes a minute, and there is a free way that needs "
+    + "no account. "
   ));
   const link = document.createElement("a");
   link.href = "#/settings";
@@ -1070,7 +1087,10 @@ function progressOf(clip) {
     // downloaded; the video is waiting on an answer and will wait as long as it takes.
     case "needs_ok": return { text: "Long — needs your go-ahead", kind: "wait" };
     case "parked": return { text: "Parked — start it whenever you want", kind: "wait" };
-    default: return { text: source.state, kind: "wait" };
+    // A state this app has not been taught yet — a newer Worker, an older app. The raw
+    // word is a database value, and none of them reads as English: a pill saying
+    // "needs_ok" tells a person nothing and looks like a fault.
+    default: return { text: "Working on it", kind: "wait" };
   }
 }
 
@@ -1160,7 +1180,10 @@ function longVideoNotice(clip) {
     lines.push("Its words will come close to as much as the notebook holds for one video, "
       + "so if it runs longer than expected it may be refused at the end.");
   }
-  lines.push("Nothing has been downloaded yet. Nothing happens until you press.");
+  // Not "nothing has been downloaded". Where a platform reports no length — Instagram
+  // routinely does not — the machine downloads the audio, measures it, deletes it and then
+  // asks. Nothing is KEPT, and nothing is read, which is what the answer actually decides.
+  lines.push("Nothing has been kept, and nothing will be read until you press.");
   for (const line of lines) {
     const item = document.createElement("li");
     item.textContent = line;
@@ -1197,7 +1220,8 @@ async function retryClip(clip, button) {
     await sync();
     render();
     say("clipMsg",
-      "Back in the queue. It will be picked up within a minute or two.", "ok");
+      "Back in the queue. It will be picked up in its turn — within a minute or two unless "
+      + "a long video is being read.", "ok");
   } catch (error) {
     say("clipMsg", error.message);
     button.disabled = false;
@@ -1304,7 +1328,11 @@ function whenText(milliseconds) {
   // Counted in whole India days, not 24-hour blocks: 1am is "today", not "yesterday".
   const days = istDay(Date.now()) - istDay(milliseconds);
   const clock = { timeZone: IST_ZONE, hour: "numeric", minute: "2-digit" };
-  if (days <= 0) return `Today, ${then.toLocaleTimeString([], clock)}`;
+  // A time still to come is not today. `days <= 0` folded tomorrow into "Today", so a key
+  // due back after midnight read as "tried again after Today, 12:30 am" — a past tense
+  // about something that has not happened.
+  if (days < 0) return `Tomorrow, ${then.toLocaleTimeString([], clock)}`;
+  if (days === 0) return `Today, ${then.toLocaleTimeString([], clock)}`;
   if (days === 1) return `Yesterday, ${then.toLocaleTimeString([], clock)}`;
   return then.toLocaleDateString([], { timeZone: IST_ZONE, day: "numeric", month: "short", year: "numeric" });
 }
@@ -1390,8 +1418,17 @@ function workerNotice() {
 
   if (state.running) {
     notice.className = "notice ok";
-    notice.textContent = "The machine that fetches reels and writes them down is running"
-      + ` — last checked ${agoText(state.last_seen_at)}. New reels will be picked up within a minute.`;
+    // "Busy" is its own sentence, because the two were indistinguishable and the app got it
+    // wrong every time it mattered: the machine transcribes a whole batch before it asks for
+    // work again, so anything over about fourteen minutes made it look switched off — while
+    // a card six lines below said "being watched now". What that caused is the damage: read
+    // "off", go and restart it, and a transcription hours in dies.
+    notice.textContent = state.busy
+      ? "The machine that fetches reels and writes them down is working on one now."
+        + " Anything else you share waits its turn — it does one video at a time."
+      : "The machine that fetches reels and writes them down is running"
+        + ` — last checked ${agoText(state.last_seen_at)}. New reels are usually picked up`
+        + " within a minute, longer if it is partway through a long one.";
     return notice;
   }
 
@@ -1505,7 +1542,7 @@ function relookBanner() {
   if (!canSpend()) {
     return needsAnAccount(
       `${state.due} ${state.due === 1 ? "video has" : "videos have"} been sitting here `
-      + "unread. Looking back over them needs an AI account.",
+      + "without being looked back over. Doing that needs an AI account.",
       "relook"
     );
   }
@@ -1516,7 +1553,7 @@ function relookBanner() {
   offer.style.color = "var(--pill-topic-text)";
   offer.append(document.createTextNode(
     `${state.due} ${state.due === 1 ? "video has" : "videos have"} been sitting here since `
-    + "you saved them and you have not looked at any of them again. Want a look back over "
+    + "you saved them and have not been looked back over. Want a look back over "
     + "them — what they add up to, and the few things worth doing? It runs on your own AI "
     + "account, once, and nothing starts until you press. "
   ));
@@ -1593,7 +1630,8 @@ function relookPanel(row) {
     ? ` saved between ${plainDate(row.covers_from)} and ${plainDate(row.covers_to)}`
     : "";
   when.textContent = `${whenText(row.created_at)} — over ${row.clip_count} `
-    + `${row.clip_count === 1 ? "video" : "videos"}${span} you had not returned to.`;
+    + `${row.clip_count === 1 ? "video" : "videos"}${span} that had not been looked back `
+    + "over before.";
   panel.append(when);
 
   const actions = jsonList(row.act_now).filter(
@@ -1657,9 +1695,18 @@ function relookPanel(row) {
 
 // ---------------------------------------------------------------- the notebook list
 function renderList() {
+  // Archiving hides a clip from the list. It must not hide it from a SEARCH: the guide
+  // says searching still finds an archived clip, and it did not — the status filter ran
+  // first, so archiving was the one action in this product that could make a reel
+  // unfindable. Looking for something by name is the moment that matters most.
+  const searching = Boolean(query);
+
   const wanted = store.clips
     .filter((clip) => !clip.deleted_at)
-    .filter((clip) => filter === "all" ? clip.status !== "archived" : clip.status === filter)
+    .filter((clip) => {
+      if (filter !== "all") return clip.status === filter;
+      return searching || clip.status !== "archived";
+    })
     .filter((clip) => !query || searchText(clip).includes(query))
     .sort((a, b) => b.created_at - a.created_at);
 
@@ -1702,9 +1749,14 @@ function renderList() {
     offer.className = "notice";
     offer.style.background = "var(--pill-topic-bg)";
     offer.style.color = "var(--pill-topic-text)";
+    // Not "saved before topics existed" — that was a historical explanation asserted about
+    // clips saved this morning. A reel lands here whenever the reading named no subject,
+    // which happens today as readily as it did before folders were invented, and on a
+    // notebook started after them the old sentence could not be true at all.
+    const one = unsorted.length === 1;
     offer.append(document.createTextNode(
-      `${unsorted.length} ${unsorted.length === 1 ? "clip was" : "clips were"} saved before `
-      + "topics existed, so they are not filed anywhere yet. "
+      `${unsorted.length} ${one ? "clip is" : "clips are"} not filed in a folder yet — `
+      + `${one ? "its" : "their"} reading named no subject. `
     ));
     const button = document.createElement("button");
     button.textContent = "Sort my old clips";
@@ -2200,6 +2252,15 @@ function clipCard(clip, { showTopic = true } = {}) {
   state.className = `pill ${progress.kind}`;
   state.textContent = progress.text;
   pills.append(platform, state);
+
+  // Archived, said on the card. A search reaches archived clips (see renderList), and one
+  // turning up in a list that normally hides them needs to say why it is there.
+  if (clip.status === "archived") {
+    const put = document.createElement("span");
+    put.className = "pill";
+    put.textContent = "archived";
+    pills.append(put);
+  }
 
   // Who made it, and one press finds everything else of theirs (D40).
   const by = creatorChip(clip, { stopClick: true });
@@ -3560,9 +3621,15 @@ function attentionSection() {
     for (const clip of asking.slice(0, HOME_ROWS)) {
       const minutes = whatItCosts(sourceOf(clip).duration_sec).minutes;
       panel.append(homeRow(titleOf(clip), {
-        detail: `${spellOutMinutes(minutes)} long — nothing has been downloaded yet`,
+        detail: `${spellOutMinutes(minutes)} long — nothing has been kept yet`,
         clip
       }));
+    }
+    if (asking.length > HOME_ROWS) {
+      // A question sitting two hundred cards down is a question nobody answers — this
+      // section's own reason for existing. It was cutting the list in silence, so four
+      // long videos waiting on his go-ahead were hidden by the panel built to surface them.
+      panel.append(andMore(asking.length - HOME_ROWS, "see your notebook"));
     }
   }
 
@@ -3573,10 +3640,17 @@ function attentionSection() {
     heading.textContent = "Parked";
     panel.append(heading);
     for (const clip of parked.slice(0, HOME_ROWS)) {
+      const minutes = whatItCosts(sourceOf(clip)?.duration_sec || 0).minutes;
       panel.append(homeRow(titleOf(clip), {
-        detail: "Nothing has been started. Open it and press go ahead whenever you want.",
+        // With its length, like the row above it. A 113-minute parked video and a
+        // 31-minute one read identically until you opened them.
+        detail: `${spellOutMinutes(minutes)} long — nothing has been started. Open it and `
+          + "press go ahead whenever you want.",
         clip
       }));
+    }
+    if (parked.length > HOME_ROWS) {
+      panel.append(andMore(parked.length - HOME_ROWS, "see your notebook"));
     }
   }
 
@@ -3629,6 +3703,9 @@ function attentionSection() {
     panel.append(note);
     for (const clip of unsummarised.slice(0, HOME_ROWS)) {
       panel.append(homeRow(titleOf(clip), { detail: savedText(clip.created_at), clip }));
+    }
+    if (unsummarised.length > HOME_ROWS) {
+      panel.append(andMore(unsummarised.length - HOME_ROWS, "search your notebook"));
     }
   }
 
@@ -3704,6 +3781,9 @@ function newSection() {
         detail: String(entry.analysis.summary || "").slice(0, 140),
         clip: entry.clip
       }));
+    }
+    if (summarised.length > HOME_ROWS) {
+      panel.append(andMore(summarised.length - HOME_ROWS, "see your notebook"));
     }
   }
 
@@ -3823,9 +3903,14 @@ async function saveLink(url) {
   say("saveMsg", "");
   $("saveBtn").disabled = true;
   try {
-    await api("/v1/clips", { method: "POST", body: JSON.stringify({ url }) });
+    const saved = await api("/v1/clips", { method: "POST", body: JSON.stringify({ url }) });
     $("saveUrl").value = "";
-    say("saveMsg", "Saved. It will start working on it shortly.", "ok");
+    // A reel somebody has already saved is read once and shared (D10), so it is in the
+    // notebook complete, now. Saying "it will start working on it shortly" about a reel
+    // that was finished months ago is the app contradicting its own guide.
+    say("saveMsg", saved.reused
+      ? "Saved. Somebody had already read this one, so it is in your notebook now."
+      : "Saved. It will start working on it shortly.", "ok");
     await sync();
     render();
   } catch (error) {
@@ -4033,7 +4118,13 @@ const PROVIDER_HELP = {
     where: "the Groq console",
     url: "https://console.groq.com/keys",
     cost: "Free",
-    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."]
+    steps: ["Sign in.", "Create a key.", "Copy it and paste it above."],
+    // Said rather than left blank. Four of the five providers carry a warning and this one
+    // did not, which reads as "this one is safe" — a claim nothing in this project has
+    // established. D13: what a provider does with your text comes from their own current
+    // page, never from memory.
+    warning: "What Groq does with what is sent on a free key has not been checked here. "
+      + "Read their own terms before you paste anything you would not want read."
   },
   openai: {
     where: "the OpenAI platform",

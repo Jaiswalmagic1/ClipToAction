@@ -97,7 +97,7 @@ describe("the app can tell whether the PC worker is running", () => {
 
     assert.deepEqual(
       Object.keys(state).sort(),
-      ["last_seen_at", "running"],
+      ["busy", "last_seen_at", "running"],
       "the worker is somebody's home PC — no hostname, no address, no token"
     );
     assert.doesNotMatch(JSON.stringify(response.body), /service-token-for-tests/);
@@ -122,5 +122,72 @@ describe("the app can tell whether the PC worker is running", () => {
 
     assert.equal(response.status, 401, "the queue is the PC worker's, not the app's");
     assert.equal(workerRow().last_seen_at, before, "a refused call must not look like a check-in");
+  });
+});
+
+describe("a machine in the middle of a long video is not reported as off", () => {
+  // It asks for work, then transcribes the whole batch before asking again — and that
+  // takes about six tenths of the video's length. So ANY video over about fourteen minutes
+  // made the app announce the machine was off, mid-job, while a card six lines below said
+  // "being watched now". His ordinary saves are eleven to eighteen minutes.
+  //
+  // The damage is what the sentence causes: he reads "off", restarts the machine, and
+  // kills a transcription that was hours in.
+  let harness;
+  let token;
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+  });
+  after(() => harness.restore());
+
+  test("a claim it still holds counts as being alive", async () => {
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ALONGONE/" }
+    });
+    const sourceId = saved.body.clip.source_id;
+    harness.database
+      .prepare("UPDATE sources SET duration_sec = ? WHERE id = ?")
+      .run(90 * 60, sourceId);
+
+    // It takes the work on, and then says nothing for an hour because it is busy.
+    await harness.call(worker, "/v1/queue?limit=3", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+    const anHourAgo = Date.now() - 60 * 60 * 1000;
+    harness.database.prepare("UPDATE workers SET last_seen_at = ?").run(anHourAgo);
+
+    const state = (await harness.call(worker, "/v1/sync", { token })).body.worker;
+    assert.equal(state.running, true, "it was called off while it was working");
+    assert.equal(state.busy, true, "and nothing says what it is doing instead");
+  });
+
+  test("but a machine holding nothing, and silent, is off", async () => {
+    harness.database
+      .prepare("UPDATE sources SET state = 'transcribed', claimed_at = NULL")
+      .run();
+    harness.database.prepare("UPDATE workers SET last_seen_at = ?").run(Date.now() - 60 * 60 * 1000);
+
+    const state = (await harness.call(worker, "/v1/sync", { token })).body.worker;
+    assert.equal(state.running, false, "a machine that is off is reported as running");
+    assert.equal(state.busy, false);
+  });
+
+  test("and a claim whose lease has expired does not keep it alive for ever", async () => {
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ADEADONE/" }
+    });
+    harness.database
+      .prepare("UPDATE sources SET state = 'downloading', claimed_at = ? WHERE id = ?")
+      .run(Date.now() - 10 * 24 * 60 * 60 * 1000, saved.body.clip.source_id);
+
+    const state = (await harness.call(worker, "/v1/sync", { token })).body.worker;
+    assert.equal(state.running, false, "a machine that died mid-job is reported as working");
   });
 });

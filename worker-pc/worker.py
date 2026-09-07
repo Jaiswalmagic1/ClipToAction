@@ -387,7 +387,7 @@ def download_audio(source, limits):
         # says so rather than starting it.
         if duration > limits["max_video_sec"]:
             raise Refused(
-                f"This video is {duration // 60} minutes long, which is more than can be "
+                f"This video is {spell_out_length(duration)} long, which is more than can be "
                 "processed in one go."
             )
 
@@ -422,7 +422,7 @@ def download_audio(source, limits):
         if duration > limits["max_video_sec"]:
             audio_path.unlink(missing_ok=True)
             raise Refused(
-                f"This video is {duration // 60} minutes long, which is more than can be "
+                f"This video is {spell_out_length(duration)} long, which is more than can be "
                 "processed in one go."
             )
 
@@ -535,6 +535,26 @@ def fill_in_creators():
         # nothing, every time.
         if index < len(pending) - 1:
             time.sleep(CREATOR_PAUSE_SEC)
+
+
+def spell_out_length(seconds):
+    """A length in the words the app uses everywhere else.
+
+    This message goes onto a row every saver of the reel reads, and the app spells "5 hours
+    and 30 minutes" while this wrote "330 minutes" -- a figure a person has to convert.
+    """
+    whole = max(round((seconds or 0) / 60), 0)
+    if whole == 0:
+        return "under a minute"
+    if whole == 1:
+        return "a minute"
+    if whole < 60:
+        return f"{whole} minutes"
+    hours, rest = divmod(whole, 60)
+    hour_part = "an hour" if hours == 1 else f"{hours} hours"
+    if not rest:
+        return hour_part
+    return f"{hour_part} and {'1 minute' if rest == 1 else f'{rest} minutes'}"
 
 
 def clock(seconds):

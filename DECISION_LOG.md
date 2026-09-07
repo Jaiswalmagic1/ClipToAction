@@ -3442,3 +3442,95 @@ instead of sixty so his notebook is still covered twice over.
 predecessor's faults — and this time two of them were fixes that did not fix anything while
 the log said they had. That is the failure mode this loop exists to catch, and the only
 reason it was caught is that the reviewer measured instead of reading.
+
+---
+
+### D62 — Round fifteen: is what it says true?
+**Date:** 2026-09-07
+**Amends:** D9, D10, D28, D29, D35, D41, D42, D60. Golden Rule 29.
+
+Fourteen rounds asked whether the code was right. This one asked whether the **sentences**
+are — every string the product shows a person, checked against what the code does
+underneath it. Twenty findings. Four are statements a person acts on and would be wrong to.
+
+The question earned its place: several of the worst defects in this whole build were
+sentences that contradicted their own behaviour.
+
+#### The machine was reported OFF while it was working
+
+The check-in is the queue call. The worker asks for work, then transcribes the **whole batch**
+before asking again — and transcribing takes about six tenths of the video's length. So
+**any video over about fourteen minutes made the app announce the machine was off, mid-job**,
+while a card six lines below said "being watched now". His routine saves are eleven to
+eighteen minutes. A six-hour video says "off" for three and a half hours.
+
+What the sentence causes is the damage: read "off", go and restart the machine, kill a
+transcription that was hours in — and burn a hand-back doing it.
+
+**A claim it is still holding now counts as being alive.** A claim is a lease and expires on
+its own, so this cannot say "running" for ever after a machine dies; it says so for exactly
+as long as the work it took on is still its to do. And "busy" is its own sentence now,
+because the two were indistinguishable and the app guessed wrong every time.
+
+#### Four things the product said that were not so
+
+- **"The speech is written down word for word."** It is a translation. D28 chose that
+  deliberately — whisper is asked to translate, always, because written down as spoken,
+  Hinglish comes back as nonsense — and not one sentence on screen said so. Somebody
+  searching for a phrase he *heard* finds nothing and has no idea why.
+- **"Nobody else is paying for it", and "your quota — not somebody else's."** Said twice, on
+  the two screens where a person decides whether to hand over an API key, and false in both
+  directions: a reel is read once and shared (D10), so the account that pays is the earliest
+  saver's. Yours can be spent on a stranger's reel; a stranger's can be spent on yours.
+- **"Archived ones stay searchable."** They were not — the status filter ran before the
+  query, so archiving was the one action in this product that could make a reel unfindable.
+  **Fixed by making the promise true**: a search reaches archived clips, and one that turns
+  up says `archived` on the card.
+- **"You have not looked at any of them again."** Nothing records reading, opening, noting or
+  annotating. It counts what has not been through a previous look-back. A person who has read
+  all forty and written notes on them was told they had read none.
+
+#### Two sentences telling people to do impossible things
+
+- **"Press Summarise it now"** — written onto the shared row for everybody, and that button
+  only exists for somebody who has connected an AI account. On the copy-and-paste tier, which
+  D9 supports on purpose, it is a button they will never find, on every failed reel they own.
+- **"Your PC kept stopping."** One machine serves everybody. This is the identical defect D60
+  records as fixed in the app's status line — the fix went to the app and not to the backend
+  sentence that says the same thing on a shared row.
+
+#### Four lists cut off in silence, including the questions waiting for an answer
+
+`andMore` exists and its own comment says it is there so a cut list is "said plainly rather
+than by silently cutting". It was called for two lists out of six. The worst: **ten long
+videos waiting on his go-ahead were shown as six, with nothing saying so** — hidden by the
+section whose stated reason for existing is that "a question sitting two hundred cards down
+is a question nobody answers". Golden Rule 29. All four say so now, and a parked video
+carries its length like the row above it.
+
+#### And the smaller untruths
+
+| It said | What was true |
+|---|---|
+| "Nothing has been downloaded yet" | Where a platform reports no length — Instagram routinely does not — the audio IS fetched and measured, then deleted. Nothing is **kept**, which is what the answer decides. |
+| "N clips were saved before topics existed" | A reel lands there whenever its reading named no subject, which happens today. On a notebook started after folders existed the sentence could not be true at all. |
+| "Your reels are being saved…" | Said to a brand-new account with no reels. |
+| "Saved. It will start working on it shortly." | A reel somebody already read is in the notebook complete, now — the guide says so and the app contradicted it. |
+| "Anyone holding this address can read your whole notebook" | It can **write** into it too, which the panel above sells as the point. |
+| "New reels will be picked up within a minute" | Not behind a two-hour video, which the same app's warning says explicitly. |
+| "420 minutes long" | The app spells "7 hours" everywhere else. Both refusals do now, one of them on a row every saver reads. |
+| "Tried again after Today, 12:30 am" | A time still to come was folded into "Today". |
+| A pill reading `needs_ok` | An unknown state printed its database word. |
+| Groq alone carried no warning about what it does with your text | Which reads as "this one is safe" — a claim nothing here has established (D13). It says what is actually known: nobody has checked. |
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Fourteen | 155 | 58 |
+| Fifteen (does it tell the truth) | 20 | 0 |
+
+**A hundred and seventy-five.** Another round that changed where it stood rather than how
+hard it looked, and another that created nothing of its own. Two of its twenty were defects
+this log had already recorded as fixed — fixed in one file and not in the other place that
+says the same thing.

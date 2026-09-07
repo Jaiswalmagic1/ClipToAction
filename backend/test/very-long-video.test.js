@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import worker from "../src/worker.js";
+import worker, { spellOutLength } from "../src/worker.js";
 import {
   WARN_ABOVE_SEC,
   MAX_VIDEO_SEC,
@@ -435,5 +435,40 @@ describe("the edges of asking", () => {
       body: { duration_sec: 60 * 60 }
     });
     assert.equal(asked.status, 401);
+  });
+});
+
+describe("a length is said the same way wherever it is said", () => {
+  // Three files write a video's length to a person: the app, the Worker's refusal, and the
+  // PC worker's refusal. Two of them wrote "420 minutes", which is a figure a reader has to
+  // convert rather than a sentence to read — and one of those goes onto the shared row that
+  // every saver of the reel sees.
+  test("the Worker spells it the way the app does", () => {
+    for (const [seconds, words] of [
+      [0, "under a minute"],
+      [60, "a minute"],
+      [40 * 60, "40 minutes"],
+      [60 * 60, "an hour"],
+      [61 * 60, "an hour and 1 minute"],
+      [361 * 60, "6 hours and 1 minute"],
+      [420 * 60, "7 hours"]
+    ]) {
+      assert.equal(spellOutLength(seconds), words);
+    }
+
+    // And the app's own copy says the same. It is written out separately there because the
+    // app is one file with no imports, so the two can drift — this is what notices.
+    const appSource = readFileSync(join(repo, "index.html"), "utf8");
+    assert.match(appSource, /rest === 1 \? "1 minute"/, "the app stopped spelling one minute");
+    assert.match(appSource, /hours === 1 \? "an hour"/);
+  });
+
+  test("and so does the PC worker", () => {
+    const python = readFileSync(join(repo, "worker-pc", "worker.py"), "utf8");
+    assert.match(python, /def spell_out_length/, "the PC worker writes bare minutes again");
+    assert.ok(
+      !/\{duration \/\/ 60\} minutes long/.test(python),
+      "a raw minute count is still going onto a row every saver reads"
+    );
   });
 });

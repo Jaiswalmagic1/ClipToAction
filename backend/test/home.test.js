@@ -312,7 +312,10 @@ describe("what needs attention", () => {
     assert.ok(home.includes("Waiting for your go-ahead"));
     assert.ok(home.includes("An hour with a seller"));
     assert.ok(home.includes("an hour and 9 minutes"), "the length is said in plain words");
-    assert.ok(home.includes("nothing has been downloaded yet"));
+    // "Downloaded" was not true: where a platform reports no length — Instagram routinely
+    // does not — the audio IS fetched, measured, and deleted before the question is asked.
+    // Nothing is KEPT, and nothing is read, which is what the answer decides.
+    assert.ok(home.includes("nothing has been kept yet"), home.slice(0, 300));
   });
 
   test("and one of anything is never plural", async () => {
@@ -530,7 +533,9 @@ describe("the first five minutes, for somebody who is not him", () => {
       syncPayload({ settings: { ai_provider: null, has_key: false } })
     );
     const home = app.text("homeView");
-    assert.match(home, /nothing is being summarised yet/);
+    // On an account with no reels yet the sentence says so — it used to tell a brand-new
+    // person their reels were being saved when they had saved none.
+    assert.match(home, /nothing will be summarised yet/);
     assert.match(home, /Set it up/);
     app.restore();
   });
@@ -539,7 +544,9 @@ describe("the first five minutes, for somebody who is not him", () => {
     const app = await loadApp(
       syncPayload({ settings: { ai_provider: "manual", has_key: false } })
     );
-    assert.ok(!app.text("homeView").includes("nothing is being summarised yet"));
+    const drawn = app.text("homeView");
+    assert.ok(!drawn.includes("nothing is being summarised yet"));
+    assert.ok(!drawn.includes("nothing will be summarised yet"));
     app.restore();
   });
 
@@ -665,6 +672,59 @@ describe("a tidy that takes more than one press", () => {
 
     assert.equal(presses, 3, "it stopped before the tidy was finished");
     assert.match(app.text("syncMsg"), /6 folders together/);
+    app.restore();
+  });
+});
+
+describe("nothing on Home is cut off in silence", () => {
+  // `andMore` exists and its own comment says it is there so a cut list is "said plainly
+  // rather than by silently cutting". It was called for two lists out of six. The worst of
+  // the four was the questions waiting on a go-ahead — hidden by the very section whose
+  // reason for existing is that "a question sitting two hundred cards down is a question
+  // nobody answers" (Golden Rule 29).
+  const many = (state, count, extra = {}) =>
+    Array.from({ length: count }, (unused, n) => ({
+      id: `${state}${n}`,
+      user_id: "vish",
+      source_id: `s-${state}${n}`,
+      status: "inbox",
+      created_at: 1000 + n,
+      updated_at: 1000 + n,
+      ...extra
+    }));
+
+  const sourcesFor = (clips, state, duration) =>
+    clips.map((clip) => ({
+      id: clip.source_id,
+      url_canonical: `https://instagram.com/reel/${clip.id}`,
+      url_original: `https://instagram.com/reel/${clip.id}`,
+      platform: "instagram",
+      state,
+      duration_sec: duration,
+      title: `${state} ${clip.id}`,
+      created_at: 1,
+      updated_at: 1
+    }));
+
+  test("a long list says how many more there are, and where to find them", async () => {
+    const asking = many("ask", 10);
+    const parked = many("park", 9);
+    const app = await loadApp(
+      syncPayload({
+        clips: [...asking, ...parked],
+        sources: [
+          ...sourcesFor(asking, "needs_ok", 69 * 60),
+          ...sourcesFor(parked, "parked", 113 * 60)
+        ]
+      })
+    );
+
+    const home = app.text("homeView");
+    assert.match(home, /and 4 more/, "ten questions were cut to six with nothing saying so");
+    assert.match(home, /and 3 more/, "nine parked videos were cut to six in silence");
+    // And a parked video says how long it is, like the row above it — a 113-minute one and
+    // a 31-minute one read identically until you opened them.
+    assert.match(home, /an hour and 53 minutes long — nothing has been started/);
     app.restore();
   });
 });

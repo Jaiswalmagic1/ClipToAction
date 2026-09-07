@@ -474,6 +474,7 @@ class TheQuestionBeforeALongVideo(unittest.TestCase):
         space = load(
             "download_audio",
             "creator_from",
+            "spell_out_length",
             "Refused",
             "NeedsPermission",
             "CouldNotReach",
