@@ -538,16 +538,23 @@ function learningWords(learning) {
  * found nothing at all. What it DID find was twenty filler reels that happened to contain
  * the phrase, while the four reels that actually answered the question were not among them.
  *
- * Split on anything that is not a LETTER or a NUMBER in any script, not on anything outside
- * a-z. Splitting on a-z made every Devanagari character a separator, so a question asked in
- * Hindi produced no words at all — and no words means "no query", which returns the whole
- * notebook, reported as matches. Half of what he saves is in Hindi. A question in his own
- * language handed the AI twenty filler reels labelled as the answer.
+ * Split on anything that is not a LETTER, a NUMBER or a MARK, in any script.
+ *
+ * Two goes at this. Splitting on anything outside a-z made every Devanagari character a
+ * separator, so a question in Hindi produced no words at all — and no words means "no
+ * query", which returns the whole notebook, reported as matches.
+ *
+ * Letters and numbers alone was still wrong, and worse for being nearly right. A Devanagari
+ * vowel sign — the matra, which most Hindi words carry — is a Unicode MARK, not a letter. So
+ * `मीशो` shattered into `म` and `श`, and since every word must appear, a search for Meesho
+ * asked for reels containing those two fragments: `शादी` and `में` supply them, so a reel
+ * about wedding earrings came back as a match for Meesho. **Half of what he saves is in
+ * Hindi.** Marks belong to the letters they sit on and are part of the word.
  */
 const wordsOf = (text) =>
   String(text || "")
     .toLowerCase()
-    .split(/[^\p{L}\p{N}']+/u)
+    .split(/[^\p{L}\p{N}\p{M}']+/u)
     .filter(Boolean);
 
 /**
@@ -573,6 +580,18 @@ const FIELD_WEIGHTS = [
   ["the words spoken", 1]
 ];
 
+/** The part of an address that identifies the video, with the scaffolding taken out. */
+const ADDRESS_NOISE = new Set([
+  "http", "https", "www", "com", "net", "org", "co", "in", "m",
+  "instagram", "facebook", "fb", "youtube", "youtu", "be", "tiktok",
+  "reel", "reels", "p", "watch", "video", "videos", "shorts", "v", "share", "story"
+]);
+
+const shortcodeOf = (address) =>
+  wordsOf(address)
+    .filter((word) => !ADDRESS_NOISE.has(word))
+    .join(" ");
+
 function searchableParts(clip, notes, learnings) {
   return {
     // BOTH titles. The platform's is what he would type; the summary's first sentence is
@@ -585,7 +604,12 @@ function searchableParts(clip, notes, learnings) {
     summary: clip.summary || "",
     // The address. A shortcode is often the only thing somebody has kept hold of, and the
     // app searches it. Weighted low: it is an identifier, not a sentence.
-    link: clip.url_original || "",
+    //
+    // The scaffolding is stripped. Tokenised whole, every reel's words gained `https`,
+    // `www`, `com`, `instagram` and `reel` — and since every word must appear for a match,
+    // a question with the word "reel" or "instagram" in it stopped narrowing anything at
+    // all on a notebook that is mostly Instagram.
+    link: shortcodeOf(clip.url_original),
     folder: [clip.filed_parent, clip.filed_name, clip.topic, clip.sub_topic]
       .filter(Boolean)
       .join(" "),
@@ -631,7 +655,12 @@ async function runSearch(env, userId, args) {
   // script this cannot tokenise. That is NOT the same as asking nothing, which means "show
   // me what is in my notebook". Conflating them returned every reel, scored zero, reported
   // as matches, with nothing in the reply to say the words had not been read.
-  const unreadable = query.length > 0 && wanted.length === 0;
+  // `wanted.length === 0` is not enough on its own: an apostrophe is kept inside a word
+  // (don't, seller's), so a query of nothing but apostrophes tokenises to one "word" made
+  // of them and returns silence with no explanation — the failure this branch exists to
+  // close, on a narrow input. A word has to contain a letter or a number to be one.
+  const hasSubstance = wanted.some((word) => /[\p{L}\p{N}]/u.test(word));
+  const unreadable = query.length > 0 && !hasSubstance;
 
   const filters = {
     kind: String(args?.kind || "").trim().toLowerCase(),

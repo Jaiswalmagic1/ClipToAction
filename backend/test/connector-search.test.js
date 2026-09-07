@@ -106,6 +106,22 @@ describe("what search promises, proved one claim at a time", () => {
       creator: "seller_bhai",
       daysAgo: 3
     });
+    // More Hindi, sharing consonants with the first. `मीशो` split on marks gives `म` and
+    // `श`; `शादी` and `में` supply exactly those, so a fixture with only ONE Hindi reel in
+    // it cannot tell a working tokeniser from a broken one — which is why the first version
+    // of this test passed against code that did not work.
+    await reel("HINDI2", {
+      platformTitle: "शादी में पहनने के लिए झुमके",
+      summary: "Jhumkas for a wedding.",
+      transcript: "शादी में पहनने के लिए अच्छे झुमके",
+      daysAgo: 3
+    });
+    await reel("HINDI3", {
+      platformTitle: "चांदी को साफ कैसे करें",
+      summary: "Cleaning silver at home.",
+      transcript: "चांदी को घर पर साफ करने का तरीका",
+      daysAgo: 3
+    });
     // Filler: mentions neither subject, is the most recent, and is filed nowhere — though
     // the reading proposed a folder for it.
     for (let n = 0; n < 6; n += 1) {
@@ -167,10 +183,36 @@ describe("what search promises, proved one claim at a time", () => {
     assert.match(found.results[0].title, /मीशो/);
   });
 
+  test("and Hindi words are not shattered into their consonants", async () => {
+    // The second version of this fault, and worse for being nearly right. A Devanagari
+    // vowel sign is a Unicode MARK, not a letter, so splitting on "not a letter or a
+    // number" cut `मीशो` into `म` and `श` — and since every word must appear, a search for
+    // Meesho asked for reels containing those two fragments. `शादी` and `में` supply them,
+    // so a reel about wedding earrings came back as a match for Meesho.
+    const found = await call("search", { query: "मीशो" });
+    assert.equal(
+      found.total,
+      1,
+      `${found.total} matched — ${found.results.map((one) => one.title).join(" | ")}`
+    );
+    assert.match(found.results[0].title, /मीशो/);
+
+    // And each of the others is findable by its own words, not by fragments of another's.
+    const wedding = await call("search", { query: "झुमके" });
+    assert.equal(wedding.total, 1, "a whole Hindi word found the wrong number of reels");
+    assert.match(wedding.results[0].title, /शादी/);
+  });
+
   test("and a query of pure punctuation returns nothing, and says why", async () => {
-    const found = await call("search", { query: "!!!???" });
-    assert.equal(found.total, 0, "punctuation was answered with the entire notebook");
-    assert.match(found.note, /No words could be read/i, found.note);
+    for (const query of ["!!!???", "'''", "'", "😀😀"]) {
+      // An apostrophe is kept INSIDE a word (don't, seller's), so a query of nothing but
+      // apostrophes tokenised to one "word" made of them: readable by the letter of the
+      // rule, silent in practice, and with no note saying why.
+      // eslint-disable-next-line no-await-in-loop
+      const found = await call("search", { query });
+      assert.equal(found.total, 0, `"${query}" was answered with ${found.total} reels`);
+      assert.match(found.note, /No words could be read/i, `"${query}": ${found.note}`);
+    }
   });
 
   test("the video's own title is searchable, not just the summary's first line", async () => {
@@ -190,6 +232,16 @@ describe("what search promises, proved one claim at a time", () => {
     const found = await call("search", { query: "zx9qw" });
     assert.equal(found.total, 1, "the address is not being searched");
     assert.equal(found.results[0].matched_in, "link");
+
+    // And the scaffolding must NOT be in there. Tokenised whole, every reel's words gained
+    // `https`, `www`, `com`, `instagram` and `reel` — and since every word must appear, a
+    // question with "reel" or "instagram" in it stopped narrowing anything at all.
+    const scaffolding = await call("search", { query: "instagram" });
+    assert.equal(
+      scaffolding.total,
+      0,
+      `the platform's own name matched ${scaffolding.total} reels`
+    );
   });
 
   test("the Keeping pile is askable by the word the notebook stores", async () => {
@@ -292,5 +344,63 @@ describe("what search promises, proved one claim at a time", () => {
         + ` ${found.results[0].title} (${found.results[0].matched_in})`
     );
     assert.equal(found.results[1].matched_in, "the words spoken");
+    // The ORDER, by score and not only by which field is listed first. `matched_in` is
+    // decided by the iteration order of the weights, so asserting on it alone survives any
+    // weighting at all — which is how two separate mutations of the scoring passed.
+    assert.ok(
+      found.results[0].title.includes("Polki setting"),
+      `the passing mention came first: ${found.results.map((one) => one.title).join(" | ")}`
+    );
+  });
+
+  test("and a word in the title is worth more than the same word in an hour of speech", async () => {
+    // The phrase bonus and the per-word weight were entangled: flattening the weights alone
+    // passed, because the bonus is itself `weight * 2` and carried the result. This asks a
+    // question whose words NEVER sit together, so the bonus cannot fire at all and only the
+    // per-word weight is left to decide it. The transcript reel is the NEWER of the two, so
+    // a tie goes to it and a flat weighting loses.
+    await reel("WEIGHTA", {
+      platformTitle: "Meenakari work, and where the enamel comes from",
+      summary: "A bench jeweller talks it through.",
+      transcript: "he works through it",
+      daysAgo: 8
+    });
+    await reel("WEIGHTB", {
+      platformTitle: "An unrelated video",
+      summary: "Nothing to do with it.",
+      transcript: "the enamel is fired on, and meenakari is what they call it",
+      daysAgo: 0
+    });
+    const found = await call("search", { query: "enamel meenakari" });
+    assert.equal(found.total, 2, `${found.total} matched`);
+    assert.ok(
+      found.results[0].title.includes("Meenakari work"),
+      "a word in the title counted no more than the same word buried in speech:"
+        + ` ${found.results.map((one) => one.title).join(" | ")}`
+    );
+  });
+
+  test("and the words together, in one field, count for more than the words apart", async () => {
+    // The phrase bonus could be zeroed with the whole suite green. Two reels, both carrying
+    // both words: one says them together, the other has them in different fields.
+    await reel("PHRASEA", {
+      platformTitle: "Silver polish cloth",
+      summary: "A bench jeweller on keeping stock clean.",
+      transcript: "he uses one every week",
+      daysAgo: 7
+    });
+    await reel("PHRASEB", {
+      platformTitle: "Polish, and what it costs",
+      summary: "Silver, and the price of keeping it right.",
+      transcript: "nothing else",
+      daysAgo: 7
+    });
+    const found = await call("search", { query: "silver polish" });
+    assert.equal(found.total, 2, `${found.total} matched`);
+    assert.ok(
+      found.results[0].title.includes("Silver polish cloth"),
+      "the reel that says the words together did not come first:"
+        + ` ${found.results.map((one) => one.title).join(" | ")}`
+    );
   });
 });

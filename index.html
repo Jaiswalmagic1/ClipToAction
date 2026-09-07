@@ -4016,8 +4016,19 @@ async function saveLink(url) {
     say("saveMsg", saved.reused
       ? "Saved. Somebody had already read this one, so it is in your notebook now."
       : "Saved. It will start working on it shortly.", "ok");
-    await sync();
-    render();
+    // The reel is IN. Whatever happens to the refresh below, the answer to "did the API
+    // take it" is already yes, and the queue can let it go.
+    //
+    // These were one `try`, so the sync's failure came back as the save's: he was told
+    // "Saved." and then, in the same breath, "could not save that yet — it is still here".
+    // Two sentences contradicting each other about a reel that was safely in his notebook,
+    // and the share stayed queued to be sent again on the next open.
+    try {
+      await sync();
+      render();
+    } catch {
+      // The refresh, not the save. The device copy stands and the next pass picks it up.
+    }
     // Whether the API took it. The share queue is drained on this and nothing else — a
     // reel that could not be saved has to still be waiting the next time he opens the app.
     return true;
@@ -4085,8 +4096,8 @@ function pendingShare() {
   // so never ran either. He would be looking at an empty notebook with nothing explaining
   // it, which is the one thing that must never happen (Golden Rule 29).
   //
-  // READ, and do not remove. What is queued here is removed by `shareIsSafeNow`, once the
-  // API has actually taken it. It used to be emptied on the way past, before the save was
+  // READ, and do not remove. What is queued here is removed by `dropShare`, and only once
+  // the API has actually taken it. It used to be emptied on the way past, before the save was
   // even attempted — and the save sits behind a sync that can fail. On the Underground the
   // reel then existed only as text in an input box, which dies with the tab the moment the
   // phone reclaims it. Nothing on screen ever mentioned it again.
@@ -4837,7 +4848,19 @@ onAuthStateChanged(auth, async (account) => {
     say("saveMsg", "Something was shared but the link could not be read. Paste it here.");
   } else if (shared.notALink) {
     // A photo, or plain text. It used to reach exactly here and say nothing at all.
-    say("saveMsg", "That share had no video link in it, so there was nothing to save.", "warn");
+    //
+    // And then it stopped, with reels queued behind it. He shares a photo, then a reel: the
+    // photo is dropped, this sentence is drawn, and the reel is not looked at again until
+    // the next open — so "there was nothing to save" was untrue at the moment it was shown.
+    // The rest of the queue is drained, and the sentence says what is actually happening.
+    say(
+      "saveMsg",
+      shared.more > 0
+        ? "One share had no video link in it. Saving the rest."
+        : "That share had no video link in it, so there was nothing to save.",
+      "warn"
+    );
+    await drainShares();
   }
 });
 

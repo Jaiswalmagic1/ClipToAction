@@ -4308,3 +4308,121 @@ them parsed. The order assertions are real assertions.
 Three more mutation-checked claims: removing the carry-over fails two tests, removing the
 object filter fails one, and appending the old share instead of putting it first fails one.
 608 backend tests.
+
+---
+
+### D72 — Round twenty: the Hindi fix did not fix Hindi
+**Date:** 2026-09-08
+**Amends:** D69, D70, D71.
+
+Thirty-one mutations applied to the last three commits. Five survived. The worst of them
+undoes the headline claim of the commit before it — **the sixth time a regression round has
+caught a fix the log recorded as done that fixed nothing at all.**
+
+#### A Devanagari vowel sign is a Mark, not a Letter
+
+D69 changed the word split from "anything outside a-z" to "not a letter or a number, in any
+script". Nearly right, and worse for it. Most Hindi words carry a **matra** — a vowel sign —
+and Unicode classifies those as Marks. So they were still separators, and every such word
+shattered into its consonants:
+
+| query | words it actually asked for |
+|---|---|
+| `मीशो` (Meesho) | `म`, `श` |
+| `कीमत मीशो` | `क`, `मत`, `म`, `श` |
+
+Every word must appear for a match, so a search for Meesho asked for reels containing the
+bare fragments `म` and `श` — which fall out of ordinary Hindi: `में` gives one, `शादी` the
+other. Measured on a three-reel Hindi fixture: **a reel about wedding earrings came back as a
+match for "Meesho".** Marks belong to the letters they sit on.
+
+**And the test could not have caught it.** The fixture had exactly one reel with any
+Devanagari in it, so `total === 1` was decided by the absence of other Hindi rather than by
+the tokeniser. There are three Hindi reels now, deliberately sharing consonants.
+
+#### Nothing executed the page that receives the share
+
+`share-target.html` is checked in two places as **text** — a regular expression over the
+source. Nothing runs it. So "it is a queue now", the central claim of D70, could be reverted
+to the single overwritten slot it replaced, and the cap removed entirely, with all 605 tests
+green. Every share test seeds browser storage directly and therefore only exercises the
+reader.
+
+It is run now, in a browser stand-in, and the four claims that matter each fail when deleted:
+the queue, the cap, which end the cap trims, and that a link somebody SENT him is never
+queued as though he had shared it.
+
+#### A photo at the head of the queue stopped every reel behind it
+
+`pendingShare` drops a linkless share and returns; the branch that says so **never called the
+drain**. He shares a photo, then a reel, then opens the app: the photo is dropped, the words
+*"there was nothing to save"* are drawn, and the reel sits untouched for the rest of the
+session. Nothing was lost — it goes in on the next open — but the sentence was untrue at the
+moment it was shown, on the one path a reel gets in by. The code even computed how many were
+queued behind it and read that number nowhere.
+
+#### And a reel the API had taken was called unsaved
+
+`saveLink` said "Saved.", then refreshed, and both sat in one `try`. A failed refresh came
+back as a failed save — so the share stayed queued, and the next sentence on screen was
+*"could not save that yet — it is still here"*, about a reel that was safely in his notebook.
+Two sentences contradicting each other, and a share re-sent on every future open. The save's
+success and the refresh's are separate now.
+
+#### The ranking claim was held only by its two halves together
+
+| mutation | before | now |
+|---|---|---|
+| every weight flattened to 1 | caught | caught |
+| per-word weight → 1, phrase bonus kept | **survived** | caught |
+| phrase bonus → 0, weights kept | **survived** | caught |
+
+The bonus is itself `weight * 2`, so each half could carry the test alone. The assertion was
+also on `matched_in`, which is decided by the ITERATION ORDER of the weights and not by their
+numbers — so it survived any weighting under which the right reel happened to win. There are
+two tests now: one whose words never sit together, so the bonus cannot fire; one where both
+reels carry both words and only togetherness separates them.
+
+#### Also
+
+- **The address put `instagram` and `reel` into every reel's searchable words.** Tokenised
+  whole, `https://www.instagram.com/reel/ZX9QW/` contributed six words, five of them shared
+  by the entire notebook — so a question containing "reel" or "instagram" stopped narrowing
+  anything at all. The scaffolding is stripped; the shortcode, which is what the field is
+  for, stays.
+- **A query of nothing but apostrophes was "readable".** An apostrophe is kept inside a word
+  (don't, seller's), so `'''` tokenised to one word made of them: silence, with no note
+  saying why — D69's own failure class, on a narrow input. A word now has to contain a letter
+  or a number to count as one.
+- **The saving in D69 was written down as half what it is.** `withOneRetry` sits inside
+  `attempt`, so each account is asked twice: twelve savers on a retired model cost **four**
+  calls, not two. The saving is real; the number was wrong.
+
+#### A note on the patching itself
+
+`index.html` was truncated to nothing partway through this round. `io.open(path, "w")`
+empties the file the moment it is evaluated, and the argument that builds the replacement had
+not run yet — so a failure there leaves an empty file and no error until the tests all fail
+at once. Recovered from the last commit. Every patch script now builds the whole text first
+and opens for writing only afterwards. Worth writing down because it is the same shape as the
+bugs these rounds keep finding: the destructive step ran before the thing that justifies it.
+
+#### What round twenty established as sound
+
+`agreedItCannot` on all four questions — the map is local to one call and bounded, `safeDetail`
+reduces every provider reply to an allowlisted code so the grouping cannot be defeated,
+`givenUp` guarantees one entry per person so "two accounts" really means two, and the worst
+case is the pre-D66 cost and never worse. `dropShare` cannot match the wrong entry or miss the
+right one. Two tabs, and a share arriving mid-drain, lose nothing in any ordering. The nine-step
+release order, walked literally, command by command: **every step correct as typed**, including
+that staging is the live system his app points at.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Nineteen | 239 | 86 |
+| Twenty (regression) | 8 | 8 |
+
+**Two hundred and forty-seven.** Ten rounds running, the regression half has found only its
+predecessor's faults.

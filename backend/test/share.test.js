@@ -20,6 +20,9 @@ const QUEUE = "cliptoaction-pending-shares";
 /** What the share target writes when he shares a reel. */
 const shared = (url, at) => ({ title: "", text: "", url, at });
 
+/** Types into a box, the way a finger does. */
+const $set = (app, id, value) => { app.$(id).value = value; };
+
 describe("a reel shared from the share sheet", () => {
   test("is saved, and only then dropped from the queue", async () => {
     const app = await loadApp(syncPayload({}), {
@@ -167,6 +170,67 @@ describe("a reel shared from the share sheet", () => {
     assert.ok(
       app.calls.some((one) => one.includes("/v1/clips")),
       "a real reel was stuck behind a broken entry"
+    );
+    app.restore();
+  });
+
+  test("a photo at the head of the queue does not stop the reel behind it", async () => {
+    // He shares a photo, then a reel, then opens the app. The photo was dropped, the words
+    // "there was nothing to save" were drawn, and the drain was never called — so the reel
+    // sat untouched for the rest of the session and the sentence on screen was untrue at
+    // the moment it was shown, on the one path a reel gets in by.
+    const app = await loadApp(syncPayload({}), {
+      seed: [[QUEUE, JSON.stringify([
+        { title: "A photo", text: "look at this", url: "", at: 1 },
+        shared("https://www.instagram.com/reel/BEHIND/", 2)
+      ])]]
+    });
+    await new Promise((done) => setTimeout(done, 0));
+    await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 1, `${saved.length} reels were saved: ${saved.join(", ")}`);
+    assert.match(saved[0], /BEHIND/);
+    assert.equal(app.localStore.get(QUEUE), undefined, "the reel was left queued");
+    assert.doesNotMatch(
+      app.text("saveMsg"),
+      /nothing to save/i,
+      `he was told nothing was saved while a reel was going in: "${app.text("saveMsg")}"`
+    );
+    app.restore();
+  });
+
+  test("a reel the API took is not called unsaved because the refresh failed", async () => {
+    // `saveLink` said "Saved.", then refreshed, and both were in one `try` — so a failed
+    // refresh came back as a failed save. On the share path that means he is told "Saved."
+    // and then, in the same breath, "could not save that yet — it is still here", about a
+    // reel that is safely in his notebook — and the share stays queued to be sent again on
+    // every future open.
+    // The harness calls this for EVERY request, not only for a sync. In order: the sync
+    // that loads his notebook at sign-in, the POST that saves the reel, and then the sync
+    // inside `saveLink` — which is the one that fails.
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        if (requests > 2) throw new TypeError("Failed to fetch");
+        return syncPayload({});
+      },
+      { seed: [[QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/TOOK/", 4)])]] }
+    );
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 1, `the reel was posted ${saved.length} times`);
+    assert.equal(
+      app.localStore.get(QUEUE),
+      undefined,
+      "a reel the API took is still queued, and will be sent again on every open"
+    );
+    assert.doesNotMatch(
+      app.text("saveMsg"),
+      /Could not save/i,
+      `a reel the API took was called unsaved: "${app.text("saveMsg")}"`
     );
     app.restore();
   });

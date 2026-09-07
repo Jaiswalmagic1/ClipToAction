@@ -839,8 +839,9 @@ async function spendKeys(env, candidates, attempt) {
       // fault D65 was written to remove, reintroduced one commit later.
       //
       // So: two accounts have to AGREE, on the same provider, for the same reason. A
-      // retired model still costs two calls across twelve savers instead of twelve. A quirk
-      // of one account costs one, and never speaks for anybody else.
+      // retired model costs FOUR calls across twelve savers instead of twenty-four — two
+      // accounts, and `withOneRetry` sits inside `attempt`, so each of them is asked twice.
+      // A quirk of one account costs two, and never speaks for anybody else.
       if (category === "unsuitable") {
         const reason = `${key.provider} :: ${error.detail || ""}`;
         const who = failedOn.get(reason) || new Set();

@@ -212,7 +212,8 @@ Getting these the wrong way round is the only way this release can look like los
 they are written out rather than left to be inferred. **Do them in this order.** Steps 1-3
 are all reversible; from step 5 the app is live.
 
-**0. The PC worker's `.env` first.** It is gitignored, so nothing in the repo updates it and
+**0. The PC worker's `.env` first** — `worker-pc/.env`, on the machine that runs the
+scheduled task, beside `worker.py`. It is gitignored, so nothing in the repo updates it and
 no test can catch it being stale. It must carry the new ceilings before the worker restarts,
 or a five-hour video is still refused at three:
 
@@ -250,10 +251,10 @@ when the API sends no limits, so an old Worker and a new worker get along.
 Nothing below happens until one reel has gone from share to analysed on staging.
 
 **6. Open the PR and merge it to `main`**, which is what publishes the app (D16). Do it
-promptly after step 3 and not days later: between the two, GitHub Pages is still serving the
-OLD app against the NEW Worker, and a video waiting on a length approval draws there as the
-bare word `needs_ok` with no button to answer it. Nothing is lost and it corrects itself the
-moment this step lands.
+promptly after step 3 — the reel in step 5 takes minutes, not days. Until this lands, GitHub
+Pages is still serving the OLD app against the NEW Worker, and a video waiting on a length
+approval draws there as the bare word `needs_ok` with no button to answer it. Nothing is
+lost, and it corrects itself the moment this step lands.
 
 > **Merge commit, not squash.** The PM Discipline check reads `[PM-REVIEWED]` out of every
 > commit message in the range, and a squash throws all of them away in favour of the PR
