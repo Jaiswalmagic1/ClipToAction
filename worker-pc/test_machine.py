@@ -274,6 +274,7 @@ class WhatItWasHolding(unittest.TestCase):
             "pid_of",
             "still_running",
             STALE_RUN_SEC=24 * 60 * 60,
+            GIVE_UP_ON_HANDBACK_SEC=7 * 24 * 60 * 60,
             shutil=real_shutil,
             CLAIMS_PATH=self.path,
             MEDIA_ROOT=self.root,
@@ -387,6 +388,7 @@ class TwoCopiesAtOnce(unittest.TestCase):
                 MEDIA_ROOT=root,
                 MEDIA_DIR=mine,
                 STALE_RUN_SEC=24 * 60 * 60,
+                GIVE_UP_ON_HANDBACK_SEC=7 * 24 * 60 * 60,
                 shutil=real_shutil,
                 say=lambda message: None,
             )
@@ -571,6 +573,7 @@ class AFolderWhoseNumberCameRoundAgain(unittest.TestCase):
                 MEDIA_ROOT=root,
                 MEDIA_DIR=mine,
                 STALE_RUN_SEC=24 * 60 * 60,
+                GIVE_UP_ON_HANDBACK_SEC=7 * 24 * 60 * 60,
                 shutil=real_shutil,
                 say=lambda message: None,
             )
@@ -615,6 +618,7 @@ class NothingIsSweptWhileItStillHoldsWork(unittest.TestCase):
             MEDIA_ROOT=self.root,
             MEDIA_DIR=self.mine,
             STALE_RUN_SEC=24 * 60 * 60,
+            GIVE_UP_ON_HANDBACK_SEC=7 * 24 * 60 * 60,
             API_BASE="https://api.test",
             HEADERS={},
             requests=requests_stub,

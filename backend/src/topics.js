@@ -281,18 +281,24 @@ export async function fileSourceForAllSavers(env, sourceId, proposed, timestamp,
  *
  * Returns { merged, moved }: how many topics were folded away, and how many clips moved.
  */
-// How many folders one press may put together.
+// How much work one press may do, counted in CALLS TO THE DATABASE and not in folders.
 //
 // Not a preference — a hard limit of the platform. A Worker on the free plan may make 50
-// calls to the database in ONE request, and every binding call counts. Tidying his real 34
-// folders down to 20 took a hundred, so the fifty-first threw with half the merges already
-// committed: some folders joined, some not, and nothing anywhere recording which. That is
-// the one operation that moves his clips between folders.
+// calls to the database in ONE request, and every binding call counts one. Tidying his real
+// 34 folders took a hundred, so the fifty-first threw with half the merges already
+// committed: some folders joined, some not, and nothing anywhere recording which — on the
+// one operation that moves his clips between folders.
 //
-// Five doomed folders a press is about thirty calls at the worst. It costs no AI and the
-// app presses again while anything is left, so the whole tidy still happens — in bites that
-// each finish.
-const MAX_MERGES_PER_REQUEST = 5;
+// Counting FOLDERS was the wrong unit and it did not bound anything. A folder costs three
+// calls plus three for every sub-folder under it, and sub-folders are the normal case —
+// every filed clip creates a parent and a child. Five folders with four sub-folders each
+// measured at 57, straight back over the line.
+//
+// So the loop stops when the work it has done reaches the budget, whatever shape the
+// folders were. Thirty leaves room for the handful of calls around the loop. It costs no AI
+// and the app presses again while anything is left, so the whole tidy still happens — in
+// bites that each finish.
+const CALL_BUDGET_PER_REQUEST = 30;
 
 export async function tidyTopics(env, userId, timestamp) {
   const tops = await env.DB.prepare(
@@ -315,18 +321,19 @@ export async function tidyTopics(env, userId, timestamp) {
   let moved = 0;
   // What is left for the next press. The app keeps pressing while this is above zero.
   let remaining = 0;
-  let done = 0;
+  // What this request has already spent. Every statement below adds to it.
+  let spent = 0;
 
   for (const group of groups.values()) {
     if (group.length < 2) continue;
     const [keeper, ...rest] = group;
 
     for (const doomed of rest) {
-      if (done >= MAX_MERGES_PER_REQUEST) {
+      if (spent >= CALL_BUDGET_PER_REQUEST) {
         remaining += 1;
         continue;
       }
-      done += 1;
+      spent += 1;
       const children = await env.DB.prepare(
         `SELECT id, name_key FROM topics
          WHERE user_id = ?1 AND parent_id = ?2 AND deleted_at IS NULL`
@@ -338,6 +345,7 @@ export async function tidyTopics(env, userId, timestamp) {
         // The keeper may already have a sub-topic of that name, and the unique index on
         // (user_id, parent_id, name_key) would refuse the move. Where it does, the two
         // sub-topics are the same subject: the clips go to the one that stays.
+        spent += 2;
         const clash = await env.DB.prepare(
           `SELECT id FROM topics
            WHERE user_id = ?1 AND parent_id = ?2 AND name_key = ?3 AND deleted_at IS NULL`
@@ -362,6 +370,7 @@ export async function tidyTopics(env, userId, timestamp) {
         }
       }
 
+      spent += 2;
       moved += await moveClips(env, userId, doomed.id, keeper.id, timestamp);
       await env.DB.prepare(`UPDATE topics SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2`)
         .bind(timestamp, doomed.id)

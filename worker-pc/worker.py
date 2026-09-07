@@ -116,6 +116,9 @@ WAV_BYTES_PER_SEC = 16000 * 1 * 2
 # When a run folder counts as abandoned whatever its process id says. Nothing this machine
 # does takes a day, and Windows reuses process numbers.
 STALE_RUN_SEC = 24 * 60 * 60
+# And when to stop keeping a folder just because its work could not be handed back. See
+# sweep_finished_runs.
+GIVE_UP_ON_HANDBACK_SEC = 7 * 24 * 60 * 60
 # Filling in who made the videos already saved (D40). Deliberately slow: this reads
 # metadata for videos that are already finished, so it may never compete with a reel
 # somebody is waiting on, and Facebook and Instagram will rate-limit a machine that asks
@@ -728,7 +731,18 @@ def release_stale_claims():
     # What a version before this one was holding. It kept its list outside the run
     # folders, so on the upgrade itself there would have been nothing to find and the work
     # would have sat locked for its whole lease.
-    for held in [MEDIA_ROOT / "claimed.txt"] + [
+    # The version before this one kept its list here, outside the run folders, so on the
+    # upgrade itself there would be nothing to find and the work would sit locked for its
+    # whole lease. It is only safe to read while no other copy is going: a running one of
+    # that version appends to it as it works, and handing back work in progress is the
+    # thing the rest of this function exists to prevent.
+    legacy = MEDIA_ROOT / "claimed.txt"
+    somebodyElseIsGoing = any(
+        folder != MEDIA_DIR and folder.is_dir() and pid_of(folder) and still_running(pid_of(folder))
+        for folder in MEDIA_ROOT.glob("run-*")
+    )
+
+    for held in ([] if somebodyElseIsGoing else [legacy]) + [
         folder / "claimed.txt" for folder in sorted(MEDIA_ROOT.glob("run-*")) if has_stopped(folder)
     ]:
         if not held.exists():
@@ -826,9 +840,19 @@ def sweep_finished_runs():
             continue
         held = folder / "claimed.txt"
         try:
-            if held.exists() and held.read_text(encoding="utf-8").strip():
+            still_held = held.exists() and held.read_text(encoding="utf-8").strip()
+            # And a backstop, because "keep it until the hand-back gets through" has no
+            # end of its own. A rotated service token or an API address that has moved
+            # means it NEVER gets through, and the folder -- with a long video's audio in
+            # it, about 700MB -- would be kept for ever, which is the disk filling this
+            # exists to stop. A week is far longer than any outage worth waiting through,
+            # and by then the claim's own lease expired days ago.
+            ancient = time.time() - folder.stat().st_mtime > GIVE_UP_ON_HANDBACK_SEC
+            if still_held and not ancient:
                 say(f"- keeping {folder.name}: it is still holding work nobody has taken back")
                 continue
+            if still_held:
+                say(f"- clearing {folder.name}: its work could not be handed back for a week")
         except OSError:
             continue
         shutil.rmtree(folder, ignore_errors=True)

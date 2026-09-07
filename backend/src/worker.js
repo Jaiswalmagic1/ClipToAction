@@ -138,9 +138,15 @@ const MAX_ATTEMPTS = 3;
 // the writes before it already committed and, worse, six or seven calls to his AI account
 // already SPENT. Every press, for ever, and the money gone with nothing to show.
 //
-// Four is about thirty calls at the worst of it. The app presses again while anything is
-// left, so the whole job still happens; it happens in bites that each finish.
-const MAX_SORT_PER_REQUEST = 4;
+// Three, and the number was arrived at by counting rather than by feel. Four measured at
+// 45 database calls plus 5 calls to the AI provider — and a call to a provider is a
+// subrequest too, so that is 50 exactly, on the ceiling, going over the moment a first key
+// is spent and the next one is tried (which is the entire reason D35 exists). Three is
+// about 37 with room for a key to rotate.
+//
+// The app presses again while anything is left, so the whole job still happens; it happens
+// in bites that each finish.
+const MAX_SORT_PER_REQUEST = 3;
 // How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
 // and a spare; low enough that a leaked one is noticed rather than lost in a list.
 const MAX_CONNECTORS = 5;
@@ -262,6 +268,23 @@ function fail(env, message, status = 400) {
 }
 
 const now = () => Date.now();
+
+/**
+ * How many the caller asked for, or the batch this queue was designed for.
+ *
+ * Exported so a test can call THIS rather than write the same arithmetic out again beside
+ * it — which is what the first attempt did, and a test that reimplements its subject
+ * passes whatever the subject does.
+ *
+ * `Number(null)` is 0, not NaN, so a missing parameter sailed past `Number.isFinite` and
+ * the default was never reached: a caller that named no limit got ONE video a pass where
+ * it was meant to get two.
+ */
+export function batchAsked(request, fallback) {
+  const asked = new URL(request.url).searchParams.get("limit");
+  const requested = asked === null ? fallback : Number(asked);
+  return Math.min(Math.max(Number.isFinite(requested) ? requested : fallback, 1), 10);
+}
 const newId = () => crypto.randomUUID();
 
 /** A problem with the caller's request. Carries the status the router should return. */
@@ -553,12 +576,22 @@ async function deltaSync(request, env, userId) {
   // Whether a re-look is being offered, and over how many reels (D41). Sent on every sync
   // like `settings`: it is one small object, it depends on the clock as much as on the
   // rows, and the banner has to be able to appear the moment enough time has passed.
-  const relook = await relookFor(env, userId, timestamp);
+  // Only on a cold open, and the app keeps what it already had otherwise.
+  //
+  // Deciding whether to offer a look back means counting what has been sitting unread, and
+  // that count walks the clip list with two correlated lookups each. It ran every
+  // forty-five seconds, for ever, to answer a question about something that happens once a
+  // fortnight — about four in every ten rows this whole product reads. A cold open happens
+  // whenever the app is opened, which is when anybody actually reads the answer.
+  const relook = since === 0 ? await relookFor(env, userId, timestamp) : null;
 
   return json(env, {
     now: timestamp,
     connectors: connectors.results,
-    relook,
+    // Omitted on a background refresh, never sent as an empty one: the app merges what it
+    // is given and keeps what it is not, so a missing answer leaves the last one standing
+    // rather than quietly clearing the offer off the screen.
+    ...(relook ? { relook } : {}),
     settings: {
       ai_provider: user?.ai_provider || null,
       // The list IS the setting now. Having any key at all is what makes the Worker
@@ -835,10 +868,7 @@ async function removeKey(env, userId, keyId) {
 // ---------------------------------------------------------------- service routes
 
 async function claimQueue(request, env) {
-  // See creatorQueue: `Number(null)` is 0, so a missing parameter never reached the default.
-  const asked = new URL(request.url).searchParams.get("limit");
-  const requested = asked === null ? 3 : Number(asked);
-  const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 3, 1), 10);
+  const limit = batchAsked(request, 3);
   const timestamp = now();
 
   // The worker asks for work every 30 seconds whether there is any or not, so this call is
@@ -1399,6 +1429,10 @@ async function releaseClaim(request, env, sourceId) {
            WHEN releases >= ?3 AND attempts >= ?5
              THEN 'Your PC kept stopping partway through this one. Press try again when it is on.'
            ELSE error END,
+         -- The code has to say the same thing the sentence does, or the one place that
+         -- records WHY contradicts the one place that says what happened.
+         error_detail = CASE
+           WHEN releases >= ?3 AND attempts >= ?5 THEN NULL ELSE error_detail END,
          claimed_at = NULL,
          releases = releases + 1,
          attempts = CASE WHEN attempts > 0 AND releases < ?3 THEN attempts - 1 ELSE attempts END,
@@ -1645,12 +1679,7 @@ export function cleanCreator(raw) {
  * who made it must leave the queue, or the worker asks about it for ever.
  */
 async function creatorQueue(request, env) {
-  // `Number(null)` is 0, not NaN, so a missing parameter passed `Number.isFinite` and the
-  // default below was never reached — a caller that named no limit got ONE video a pass
-  // rather than two. Harmless while the PC worker always names one; wrong all the same.
-  const asked = new URL(request.url).searchParams.get("limit");
-  const requested = asked === null ? 2 : Number(asked);
-  const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 2, 1), 10);
+  const limit = batchAsked(request, 2);
 
   const rows = await env.DB.prepare(
     `SELECT id, url_original, platform FROM sources
@@ -2315,20 +2344,37 @@ async function relookDue(env, userId) {
  * offer off, and never inside the period he has just been offered one. Both are answered
  * by the single row above, which is read anyway.
  */
-async function relookFor(env, userId, timestamp) {
+async function relookFor(env, userId, timestamp, countAnyway = true) {
   const user = await env.DB.prepare(
     `SELECT relook_days, relooked_at FROM users WHERE id = ?1`
   )
     .bind(userId)
     .first();
 
-  const everyDays = user?.relook_days ?? null;
+  const chosen = user?.relook_days ?? null;
   const lastAt = user?.relooked_at ?? null;
+
+  // The gap, read the way `relookState` reads it — which is the whole point. The first
+  // version compared against the RAW column, and that column is NULL for anybody who has
+  // never opened Settings and chosen a gap. `relookState` treats NULL as a fortnight; the
+  // guard treated it as falsy and fell straight through. So the expensive count still ran
+  // on every single refresh for him and for every new person, while the log recorded it as
+  // fixed. Two ideas of "the gap" in one function, and the default was the one that
+  // mattered.
+  const everyDays = Number.isFinite(chosen) && chosen !== null
+    ? Number(chosen)
+    : DEFAULT_RELOOK_DAYS;
   const tooSoon =
-    everyDays === 0
-    || (everyDays && lastAt && timestamp - lastAt < everyDays * 24 * 60 * 60 * 1000);
-  if (tooSoon) {
-    return relookState({ everyDays, lastAt, dueCount: 0, oldestDueAt: null, at: timestamp });
+    everyDays <= 0
+    || (lastAt && timestamp - lastAt < everyDays * 24 * 60 * 60 * 1000);
+
+  // `countAnyway` is false only on a BACKGROUND refresh, which is where the cost lives —
+  // that runs every forty-five seconds and this count walks the clip list with two
+  // correlated lookups each. A cold open still counts, so the number the settings screen
+  // shows ("N videos are waiting for one") is there whenever the app is opened, which is
+  // when anybody reads it. Ten of those a day instead of nineteen hundred.
+  if (tooSoon && !countAnyway) {
+    return relookState({ everyDays: chosen, lastAt, dueCount: 0, oldestDueAt: null, at: timestamp });
   }
 
   const { due, oldest } = await relookDue(env, userId);

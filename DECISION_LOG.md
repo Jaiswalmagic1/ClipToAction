@@ -3356,3 +3356,89 @@ thing is public, and none of them is a decision to take in a review round.
 was the first look from outside his own account — the same lesson as round eleven's first
 look at his PC: the rounds that change WHERE they stand find things the rounds that change
 how hard they look cannot.
+
+---
+
+### D61 — Round fourteen's other half: fixes that were not the fixes they claimed
+**Date:** 2026-09-07
+**Amends:** D59, D60.
+
+The regression half of round fourteen re-read D59's work. Most of it holds — the three
+rewritten sync queries were put through **21,600 randomised differential cases against the
+old form with zero mismatches**, migration 0016's indexes are all used, and every loop
+terminates. Two of the headline fixes were not fixes, and two of the claims about testing
+were not true.
+
+#### The performance fix did nothing for him, or for anybody new
+
+`relookFor`'s new guard read the RAW `relook_days` column — which is **NULL for anybody who
+has never opened Settings and chosen a gap**, which is him and every new person. `relookState`
+treats NULL as a fortnight; the guard treated it as falsy and fell straight through. Two
+ideas of "the gap" in one function, and the default was the one that mattered.
+
+| | count ran? |
+|---|---|
+| gap never chosen (the default), look-back done yesterday | **yes, every refresh** |
+| gap chosen by hand as 14, look-back done yesterday | no |
+
+Both report `every_days: 14`. So D59's "four in every ten rows this product reads" and the
+twenty-user ceiling were unfixed in the only configuration anybody is actually in, while the
+log recorded them as fixed.
+
+**Fixed twice over.** The guard reads the gap the way the answer does; and the count is now
+asked **only on a cold open**, never on a background refresh — measured at 0 per refresh
+against 1 before, with the whole `relook` block simply omitted so the app keeps the answer it
+already had. Ten counts a day instead of nineteen hundred, and the number on the settings
+screen is still there whenever the app is opened, which is when anybody reads it.
+
+#### The tidy cap counted the wrong thing and bounded nothing
+
+`MAX_MERGES_PER_REQUEST = 5` counted **top-level folders**. A folder costs three calls plus
+three for every sub-folder under it, and sub-folders are the normal case — every filed clip
+makes a parent and a child. Measured: five folders with four sub-folders each is **57 calls**,
+straight back over the fifty the platform allows, with the half-committed merges D59 was
+written to end.
+
+It counts CALLS now, whatever shape the folders are. And there is a test that presses the
+button against twelve pairs of folders with four sub-folders each and asserts the ceiling on
+every pass — it reports 134 when the budget is removed.
+
+#### `/v1/kinds` was sitting exactly on the ceiling
+
+Counting D1 calls **and** calls to the AI provider, which are subrequests too: four clips was
+45 + 5 = **50 exactly**, going over the moment a first key is spent and the next is tried —
+which is the entire reason D35 exists. Three now, with the app pressing a hundred times
+instead of sixty so his notebook is still covered twice over.
+
+#### Two claims about testing that were not true
+
+- **"Each one proven by taking the fix out"** — the queue-limit test wrote the arithmetic out
+  again beside the code instead of calling it, so reverting the real fix left the suite green.
+  A test that reimplements its subject passes whatever the subject does. The arithmetic is a
+  named, exported function now and the test calls it.
+- **`remaining` and the app's tidy loop had no test at all.** Deleting either left 528 of 528
+  passing — a half-finished tidy reporting success. Both are covered now, through the real
+  button on the real screen.
+
+#### And two on the machine in his house
+
+- **A folder whose hand-back could not get through was kept for ever.** A rotated service
+  token, or the API address moving — which is the staging-to-production switch — meant it
+  never got through, and a long video's audio (about 700MB) stayed on the disk permanently.
+  A week is now the backstop; by then the claim's own lease expired days ago.
+- **The old shared `claimed.txt` was read with no liveness check**, so a new copy starting
+  beside a running old one could hand back work in progress. It is only read when no other
+  copy is going.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Thirteen | 139 | 49 |
+| Fourteen (the second person) | 7 | 0 |
+| Fourteen (regression) | 9 | 9 |
+
+**A hundred and fifty-five.** Five rounds running, the regression half has found only its
+predecessor's faults — and this time two of them were fixes that did not fix anything while
+the log said they had. That is the failure mode this loop exists to catch, and the only
+reason it was caught is that the reviewer measured instead of reading.

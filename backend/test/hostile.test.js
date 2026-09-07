@@ -10,7 +10,7 @@
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import worker from "../src/worker.js";
+import worker, { batchAsked } from "../src/worker.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -935,23 +935,20 @@ describe("the changes nobody would notice breaking", () => {
   });
 
   test("a queue asked for no particular number gets the batch it was designed for", () => {
-    // `Number(null)` is 0, not NaN, so a missing parameter sailed past `Number.isFinite`
-    // and the default was never reached: the creator queue handed out ONE video a pass
-    // where it was meant to hand out two.
-    assert.equal(batchOf(null, 3), 3);
-    assert.equal(batchOf(null, 2), 2);
-    assert.equal(batchOf("", 3), 1);
-    assert.equal(batchOf("abc", 3), 3);
-    assert.equal(batchOf("7", 3), 7);
-    assert.equal(batchOf("99", 3), 10);
+    // Calling the REAL function. The first version of this test wrote the same arithmetic
+    // out again beside it, so reverting the fix left the suite green — a test that
+    // reimplements its subject passes whatever the subject does.
+    const asking = (query) =>
+      new Request(`https://api.test/v1/queue${query === null ? "" : `?limit=${query}`}`);
+
+    assert.equal(batchAsked(asking(null), 3), 3, "a missing limit did not reach the default");
+    assert.equal(batchAsked(asking(null), 2), 2);
+    assert.equal(batchAsked(asking(""), 3), 1);
+    assert.equal(batchAsked(asking("abc"), 3), 3);
+    assert.equal(batchAsked(asking("7"), 3), 7);
+    assert.equal(batchAsked(asking("99"), 3), 10);
   });
 });
-
-/** The same arithmetic both queues use, so the test can name it. */
-function batchOf(asked, fallback) {
-  const requested = asked === null ? fallback : Number(asked);
-  return Math.min(Math.max(Number.isFinite(requested) ? requested : fallback, 1), 10);
-}
 
 // ---------------------------------------------------------------- somebody else's notebook
 
@@ -1145,5 +1142,174 @@ describe("one person's dead AI account, and everybody else's reel", () => {
       .prepare("SELECT state FROM ai_keys WHERE user_id = 'owner'")
       .get();
     assert.equal(dead.state, "rejected", "the owner is never told their key is dead");
+  });
+});
+
+// ------------------------------------------------------- fifty calls, and no more, ever
+
+describe("no button may ask the database for more than a request is allowed", () => {
+  // A Worker on the free plan may make FIFTY calls to the database in one request, and a
+  // call to an AI provider counts too. The fifty-first throws with everything before it
+  // already committed: for tidying, some folders merged and some not with nothing
+  // recording which; for the other two, the AI already paid for and nothing to show.
+  //
+  // Counted here, not reasoned about — the first attempt capped FOLDERS, which does not
+  // bound anything, because a folder costs three calls plus three per sub-folder and
+  // sub-folders are the normal case.
+  const CEILING = 50;
+  let harness;
+  let token;
+  let calls;
+
+  const counting = () => {
+    const real = harness.env.DB;
+    calls = 0;
+    harness.env.DB = {
+      ...real,
+      prepare(sql) {
+        calls += 1;
+        return real.prepare(sql);
+      },
+      batch: real.batch ? (...args) => { calls += 1; return real.batch(...args); } : undefined
+    };
+    return () => { harness.env.DB = real; };
+  };
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+    // One request, so the account exists before rows are seeded against it.
+    await harness.call(worker, "/v1/sync?since=0", { token });
+  });
+  after(() => {
+    harness.answerProviderWith(null);
+    harness.restore();
+  });
+
+  test("tidying folders, with sub-folders under every one of them", async () => {
+    // His own shape, and worse: many top-level folders that merge, each carrying children.
+    const at = Date.now();
+    const rows = [];
+    let n = 0;
+    for (let pair = 0; pair < 12; pair += 1) {
+      for (const suffix of ["", " tips"]) {
+        const id = `t${n += 1}`;
+        rows.push(
+          `('${id}', 'vish', 'Selling${pair}${suffix}', '', 'selling${pair}${suffix}', ${at}, ${at})`
+        );
+        for (let child = 0; child < 4; child += 1) {
+          rows.push(
+            `('${id}c${child}', 'vish', 'Sub ${child}', '${id}', 'sub ${pair} ${suffix} ${child}', ${at}, ${at})`
+          );
+        }
+      }
+    }
+    harness.database.exec(
+      `INSERT INTO topics (id, user_id, name, parent_id, name_key, created_at, updated_at)
+       VALUES ${rows.join(",")}`
+    );
+
+    let passes = 0;
+    let stop;
+    for (;;) {
+      stop = counting();
+      const response = await harness.call(worker, "/v1/topics/tidy", { method: "POST", token });
+      stop();
+      assert.ok(
+        calls <= CEILING,
+        `one press asked the database ${calls} times, and it is allowed ${CEILING}`
+      );
+      passes += 1;
+      if (!response.body.remaining) break;
+      assert.ok(passes < 40, "the tidy never finished");
+    }
+    assert.ok(passes > 1, "this test did not exercise more than one pass");
+
+    // `remaining` is the whole mechanism: without it the app presses once, the tidy is
+    // half done, and it reports success. Nothing tested it, so both halves — the number
+    // and the loop that reads it — could be deleted with the suite still green.
+    assert.ok(passes < 40, "the tidy never reported that it had finished");
+
+    // And it actually finished the job.
+    const left = harness.database
+      .prepare(
+        `SELECT COUNT(*) AS n FROM topics WHERE user_id = 'vish' AND parent_id = ''
+           AND deleted_at IS NULL`
+      )
+      .get();
+    assert.equal(left.n, 12, `12 subjects should remain, found ${left.n}`);
+  });
+
+  test("reading old clips again, including a key that turns out to be spent", async () => {
+    // A spent first key is the whole reason a LIST of keys exists (D35), and the second
+    // call to a provider is another subrequest.
+    for (const label of ["one", "two", "three"]) {
+      await harness.call(worker, "/v1/keys", {
+        method: "POST",
+        token,
+        body: { provider: "gemini", api_key: `a-key-called-${label}`, label }
+      });
+    }
+
+    // A working account while the reels are being set up, so each one really does get an
+    // analysis row for the queue to find.
+    harness.answerProviderWith(() =>
+      harness.geminiReplyWith({ summary: "first reading", key_points: [], learn_more: [], claims: [] })
+    );
+
+    for (let i = 0; i < 9; i += 1) {
+      const saved = await harness.call(worker, "/v1/clips", {
+        method: "POST",
+        token,
+        body: { url: `https://www.instagram.com/reel/BUDGET${i}/` }
+      });
+      const sourceId = saved.body.clip.source_id;
+      harness.database
+        .prepare("UPDATE sources SET state = 'downloading' WHERE id = ?")
+        .run(sourceId);
+      await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+        method: "POST",
+        serviceToken: SERVICE_TOKEN,
+        body: { text: "words", lang: "en", engine: "test", duration_sec: 40 }
+      });
+      harness.database
+        .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL WHERE source_id = ?")
+        .run(sourceId);
+    }
+
+    // The first two keys are spent, which is the case a LIST of keys exists for (D35) —
+    // and every one of those attempts is another subrequest against the same ceiling.
+    let spentSoFar = 0;
+    harness.answerProviderWith(() => {
+      if (spentSoFar < 2) {
+        spentSoFar += 1;
+        return new Response(JSON.stringify({ error: { message: "quota" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return harness.geminiReplyWith({
+        summary: "read again",
+        key_points: [],
+        learn_more: [],
+        claims: [],
+        kind: "tactic",
+        items: [{ name: "a thing", does: "something" }]
+      });
+    });
+
+    const providerCallsBefore = harness.providerCalls.length;
+    const stop = counting();
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    stop();
+    const providerCallsDuringThePress = harness.providerCalls.length - providerCallsBefore;
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    // It has to have actually DONE the work, or the count below measures nothing.
+    assert.ok(response.body.done >= 1, `it read nothing: ${JSON.stringify(response.body)}`);
+    assert.ok(response.body.remaining >= 1, "the queue was too short to fill a whole press");
+
+    // Calls to a provider are subrequests too, and count against the same ceiling.
+    const spent = calls + providerCallsDuringThePress;
+    assert.ok(spent <= CEILING, `one press cost ${spent} of the ${CEILING} allowed`);
   });
 });

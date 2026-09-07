@@ -349,6 +349,7 @@ export async function loadApp(
   let held = null;
   let holdCount = 0;
   let skipLeft = 0;
+  let replies = null;
   // `failAfter` makes every request past that many fail the way a lost connection does —
   // `fetch` rejecting. Without it no error path in the app is ever executed by a test, and
   // the messages Golden Rule 29 exists to guarantee are all unproven.
@@ -358,6 +359,9 @@ export async function loadApp(
     // Decided NOW, before any waiting — a reply carries the notebook of whoever asked for
     // it, which is exactly what makes a late one dangerous.
     const answer = typeof sync === "function" ? sync(signedInAs) : sync;
+    // A test that wants to answer one particular route its own way — for a press that
+    // sends several requests and reads what comes back from each one.
+    const written = replies ? replies(String(url)) : null;
     let waitHere = null;
     if (held && skipLeft > 0) skipLeft -= 1;
     else if (held && holdCount > 0) {
@@ -370,6 +374,7 @@ export async function loadApp(
       status: 200,
       json: async () => {
         if (holdInBody && waitHere) await waitHere;
+        if (written) return written;
         if (String(url).includes("/v1/sync")) return answer;
         // The one other route that writes a whole list straight into the store from a
         // reply. It is answered per account so a test can watch one person's list of AI
@@ -435,6 +440,30 @@ export async function loadApp(
       if (!button) throw new Error(`no ${which} tab`);
       tabs.onclick({ target: button });
     },
+    /** Answers one route the test's own way. Return null to fall through to the default. */
+    answerWith(responder) {
+      replies = responder;
+    },
+
+    /** Switches the notebook to one of its views — list, topics, or a tracker. */
+    view(which) {
+      const views = document.getElementById("views");
+      const button = views.children.find((child) => child.dataset.view === which);
+      if (!button) throw new Error(`no ${which} view`);
+      views.onclick({ target: button });
+    },
+
+    /** Presses a button by the words on it, anywhere on the screen. */
+    press(words) {
+      const found = ["homeView", "clipList", "clipView", "settingsView"]
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .flatMap((root) => root.walk())
+        .find((node) => node.tag === "button" && node.textContent === words);
+      if (!found) throw new Error(`no button says "${words}"`);
+      return found.onclick();
+    },
+
     /** Signs a different account in, the way switching Google accounts does — no sign-out. */
     signInAs: signIn,
     /**

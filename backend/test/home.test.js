@@ -612,3 +612,59 @@ describe("a reel he summarised by hand", () => {
     app.restore();
   });
 });
+
+describe("a tidy that takes more than one press", () => {
+  // A press does a few folders and says how many are left; the app presses again while
+  // any are. Nothing tested the loop, so it could be reverted to a single request — a
+  // half-finished tidy reporting success — with the whole suite still green.
+  test("the app keeps pressing until nothing is left", async () => {
+    // The button only appears where folders do.
+    const app = await loadApp(
+      syncPayload({
+        topics: [
+          { id: "t1", user_id: "vish", name: "Selling", parent_id: "", created_at: 1, updated_at: 1 }
+        ],
+        clips: [
+          {
+            id: "c1",
+            user_id: "vish",
+            source_id: "s1",
+            status: "inbox",
+            topic_id: "t1",
+            topic_set_by: "ai",
+            created_at: 1,
+            updated_at: 1
+          }
+        ],
+        sources: [
+          {
+            id: "s1",
+            url_canonical: "https://instagram.com/reel/T1",
+            url_original: "https://instagram.com/reel/T1",
+            platform: "instagram",
+            state: "analyzed",
+            title: "A filed reel",
+            created_at: 1,
+            updated_at: 1
+          }
+        ]
+      }),
+      { hash: "" }
+    );
+    let presses = 0;
+    app.answerWith((url) => {
+      if (!String(url).includes("/v1/topics/tidy")) return null;
+      presses += 1;
+      return { ok: true, merged: 2, moved: 3, remaining: presses < 3 ? 5 : 0 };
+    });
+
+    app.tab("notebook");
+    app.view("topics");
+    await app.press("Tidy my folders");
+    await new Promise((done) => setTimeout(done, 0));
+
+    assert.equal(presses, 3, "it stopped before the tidy was finished");
+    assert.match(app.text("syncMsg"), /6 folders together/);
+    app.restore();
+  });
+});
