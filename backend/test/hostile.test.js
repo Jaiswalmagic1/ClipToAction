@@ -952,3 +952,198 @@ function batchOf(asked, fallback) {
   const requested = asked === null ? fallback : Number(asked);
   return Math.min(Math.max(Number.isFinite(requested) ? requested : fallback, 1), 10);
 }
+
+// ---------------------------------------------------------------- somebody else's notebook
+
+describe("a second person pressing a button in their own notebook", () => {
+  // The reading is shared (D10) and always has been. Nothing in D10 has ever said a later
+  // reader may REPLACE one that is already there — and "Read those again" did exactly
+  // that, from the home screen of anybody who had just signed up, because every analysis
+  // written before this build has no shapes version and so is offered to everyone.
+  let harness;
+  let owner;
+  let newbie;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    owner = await harness.mintToken("owner");
+    newbie = await harness.mintToken("newbie");
+
+    const url = "https://www.instagram.com/reel/BOTHOFUS/";
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token: owner,
+      body: { url }
+    });
+    sourceId = saved.body.clip.source_id;
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(sourceId);
+    await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "how to price jewellery", lang: "en", engine: "test", duration_sec: 50 }
+    });
+
+    // What his notebook holds today: read before the new tables existed.
+    harness.database
+      .prepare(
+        `INSERT INTO analyses
+           (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
+            suggested_task, topic, sub_topic, kind, items, shapes_version, created_at)
+         VALUES (?, '', 'gemini', 'old', 'His own summary of the reel.', '["his point"]',
+                 '[]', ?, 'Check my margins', 'Selling', 'Meesho', 'tactic', NULL, NULL, 1)
+         ON CONFLICT (source_id, user_id) DO UPDATE SET
+           summary = excluded.summary, claims = excluded.claims,
+           suggested_task = excluded.suggested_task, topic = excluded.topic,
+           sub_topic = excluded.sub_topic, shapes_version = NULL, items = NULL`
+      )
+      .run(
+        sourceId,
+        JSON.stringify([
+          { claim: "Meesho takes no commission", confidence: "low", why: "nothing shown" }
+        ])
+      );
+
+    // And the second person saves the same reel, and connects their own AI account.
+    await harness.call(worker, "/v1/clips", { method: "POST", token: newbie, body: { url } });
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: newbie,
+      body: { provider: "gemini", api_key: "not-a-real-key-value-at-all" }
+    });
+  });
+  after(() => {
+    harness.answerProviderWith(null);
+    harness.restore();
+  });
+
+  test("fills in the tables and changes nothing that was already there", async () => {
+    harness.answerProviderWith(() =>
+      harness.geminiReplyWith(
+        ({
+          summary: "A RAMBLING REEL ABOUT DROPSHIPPING.",
+          key_points: [],
+          learn_more: [],
+          claims: [],
+          suggested_task: null,
+          topic: "Dropshipping",
+          sub_topic: "Random",
+          kind: "tactic",
+          items: [{ name: "try a supplier", does: "cheaper stock" }]
+        })
+      )
+    );
+
+    const ownerClipBefore = harness.database
+      .prepare("SELECT topic_id FROM clips WHERE user_id = 'owner' AND source_id = ?")
+      .get(sourceId);
+
+    const run = await harness.call(worker, "/v1/kinds", { method: "POST", token: newbie });
+    assert.equal(run.status, 200, JSON.stringify(run.body));
+    assert.equal(run.body.done, 1, "it did not read anything at all");
+
+    const shared = harness.database
+      .prepare("SELECT * FROM analyses WHERE source_id = ? AND user_id = ''")
+      .get(sourceId);
+
+    assert.equal(shared.summary, "His own summary of the reel.", "his summary was replaced");
+    assert.equal(shared.suggested_task, "Check my margins", "his action was replaced");
+    assert.equal(shared.topic, "Selling", "his folder was renamed");
+    assert.equal(shared.sub_topic, "Meesho");
+    assert.equal(
+      JSON.parse(shared.claims).length,
+      1,
+      "the claim his home screen flags as doubted was deleted"
+    );
+    // And the thing the button is FOR did happen.
+    assert.ok(JSON.parse(shared.items).length, "the tables were not filled in");
+
+    const ownerClipAfter = harness.database
+      .prepare("SELECT topic_id FROM clips WHERE user_id = 'owner' AND source_id = ?")
+      .get(sourceId);
+    assert.equal(
+      ownerClipAfter.topic_id,
+      ownerClipBefore.topic_id,
+      "his clip was moved into a folder a stranger named"
+    );
+  });
+});
+
+describe("one person's dead AI account, and everybody else's reel", () => {
+  // A reel two people saved is analysed on the earliest saver's list (D10). A refusal used
+  // to stop the whole run — so one dead key over there stopped the reel dead over here,
+  // and wrote a sentence about a stranger's account onto the shared row, shown to somebody
+  // whose own key was perfectly good and was never tried.
+  let harness;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const owner = await harness.mintToken("owner");
+    const newbie = await harness.mintToken("newbie");
+    const url = "https://www.instagram.com/reel/DEADKEY/";
+
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: owner,
+      body: { provider: "gemini", api_key: "the-owners-dead-key-value" }
+    });
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: newbie,
+      body: { provider: "gemini", api_key: "the-newbies-good-key-value" }
+    });
+
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token: owner,
+      body: { url }
+    });
+    sourceId = saved.body.clip.source_id;
+    await harness.call(worker, "/v1/clips", { method: "POST", token: newbie, body: { url } });
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(sourceId);
+  });
+  after(() => {
+    harness.answerProviderWith(null);
+    harness.restore();
+  });
+
+  test("the next person's account is tried, and the reel is read", async () => {
+    let call = 0;
+    harness.answerProviderWith(() => {
+      call += 1;
+      // The first list belongs to the owner, whose key has been revoked.
+      if (call === 1) {
+        return new Response(JSON.stringify({ error: { message: "unrecognised" } }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return harness.geminiReplyWith({
+        summary: "It was read on the account that still works.",
+        key_points: [],
+        learn_more: [],
+        claims: []
+      });
+    });
+
+    const posted = await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
+    });
+    assert.equal(posted.body.analyzed, true, `it stopped at the first dead key: ${JSON.stringify(posted.body)}`);
+    assert.equal(call, 2, "the second person's account was never tried");
+
+    const row = harness.database
+      .prepare("SELECT summary FROM analyses WHERE source_id = ? AND user_id = ''")
+      .get(sourceId);
+    assert.ok(row.summary.includes("still works"));
+
+    // And the dead key is marked, for the person who owns it.
+    const dead = harness.database
+      .prepare("SELECT state FROM ai_keys WHERE user_id = 'owner'")
+      .get();
+    assert.equal(dead.state, "rejected", "the owner is never told their key is dead");
+  });
+});

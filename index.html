@@ -1018,10 +1018,47 @@ const unsortedClips = () =>
   store.clips.filter((clip) =>
     !clip.deleted_at && !clip.topic_id && !clip.topic_set_by && analysisOf(clip)?.summary);
 
+/**
+ * "Saving reels does not, on its own, produce anything."
+ *
+ * Nothing anywhere told a new person that: they sign in, share a reel, see it accepted,
+ * and quietly get no summary. `ai_provider` is null only until they choose for the first
+ * time, so this appears exactly once in a notebook's life.
+ *
+ * It is drawn on HOME as well as the notebook, and that was the gap. Home is the tab that
+ * opens (D43), so the one screen a new person actually looks at was the one screen that
+ * never told them. On Home it arrived only after the machine had run and left a reel
+ * "written down, never summarised" — which can be hours, or a day if that machine is off.
+ */
+function setupNudge() {
+  if (!store.settings || store.settings.ai_provider) return null;
+  const prompt = document.createElement("div");
+  prompt.className = "notice warn";
+  prompt.append(document.createTextNode(
+    "Your reels are being saved, but nothing is being summarised yet — that needs one "
+    + "setup step. It takes a minute, and there is a free way that needs no account. "
+  ));
+  const link = document.createElement("a");
+  link.href = "#/settings";
+  link.textContent = "Set it up";
+  prompt.append(link);
+  return prompt;
+}
+
 /** What the user should see about a clip while it is still being worked on (GR29). */
 function progressOf(clip) {
   const source = sourceOf(clip);
   if (!source) return { text: "Just saved", kind: "wait" };
+
+  // A summary he pasted in himself IS a summary. `sources.state` only reaches 'analyzed'
+  // when the worker read the reel — rightly, because a paste must not make the shared row
+  // claim work nobody did (D18) — but every screen read that state as "does this clip have
+  // a summary". So a reel summarised by hand said "written down, no summary yet" directly
+  // above its own summary, and stayed on the attention list for ever. For anybody on the
+  // copy-and-paste tier, which this product supports on purpose (D9), that is every reel
+  // they own.
+  if (analysisOf(clip)?.summary) return { text: "Ready", kind: "good" };
+
   if (source.error) return { text: source.error, kind: "bad" };
   switch (source.state) {
     case "pending": return { text: "Waiting to be picked up", kind: "wait" };
@@ -1109,8 +1146,13 @@ function longVideoNotice(clip) {
   list.className = "plain";
   const lines = [
     `It runs for ${spellOutMinutes(cost.minutes)}.`,
-    `Your PC will be busy with it for roughly ${spellOutMinutes(cost.pcMinutes)}, and `
-      + "anything else you share while it works waits behind it — it does one video at a time.",
+    // Not "your PC". The machine belongs to whoever runs this, and everything anybody
+    // shares queues behind a long video — so approving one is a decision about a shared
+    // thing, and the sentence has to say so or it is asking for a commitment it has
+    // described as somebody else's.
+    `The machine that fetches reels will be busy with it for roughly `
+      + `${spellOutMinutes(cost.pcMinutes)}, and everything anyone shares while it works `
+      + "waits behind it — it does one video at a time.",
     `Reading it uses about ${cost.timesAReel} times as much of your AI account as a normal `
       + "reel does, so it can spend a whole day of one key's free allowance."
   ];
@@ -1342,22 +1384,30 @@ function workerNotice() {
 
   if (!state) {
     notice.className = "notice";
-    notice.textContent = "Checking whether the PC that handles your reels is running…";
+    notice.textContent = "Checking whether the machine that handles reels is running…";
     return notice;
   }
 
   if (state.running) {
     notice.className = "notice ok";
-    notice.textContent = "The PC that downloads and writes up your reels is running"
+    notice.textContent = "The machine that fetches reels and writes them down is running"
       + ` — last checked ${agoText(state.last_seen_at)}. New reels will be picked up within a minute.`;
     return notice;
   }
 
   notice.className = "notice warn";
+  // ONE machine, and it is not the reader's.
+  //
+  // Every reel anybody saves is fetched by a single computer, and these lines told each
+  // reader it was theirs: "switch that PC on" is an instruction a second person cannot
+  // follow, and the only thing they could actually do about a stopped queue is wait.
+  // Saying whose it is would be worse — nobody needs a stranger's household in a status
+  // line — so it says what it is, and what happens next, which is all a reader can use.
   notice.textContent = state.last_seen_at
-    ? `The PC that downloads and writes up your reels is off — last running ${agoText(state.last_seen_at)}.`
-      + " Anything you save is safe and waiting; switch that PC on and it will catch up on its own."
-    : "The PC that downloads and writes up your reels has not run yet."
+    ? "The machine that fetches reels and writes them down is off — last running "
+      + `${agoText(state.last_seen_at)}. Anything you save is safe and waiting, and it will `
+      + "catch up on its own when that machine is back."
+    : "The machine that fetches reels and writes them down has not run yet."
       + " Anything you save is safe and waits until it does.";
   return notice;
 }
@@ -1641,22 +1691,8 @@ function renderList() {
     $("clipList").append(ask);
   }
 
-  // Nothing anywhere told a new person that saving reels does not, on its own, produce
-  // anything. They sign in, share a reel, see it accepted, and quietly get no summary.
-  // `ai_provider` is null only until they choose for the first time.
-  if (store.settings && !store.settings.ai_provider) {
-    const prompt = document.createElement("div");
-    prompt.className = "notice warn";
-    prompt.append(document.createTextNode(
-      "Your reels are being saved, but nothing is being summarised yet — that needs one "
-      + "setup step. It takes a minute, and there is a free way that needs no account. "
-    ));
-    const link = document.createElement("a");
-    link.href = "#/settings";
-    link.textContent = "Set it up";
-    prompt.append(link);
-    $("clipList").append(prompt);
-  }
+  const nudge = setupNudge();
+  if (nudge) $("clipList").append(nudge);
 
   // The clips summarised before topics existed. Offered here rather than in Settings
   // because this is where a person notices some cards have a topic and some do not.
@@ -3214,6 +3250,8 @@ const seenKey = () => `cliptoaction-home-last-seen-${user ? user.uid : "none"}`;
  * obvious way to build this and is useless.
  */
 let seenBefore = null;
+// Whether this device has ever remembered a visit. A date it made up is worse than none.
+let firstEverVisit = false;
 
 function markHomeSeen() {
   if (seenBefore !== null) return;
@@ -3224,8 +3262,14 @@ function markHomeSeen() {
     seenBefore = 0;
   }
   // Nothing remembered: a first visit, a new device, or storage that was cleared. A week
-  // is the honest answer to "since you last looked" when nobody knows.
-  if (!seenBefore) seenBefore = Date.now() - 7 * DAY;
+  // is the honest answer to "since you last looked" when nobody knows — but a date is not.
+  // On a brand-new account it printed a day before that person existed, which is the first
+  // sentence the product says to them and it is untrue. firstEverVisit says to leave the
+  // date off rather than invent one.
+  if (!seenBefore) {
+    seenBefore = Date.now() - 7 * DAY;
+    firstEverVisit = true;
+  }
 }
 
 function section(title, note) {
@@ -3557,8 +3601,16 @@ function attentionSection() {
   // Not the ones that already appear above under "could not be read": an analysis that
   // failed leaves the state at 'transcribed' AND writes an error, so without this the same
   // reel is listed twice, once as broken and once as merely waiting.
+  //
+  // And a reel he summarised BY HAND is not unsummarised. The shared state stays at
+  // 'transcribed' for a paste on purpose (D18), so without this every reel somebody on the
+  // copy-and-paste tier owns sat here for ever, being asked for the thing they had just
+  // done. See progressOf.
   const unsummarised = live.filter(
-    (clip) => sourceOf(clip)?.state === "transcribed" && !sourceOf(clip)?.error
+    (clip) =>
+      sourceOf(clip)?.state === "transcribed"
+      && !sourceOf(clip)?.error
+      && !analysisOf(clip)?.summary
   );
   if (unsummarised.length) {
     anything = true;
@@ -3612,7 +3664,9 @@ function attentionSection() {
 function newSection() {
   const panel = section(
     "What's new since you last looked",
-    whenText(seenBefore) ? `Since ${whenText(seenBefore).toLowerCase()}.` : ""
+    firstEverVisit || !whenText(seenBefore)
+      ? ""
+      : `Since ${whenText(seenBefore).toLowerCase()}.`
   );
 
   const live = store.clips.filter((clip) => !clip.deleted_at);
@@ -3694,7 +3748,7 @@ function renderHome() {
     host.append(wrap);
   }
 
-  host.append(actOnSection(), learningSection(), attentionSection(), newSection());
+  host.append(setupNudge(), actOnSection(), learningSection(), attentionSection(), newSection());
 
   const last = latestRelook();
   if (last) host.append(relookPanel(last));
@@ -4418,6 +4472,7 @@ onAuthStateChanged(auth, async (account) => {
   // last looked — and "what's new" was computed against somebody else's clock for the rest
   // of the session.
   seenBefore = null;
+  firstEverVisit = false;
   // Everything else that is about looking at ONE person's notebook. A search still typed
   // in the box, a filter, a view and a sort order all carried over into the next account
   // and quietly showed it the wrong slice of itself.

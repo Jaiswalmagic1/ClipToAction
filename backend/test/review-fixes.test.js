@@ -719,14 +719,21 @@ describe("re-reading a reel never takes away what the first reading found", () =
     assert.deepEqual(JSON.parse(row.sections), CHAPTERS, "the chapters were wiped");
     assert.equal(row.topic, "Pricing", "the folder was wiped");
     assert.equal(row.sub_topic, "Margins");
-    // The action is NOT kept, and that is the other half of the rule. A re-read asks the
-    // same full question, so a reading that names no action is saying there is none —
-    // keeping the old one means the notebook goes on telling him to raise a price about a
-    // video that no longer suggests it.
-    assert.equal(row.suggested_task, null, "a stale action outlived the reading that dropped it");
-    // And what the re-read DID find is in.
-    assert.ok(row.summary.includes("second reading"));
+
+    // NOTHING that was already written changes. This row is SHARED: everyone who saved the
+    // reel reads it, and the button sits on the home screen of every one of them from
+    // their first day. A second person pressing it replaced the first person's summary
+    // with their own, deleted the claim his home screen had flagged as doubted, renamed
+    // his folder and moved his clip into it — up to two hundred and forty of his reels in
+    // one press, on the stranger's own AI account. The button fills in the new tables.
+    // That is all it may do.
+    assert.equal(row.suggested_task, "Raise the price", "his action was overwritten");
+    assert.equal(row.summary, "The first reading.", "his summary was overwritten");
+    assert.equal(row.provider, "gemini");
+
+    // And what the re-read was FOR is in.
     assert.ok(JSON.parse(row.items).length, "the rows it was re-read FOR were not stored");
+    assert.equal(Math.abs(row.shapes_version), 2, "it would be offered for re-reading again");
     harness.answerProviderWith(null);
   });
 });

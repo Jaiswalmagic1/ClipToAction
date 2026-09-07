@@ -1042,10 +1042,22 @@ async function storeTranscript(request, env, sourceId) {
     // knowing what went wrong next time and guessing at it (Golden Rule 1).
     const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
     const detail = error instanceof AnalysisError ? error.detail : null;
+
+    // A failure of somebody's AI account is not a fact about the reel, and this row is read
+    // by everyone who saved it. "The connected AI key was rejected" is a sentence about one
+    // person's account, shown to people whose own accounts are fine — and it tells them to
+    // go and look at a key that has nothing wrong with it. What every reader can act on is
+    // the same thing: press the button that reads it on their own account.
+    //
+    // The specific reason is not lost: it is written against the key that gave it, on its
+    // owner's settings screen, and the fixed code is in error_detail here.
+    const sharedReason = /AI key|AI keys/i.test(reason)
+      ? "no AI account has been able to read this one yet — open it and press Summarise it now"
+      : reason;
     await env.DB.prepare(
       `UPDATE sources SET error = ?1, error_detail = ?2, updated_at = ?3 WHERE id = ?4`
     )
-      .bind(`Analysis failed: ${reason}`, detail, now(), sourceId)
+      .bind(`Analysis failed: ${sharedReason}`, detail, now(), sourceId)
       .run();
     return json(env, { ok: true, analyzed: false, analysis_error: reason, detail });
   }
@@ -1148,7 +1160,27 @@ export function validateAnalysis(payload, durationSec = 0) {
  * paste is stored against that user so it can never overwrite what others read.
  * Returns an array of problems; empty means it was stored.
  */
-async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, durationSec = 0) {
+async function storeAnalysis(
+  env,
+  sourceId,
+  ownerId,
+  payload,
+  provider,
+  model,
+  durationSec = 0,
+  // "Fill in what is missing, and change nothing that is already there."
+  //
+  // Set only by "Read those again" (D39), and it exists because that button writes to the
+  // SHARED row — the one every other person who saved that reel reads. Without it, a
+  // second person pressing it on their own first day replaced HIS summary with theirs,
+  // deleted the claim his home screen had flagged as doubted, renamed his folder and moved
+  // his clip into it. Sixty passes of four reels is up to two hundred and forty of his
+  // reels rewritten by a stranger, on the stranger's own AI account, in one press.
+  //
+  // D10 shares the reading. It has never said a later reader may replace one that is
+  // already there.
+  fillingIn = false
+) {
   const problems = validateAnalysis(payload, durationSec);
   if (problems.length) return problems;
 
@@ -1200,8 +1232,15 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
           created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
-         provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
-         claims = ?8, kind = ?13, shapes_version = ?15, created_at = ?16,
+         -- ?17 is "filling in": every narrative column below keeps what it has.
+         provider = CASE WHEN ?17 THEN provider ELSE ?3 END,
+         model = CASE WHEN ?17 THEN model ELSE ?4 END,
+         summary = CASE WHEN ?17 THEN summary ELSE ?5 END,
+         key_points = CASE WHEN ?17 THEN key_points ELSE ?6 END,
+         learn_more = CASE WHEN ?17 THEN learn_more ELSE ?7 END,
+         claims = CASE WHEN ?17 THEN claims ELSE ?8 END,
+         created_at = CASE WHEN ?17 THEN created_at ELSE ?16 END,
+         kind = ?13, shapes_version = ?15,
          -- What a second reading may take away, and what it may not.
          --
          -- Every field here is OPTIONAL in a reply on purpose: validateAnalysis lets a
@@ -1224,11 +1263,12 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
          --   suggested_task — replaced. A complete reading that names no action is saying
          --     there is none, and a stale one keeps telling him to do something about a
          --     video that no longer suggests it.
-         suggested_task = ?9,
+         suggested_task = CASE WHEN ?17 THEN suggested_task ELSE ?9 END,
          --   topic and sub_topic — a PAIR. A new topic brings its own sub-topic, null and
          --     all; no new topic leaves both alone. They are never crossed.
-         topic = COALESCE(?10, topic),
-         sub_topic = CASE WHEN ?10 IS NULL THEN sub_topic ELSE ?11 END,
+         topic = CASE WHEN ?17 THEN topic ELSE COALESCE(?10, topic) END,
+         sub_topic = CASE
+           WHEN ?17 OR ?10 IS NULL THEN sub_topic ELSE ?11 END,
          --   sections — never destroyed. Only a LONG video is asked for chapters, they
          --     cost hours of his PC, and nothing anywhere re-derives them.
          sections = COALESCE(?12, sections),
@@ -1265,7 +1305,8 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
       // sign says "asked, and what came back was not usable", so it is distinguishable in
       // the database and comes round again by itself the next time the shapes change.
       replyWasMangled ? -ITEM_SHAPES_VERSION : ITEM_SHAPES_VERSION,
-      timestamp
+      timestamp,
+      fillingIn ? 1 : 0
     )
   ];
 
@@ -1288,6 +1329,12 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   // sort — a visible home for the failure (Golden Rule 29). Letting it throw instead would
   // reach storeTranscript's catch and mark a reel that analysed perfectly well as failed,
   // for everyone who saved it.
+  // Filing moves clips between folders, and a fill-in must not move anybody's. The
+  // reel already has a topic — that is why this row exists — and the person who pressed
+  // the button asked for the new tables, not for their notebook to be rearranged, still
+  // less for somebody else's to be.
+  if (fillingIn) return [];
+
   const proposed = { topic: payload.topic, sub_topic: payload.sub_topic };
   try {
     if (ownerId === SHARED) {
@@ -2192,7 +2239,10 @@ async function fillInKinds(request, env, userId) {
         analysis.payload,
         analysis.provider,
         analysis.model,
-        row.duration_sec
+        row.duration_sec,
+        // Fill in what is missing; change nothing that is already there. This row is read
+        // by everyone who saved the reel — see storeAnalysis.
+        true
       );
       if (problems.length) throw new AnalysisError(...malformed(problems));
       done += 1;

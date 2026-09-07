@@ -737,7 +737,13 @@ async function spendKeys(env, candidates, attempt) {
   if (!candidates.length) return null;
 
   let exhausted = 0;
+  // Whose list has already refused, and the first refusal, which is what gets reported if
+  // nobody's keys work at all.
+  const givenUp = new Set();
+  let firstRefusal = null;
+
   for (const key of candidates) {
+    if (givenUp.has(key.user_id)) continue;
     try {
       const value = await attempt(key);
       await markKeyWorked(env, key.id);
@@ -748,9 +754,32 @@ async function spendKeys(env, candidates, attempt) {
       if (category !== "other") {
         await markKeyFailed(env, key.id, category, error.publicReason, error.detail);
       }
-      if (category !== "exhausted") throw error;
-      exhausted += 1;
+      if (category === "exhausted") {
+        exhausted += 1;
+        continue;
+      }
+
+      // D35 stops on anything that is not a spent allowance, and that is right INSIDE one
+      // person's list: a key that was refused is a thing its owner has to see and fix, and
+      // quietly running down their other keys hides it.
+      //
+      // It was wrong ACROSS people. A reel two people saved is analysed on the earliest
+      // saver's list (D10), so one dead key over there stopped the reel dead over here —
+      // and wrote "the connected AI key was rejected" onto the shared row, which is a
+      // sentence about a stranger's account shown to somebody whose own key is perfectly
+      // good and was never tried.
+      //
+      // So the refusal ends that person's list and no more. The next saver's list is a
+      // different account with a different answer.
+      firstRefusal = firstRefusal || error;
+      givenUp.add(key.user_id);
     }
+  }
+
+  if (firstRefusal) {
+    // Nobody's keys worked. If some were merely spent, that is the more useful thing to
+    // say — but the refusal is what stopped it, so it is what is reported.
+    throw firstRefusal;
   }
 
   // Every key was spent. This is its own message rather than the last key's, because

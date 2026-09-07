@@ -519,3 +519,96 @@ function behindAnalysis() {
     created_at: 1
   };
 }
+
+describe("the first five minutes, for somebody who is not him", () => {
+  test("Home says what to do first, on the tab that opens", async () => {
+    // Home is the tab that opens (D43). The nudge that explains a notebook only summarises
+    // once one setup step is done lived on the notebook tab alone, so the one screen a new
+    // person looks at was the one screen that never told them — until the machine had run
+    // and left a reel "written down, never summarised", which can be a day if it is off.
+    const app = await loadApp(
+      syncPayload({ settings: { ai_provider: null, has_key: false } })
+    );
+    const home = app.text("homeView");
+    assert.match(home, /nothing is being summarised yet/);
+    assert.match(home, /Set it up/);
+    app.restore();
+  });
+
+  test("and stops saying so once it is set up", async () => {
+    const app = await loadApp(
+      syncPayload({ settings: { ai_provider: "manual", has_key: false } })
+    );
+    assert.ok(!app.text("homeView").includes("nothing is being summarised yet"));
+    app.restore();
+  });
+
+  test("a first visit does not invent a date it cannot know", async () => {
+    // It printed a day before that person existed, which is the first sentence the product
+    // says to them.
+    const app = await loadApp(syncPayload({}));
+    const home = app.text("homeView");
+    assert.ok(!/^.*Since \d/m.test(home), `it made a date up: ${home.slice(0, 200)}`);
+    assert.ok(!home.includes("Since "), "it made a date up");
+    app.restore();
+  });
+});
+
+describe("a reel he summarised by hand", () => {
+  // The shared state stays at 'transcribed' for a paste on purpose (D18), and every screen
+  // was reading that state as "does this clip have a summary". So a hand-summarised reel
+  // said "no summary yet" directly above its own summary and stayed on the attention list
+  // for ever — which, for anybody on the copy-and-paste tier (D9), is every reel they own.
+  test("is not asked for a summary it already has", async () => {
+    const clip = {
+      id: "hand",
+      user_id: "vish",
+      source_id: "src-hand",
+      status: "inbox",
+      created_at: 1,
+      updated_at: 1
+    };
+    const app = await loadApp(
+      syncPayload({
+        settings: { ai_provider: "manual", has_key: false },
+        clips: [clip],
+        sources: [
+          {
+            id: "src-hand",
+            url_canonical: "https://instagram.com/reel/HAND",
+            url_original: "https://instagram.com/reel/HAND",
+            platform: "instagram",
+            state: "transcribed",
+            title: "Jhumka sourcing",
+            created_at: 1,
+            updated_at: 1
+          }
+        ],
+        analyses: [
+          {
+            source_id: "src-hand",
+            user_id: "vish",
+            provider: "manual",
+            summary: "Where to source jhumkas cheaply.",
+            key_points: "[]",
+            learn_more: "[]",
+            claims: "[]",
+            created_at: 1
+          }
+        ]
+      })
+    );
+
+    const home = app.text("homeView");
+    assert.ok(
+      !home.includes("Written down, never summarised"),
+      "it asked him to summarise the reel he had just summarised"
+    );
+
+    app.tab("notebook");
+    const card = app.text("clipList");
+    assert.ok(card.includes("Where to source jhumkas cheaply."), "the summary is not shown");
+    assert.ok(!card.includes("no summary yet"), "the card denies the summary printed below it");
+    app.restore();
+  });
+});

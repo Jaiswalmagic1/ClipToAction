@@ -3239,3 +3239,120 @@ fix is taken out.
 find, because they are not defects in the code — they are the code being right about the
 wrong size of world. And the regression half found eight of round twelve's, which is now
 four rounds in a row where every regression finding belonged to its predecessor.
+
+---
+
+### D60 — Round fourteen: somebody who is not him
+**Date:** 2026-09-07
+**Amends:** D9, D18, D35, D39, D43.
+
+Thirteen rounds looked at this as HIS notebook. This one asked what happens when a second
+person signs up — and found that a stranger's first press could rewrite his.
+
+#### Their "Read those again" was rewriting his notebook
+
+`fillInKinds` queues *their* clips and writes the **shared** analysis row. Every narrative
+column was replaced unconditionally, and the topic that came back re-filed every saver's
+clip. Reproduced against the real Worker with two accounts on one reel:
+
+| His row, before | After a second person pressed the button |
+|---|---|
+| his own summary | theirs |
+| a claim marked low-confidence — the thing Home's "doubted, and not checked" exists to surface | **deleted** |
+| "Check my margins" | gone |
+| filed under Selling › Meesho | moved to Dropshipping › Random, two folders he never made |
+
+It needs no ill will and no unusual setup. Every analysis written before this build has no
+shapes version, so the offer appears on the home screen of anybody who signs up, on day one,
+and the app loops sixty passes of four: **up to two hundred and forty of his reels rewritten
+in one press, paid for on the stranger's own AI account.**
+
+The guard that WAS built — `items IS NULL`, so a reel that already has rows is left alone —
+protects his tracker decisions and works across accounts. The same reasoning was never
+extended to his summary, his claims or his filing.
+
+**D10 shares the reading. It has never said a later reader may replace one that is already
+there.** So the button now fills in what is missing and changes nothing that is present:
+`kind`, `items`, `sections` and the version, and not one word of anybody's summary. It does
+no filing at all — the reel already has a topic, and the person pressing asked for the new
+tables, not for a notebook to be rearranged, still less somebody else's.
+
+#### The tier this product supports on purpose read as permanently broken
+
+A pasted analysis deliberately leaves `sources.state` at `transcribed` (D18: a paste must
+not make the shared row claim work nobody did). But every screen was reading that state as
+"does this clip have a summary". So a reel summarised by hand said **"Written down — no
+summary yet"** on the card, directly above its own summary, and sat on Home's attention list
+for ever, being asked for the thing that had just been done. For somebody who never connects
+an AI account — the tier D9 exists for — that is every reel they own. Both screens now ask
+whether there is an analysis, which is the actual question.
+
+#### One person's dead key stopped everybody's reel, and blamed them for it
+
+A reel two people saved is read on the earliest saver's list (D10). D35 says anything that
+is not a spent allowance stops the run — right *inside* one person's list, where a refused
+key is something its owner must see and fix. Wrong *across* people: one dead key over there
+stopped the reel dead over here, with a working key never tried, and wrote **"the connected
+AI key was rejected"** onto the shared row — a sentence about a stranger's account, shown to
+somebody whose own key is fine, sending them to look at a key with nothing wrong with it.
+
+A refusal now ends that person's list and no more. And the shared row says what every reader
+can act on — "no AI account has been able to read this one yet — open it and press Summarise
+it now" — while the specific reason stays where it belongs, against the key, on its owner's
+settings screen.
+
+#### Smaller, and all on the first screen a stranger sees
+
+- **Home never carried the setup nudge the notebook did.** Home is the tab that opens (D43),
+  so the one screen a new person looks at was the one screen that never said a notebook
+  summarises nothing until one setup step is done. It arrived eventually — after the machine
+  had run and left a reel "written down, never summarised", which can be a day if that
+  machine is off.
+- **The first thing the product said to them was a date before they existed.** With nothing
+  remembered, "since you last looked" fell back to a week ago and printed it. A week is an
+  honest answer to the question; a date is not. It leaves the date off now.
+- **Every message about the machine called it theirs.** "Switch that PC on" is an instruction
+  a second person cannot follow, and the long-video warning said "your PC will be busy" at
+  the exact moment it asks them to commit somebody else's machine for hours and stall the
+  queue for everyone. It says what the machine is and what happens next, which is all any
+  reader can use — and the long-video warning now says plainly that everything anyone shares
+  waits behind it.
+
+#### What was already right, and is worth saying
+
+Empty states on every screen, each with its own sentence — no blank panels, no "0 videos".
+The copy-and-paste path works end to end: the prompt is complete, a garbage paste is refused
+in words, a good paste stores rows and files topics and touches nobody else's row. Every clip
+state has an honest message and a way forward. `canSpend()` already turns the two spending
+offers into a setting for somebody with no key. Notes, learnings, topics, tracker decisions
+and pasted analyses are all scoped and none of them cross. Whose key pays is exactly what
+D35 says it is.
+
+#### Written down, and NOT built — these are his to decide before publishing
+
+- **There is no way for anybody to delete anything, or to leave.** No DELETE on a clip, no
+  account route, no export. `clips.deleted_at` exists and is only ever set back to NULL.
+  `DECISIONS.md` records retention as open, which reads as "no expiry is set" — the truth is
+  that nothing can be removed at all. For a published product taking Google identity from
+  Indian users that is the DPDP erasure right with no implementation, and there is still no
+  privacy policy or terms anywhere in the app.
+- **Sign-up is open to anyone with a Google account.** No invite, no allowlist, no way to
+  remove a user, and one global FIFO download queue on his own machine and broadband: one
+  person's two hundred saves sit in front of every reel of his that day.
+- **The app points at staging**, whose database holds his real notebook. Every stranger's
+  rows would share his free allowance (D5, and see D59's measurements).
+
+None of these is a defect in the code; each is a decision that has to be taken before the
+thing is public, and none of them is a decision to take in a review round.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Thirteen | 139 | 49 |
+| Fourteen (the second person) | 7 | 0 |
+
+**A hundred and forty-six.** The second-person round created nothing of its own, because it
+was the first look from outside his own account — the same lesson as round eleven's first
+look at his PC: the rounds that change WHERE they stand find things the rounds that change
+how hard they look cannot.
