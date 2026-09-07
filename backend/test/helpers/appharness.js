@@ -91,9 +91,21 @@ class FakeNode {
 
   append(...nodes) {
     for (const node of nodes) {
-      if (node === null || node === undefined) continue;
-      node.parentNode = this;
-      this.children.push(node);
+      // A real `append` does NOT skip a null. `ParentNode.append` converts anything that
+      // is not a node to a string and inserts a text node — so `append(maybeNothing())`
+      // puts the literal word "null" on the page. This harness quietly skipped them, and
+      // that is exactly how the word "null" reached his home screen with 543 tests green.
+      //
+      // Being kinder than the browser is the one thing a stand-in must never be.
+      if (node && typeof node === "object") {
+        node.parentNode = this;
+        this.children.push(node);
+        continue;
+      }
+      const text = new FakeNode("#text");
+      text.textContent = String(node);
+      text.parentNode = this;
+      this.children.push(text);
     }
   }
 

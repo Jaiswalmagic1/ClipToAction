@@ -3534,3 +3534,90 @@ carries its length like the row above it.
 hard it looked, and another that created nothing of its own. Two of its twenty were defects
 this log had already recorded as fixed — fixed in one file and not in the other place that
 says the same thing.
+
+---
+
+### D63 — Round fifteen's regression half: the word "null" on his home screen
+**Date:** 2026-09-07
+**Amends:** D41, D59, D60, D61, D62.
+
+The regression reviewer re-read the last two commits and found nine things, every one of
+them made by those commits. Two were bad enough to be worth the whole round.
+
+#### The literal word **null** was drawn on his home screen
+
+`index.html` — `host.append(setupNudge(), actOnSection(), …)`. `setupNudge()` returns
+nothing once an AI account is connected, and **`append` does not skip a null**: it converts
+whatever it is given to a string and inserts a text node. So the bare word `null` sat
+between the machine-status line and "What I should act on", on every draw, for everyone who
+had finished setting up — and momentarily on every open before settings arrive, and
+permanently on any offline open.
+
+**Why 543 tests were green over it:** the app harness's `append()` began
+`if (node === null || node === undefined) continue;`. The stand-in was kinder than the
+browser, which is the one thing a stand-in must never be. It now inserts a text node for
+anything that is not a node, exactly as a browser does — and that alone still failed nothing,
+because no test read Home's text. There is one now, and it checks for `null`, `undefined`,
+`[object Object]` and `NaN` across three states.
+
+#### The fortnightly look-back was dead on every device that had ever synced
+
+D61 saved the cost of the count by computing the whole block only on a cold sync. But the
+app only sends `since=0` when it has no cache — so a returning phone never got the answer
+again, and the app keeps what it is not sent. The banner never appeared, never cleared after
+a look-back, and **the settings dropdown snapped back to the old value every time he changed
+it**: the PUT stored 30, the next refresh carried no answer, and the screen redrew from a
+day-one cache.
+
+The answer is sent on **every** sync now. What is skipped is only the expensive half — the
+count — and only where nothing it could return changes anything: the offer switched off, or
+the gap since the last one not yet passed. Cheap and wrong is worse than either.
+
+#### The tidy call budget still went over fifty
+
+Two holes, both measured: a clashing sub-folder costs three statements and was charged two,
+and the budget was checked only BETWEEN top-level folders — so once a folder was entered its
+whole cost landed however many children it had. 56, 60 and 85 calls against a ceiling of 50.
+
+A clash is not an exotic shape: merging "AI" and "AI tools", both of which have a "prompts"
+child, is the exact job the button exists for. The budget is charged accurately and checked
+inside the child loop now; a folder left half-done keeps its remaining children and the next
+press finishes it. The new test builds folders whose children **all** clash — the previous
+one gave them different names, so no clash ever happened and it could not see this.
+
+#### An outage spent everybody's allowance
+
+D60 let a rejected key end only its owner's list so the next saver's account is still tried —
+right, and it works. But the rewrite also swept in the category that means *nothing to do
+with the key*: a provider being down, or answering with prose instead of JSON. That fails
+identically on every account there is, so every further attempt is guaranteed waste, charged
+to people whose key was never at fault and who pressed nothing. **Two calls became eight at
+four savers**, and on a three-hour video each is a full-transcript prompt.
+
+It stops there again. Three comment blocks that still described the old rule now describe
+the real one.
+
+#### Two more, measured
+
+- **`MAX_SORT_PER_REQUEST` back to 4.** It was cut to 3 on a measurement that the same
+  commit had already invalidated — the fix stopping a re-read from rewriting other people's
+  notebooks removed the filing pass, which was most of the cost. Measured now: 21 calls at
+  three, 26 at four, 46 at eight. Four halves the number of presses and stays well inside
+  fifty.
+- **The backfill read every waiting transcript to use four.** Up to 400,000 characters each
+  (D42), a hundred waiting, several megabytes through a 128MB Worker on every press, all but
+  four thrown away unread. It reads the batch and counts the rest — measured at exactly four
+  transcripts' worth, and it read three times that before.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Fourteen | 155 | 58 |
+| Fifteen (does it tell the truth) | 20 | 0 |
+| Fifteen (regression) | 9 | 9 |
+
+**A hundred and eighty-four.** Six rounds running, the regression half has found only its
+predecessor's faults. This one is the sharpest argument yet for the loop: the word "null" was
+on the home screen of a build that had passed fourteen review rounds and 543 tests, and it
+was there because a test double was gentler than the real thing.

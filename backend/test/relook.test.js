@@ -298,8 +298,44 @@ describe("looking back over a notebook", () => {
     });
 
     const delta = await harness.call(worker, "/v1/sync?since=0", { token });
-    assert.equal(delta.body.relook.due, 1);
     assert.equal(delta.body.relook.ready, false, "one saved today has not been waiting");
+    // And no count while the gap since the last look-back has not passed. Counting means
+    // walking the whole clip list with two lookups each, on every refresh, to answer a
+    // question that cannot change until the gap is up — and a number on the settings
+    // screen saying videos are "waiting for one" while none is being offered is the same
+    // contradiction the dropdown had when the feature was switched off entirely.
+    assert.equal(delta.body.relook.due, 0, "it counted while nothing could be offered");
+  });
+
+  test("and the count comes back the moment the gap has passed", async () => {
+    const aMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    harness.database.prepare("UPDATE users SET relooked_at = ? WHERE id = 'vish'").run(aMonthAgo);
+
+    const delta = await harness.call(worker, "/v1/sync?since=0", { token });
+    assert.ok(delta.body.relook.due >= 1, "the offer never comes back");
+  });
+
+  test("and it is answered on a BACKGROUND refresh too, not only a cold one", async () => {
+    // The app keeps what it is not sent. Leaving the answer out of a delta left a stale one
+    // standing for ever on any device with a cache — which is every device after its first
+    // open — so the banner never appeared, never cleared after a look-back, and the
+    // settings dropdown snapped back to the old value every time he changed it.
+    const delta = await harness.call(worker, `/v1/sync?since=${Date.now()}`, { token });
+    assert.ok(delta.body.relook, "a background refresh carries no answer at all");
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(delta.body.relook, "every_days"),
+      "the gap he chose is not in it"
+    );
+  });
+
+  test("a gap he has just chosen comes straight back on the next refresh", async () => {
+    await harness.call(worker, "/v1/relook/every", {
+      method: "PUT",
+      token,
+      body: { days: 30 }
+    });
+    const delta = await harness.call(worker, `/v1/sync?since=${Date.now()}`, { token });
+    assert.equal(delta.body.relook.every_days, 30, "the screen would snap back to the old one");
   });
 
   test("a reply of strings marks nothing — sixty reels are not spent on empty headings", async () => {

@@ -3,7 +3,9 @@
 // One key became a list because a free allowance runs out. The rules are deliberately
 // narrow, and the narrowness is the feature:
 //
-//   * Only a spent allowance moves to the next key. Every other refusal stops, with the
+//   * Only a spent allowance moves to the next key of the same owner. A REJECTED key ends
+//     that owner's list but the next saver's list is still tried (D60). Every other
+//     refusal stops outright, with the
 //     reason recorded against the key that gave it. A key that has gone bad has to be
 //     visible, and a rotation that quietly stepped past it would hide it for ever.
 //   * Whose keys, and in what order, is unchanged from D10 — the first person to save the

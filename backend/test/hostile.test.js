@@ -1105,6 +1105,46 @@ describe("one person's dead AI account, and everybody else's reel", () => {
     harness.restore();
   });
 
+  test("but an outage stops there, rather than spending everybody's allowance", async () => {
+    // A provider being down, or answering with prose instead of JSON, is nothing to do with
+    // anybody's key: it fails the same way on every account there is. Trying the next
+    // person's is guaranteed waste, charged to somebody whose key was never at fault and
+    // who pressed nothing — two calls became eight across four savers, and on a three-hour
+    // video each of those is a full-transcript prompt.
+    let calls = 0;
+    harness.answerProviderWith(() => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: { message: "upstream is down" } }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+
+    const other = await harness.mintToken("third");
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: other,
+      body: { provider: "gemini", api_key: "a-third-persons-key-value" }
+    });
+    const url = "https://www.instagram.com/reel/ANOUTAGE/";
+    for (const who of [await harness.mintToken("owner"), other]) {
+      await harness.call(worker, "/v1/clips", { method: "POST", token: who, body: { url } });
+    }
+    const row = harness.database
+      .prepare("SELECT id FROM sources WHERE url_canonical LIKE ?")
+      .get("%ANOUTAGE%");
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(row.id);
+
+    await harness.call(worker, `/v1/sources/${row.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
+    });
+
+    // One attempt and its single retry, on the first saver's account. Nobody else's.
+    assert.ok(calls <= 2, `an outage cost ${calls} calls across other people's accounts`);
+  });
+
   test("the next person's account is tried, and the reel is read", async () => {
     let call = 0;
     harness.answerProviderWith(() => {
@@ -1240,6 +1280,67 @@ describe("no button may ask the database for more than a request is allowed", ()
     assert.equal(left.n, 12, `12 subjects should remain, found ${left.n}`);
   });
 
+  test("tidying folders whose sub-folders CLASH, which is the normal case", async () => {
+    // The first budget counted only top-level folders and charged a clashing sub-folder two
+    // statements when it costs three. Measured 56, 60 and 85 against a ceiling of 50.
+    // Merging "AI" and "AI tools", both of which have a "prompts" child, is the exact job
+    // this button exists for — a clash is not an exotic shape.
+    const at = Date.now();
+    const rows = [];
+    for (let pair = 0; pair < 4; pair += 1) {
+      for (const [suffix, tag] of [["", "keep"], [" tips", "doom"]]) {
+        const id = `x${pair}${tag}`;
+        rows.push(
+          `('${id}', 'vish', 'Topic${pair}${suffix}', '', 'topic${pair}${suffix}', ${at}, ${at})`
+        );
+        for (let child = 0; child < 5; child += 1) {
+          // The SAME child name under both, so every one of them clashes.
+          rows.push(
+            `('${id}c${child}', 'vish', 'Sub ${child}', '${id}', 'shared ${pair} ${child}', ${at}, ${at})`
+          );
+        }
+      }
+    }
+    harness.database.exec(
+      `INSERT INTO topics (id, user_id, name, parent_id, name_key, created_at, updated_at)
+       VALUES ${rows.join(",")}`
+    );
+
+    let passes = 0;
+    for (;;) {
+      const stop = counting();
+      const response = await harness.call(worker, "/v1/topics/tidy", { method: "POST", token });
+      stop();
+      assert.ok(
+        calls <= CEILING,
+        `one press asked the database ${calls} times, and it is allowed ${CEILING}`
+      );
+      passes += 1;
+      if (!response.body.remaining) break;
+      assert.ok(passes < 40, "the tidy never finished");
+    }
+
+    // And it really did finish: four subjects left, and nothing orphaned under a folder
+    // that was deleted halfway through.
+    const tops = harness.database
+      .prepare(
+        `SELECT COUNT(*) AS n FROM topics WHERE user_id = 'vish' AND parent_id = ''
+           AND deleted_at IS NULL AND name LIKE 'Topic%'`
+      )
+      .get();
+    assert.equal(tops.n, 4, `4 subjects should remain, found ${tops.n}`);
+
+    const orphans = harness.database
+      .prepare(
+        `SELECT COUNT(*) AS n FROM topics child
+         WHERE child.user_id = 'vish' AND child.deleted_at IS NULL AND child.parent_id <> ''
+           AND EXISTS (SELECT 1 FROM topics parent
+                       WHERE parent.id = child.parent_id AND parent.deleted_at IS NOT NULL)`
+      )
+      .get();
+    assert.equal(orphans.n, 0, "a sub-folder was left under a folder that had been removed");
+  });
+
   test("reading old clips again, including a key that turns out to be spent", async () => {
     // A spent first key is the whole reason a LIST of keys exists (D35), and the second
     // call to a provider is another subrequest.
@@ -1311,5 +1412,82 @@ describe("no button may ask the database for more than a request is allowed", ()
     // Calls to a provider are subrequests too, and count against the same ceiling.
     const spent = calls + providerCallsDuringThePress;
     assert.ok(spent <= CEILING, `one press cost ${spent} of the ${CEILING} allowed`);
+  });
+});
+
+describe("one press reads only the reels it is going to use", () => {
+  // The words of a reel are the biggest thing in this database — up to four hundred
+  // thousand characters each (D42) — and the backfill pulled EVERY pending one into memory
+  // to use four. A hundred waiting, with a few long videos among them, is several megabytes
+  // dragged through a 128MB Worker on every one of forty presses, all but four thrown away.
+  test("and not every one that is waiting", async () => {
+    const harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token,
+      body: { provider: "gemini", api_key: "not-a-real-key-value-at-all" }
+    });
+    harness.answerProviderWith(() =>
+      harness.geminiReplyWith({ summary: "s", key_points: [], learn_more: [], claims: [] })
+    );
+
+    const words = "x".repeat(50000);
+    for (let i = 0; i < 12; i += 1) {
+      const saved = await harness.call(worker, "/v1/clips", {
+        method: "POST",
+        token,
+        body: { url: `https://www.instagram.com/reel/BIG${i}/` }
+      });
+      const sourceId = saved.body.clip.source_id;
+      harness.database
+        .prepare("UPDATE sources SET state = 'downloading' WHERE id = ?")
+        .run(sourceId);
+      await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+        method: "POST",
+        serviceToken: SERVICE_TOKEN,
+        body: { text: words, lang: "en", engine: "test", duration_sec: 40 }
+      });
+      harness.database
+        .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL WHERE source_id = ?")
+        .run(sourceId);
+    }
+
+    // Count the transcript characters that actually come back out of the database.
+    let read = 0;
+    const real = harness.env.DB;
+    harness.env.DB = {
+      ...real,
+      prepare(sql) {
+        const statement = real.prepare(sql);
+        return {
+          ...statement,
+          bind(...params) {
+            const bound = statement.bind(...params);
+            return {
+              ...bound,
+              async all() {
+                const result = await bound.all();
+                for (const row of result.results || []) if (row.text) read += row.text.length;
+                return result;
+              }
+            };
+          }
+        };
+      }
+    };
+
+    const response = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    harness.env.DB = real;
+
+    assert.equal(response.body.done, 4);
+    assert.equal(response.body.remaining, 8, "it lost count of what is left");
+    assert.equal(
+      read,
+      4 * words.length,
+      `it read ${read} characters to use ${4 * words.length}`
+    );
+    harness.answerProviderWith(null);
+    harness.restore();
   });
 });

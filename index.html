@@ -3831,7 +3831,14 @@ function renderHome() {
     host.append(wrap);
   }
 
-  host.append(setupNudge(), actOnSection(), learningSection(), attentionSection(), newSection());
+  // `.filter(Boolean)`, and it is not tidiness. `setupNudge()` returns nothing once an AI
+  // account is connected, and `append` does not skip a null — it writes the WORD "null"
+  // into the page. So the bare word sat on his home screen, between the machine line and
+  // "What I should act on", on every draw, for everyone who had finished setting up.
+  host.append(
+    ...[setupNudge(), actOnSection(), learningSection(), attentionSection(), newSection()]
+      .filter(Boolean)
+  );
 
   const last = latestRelook();
   if (last) host.append(relookPanel(last));

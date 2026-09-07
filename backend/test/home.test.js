@@ -728,3 +728,36 @@ describe("nothing on Home is cut off in silence", () => {
     app.restore();
   });
 });
+
+describe("nothing on Home is a stray word", () => {
+  // `append` does not skip a null — it writes the WORD "null" into the page. So the bare
+  // word sat on his home screen, between the machine line and "What I should act on", on
+  // every draw, for everyone who had finished setting up. The test harness skipped nulls,
+  // which is how 543 tests stayed green over it: a stand-in must never be kinder than the
+  // browser it stands in for.
+  const noStrayWords = (text, where) => {
+    for (const stray of ["null", "undefined", "[object Object]", "NaN"]) {
+      assert.ok(!text.includes(stray), `${where} shows the bare word "${stray}": ${text.slice(0, 200)}`);
+    }
+  };
+
+  test("not before the first sync lands", async () => {
+    const app = await loadApp(syncPayload({}), { failAfter: 0 });
+    noStrayWords(app.text("homeView"), "Home, offline");
+    app.restore();
+  });
+
+  test("not on a brand-new account", async () => {
+    const app = await loadApp(syncPayload({ settings: { ai_provider: null, has_key: false } }));
+    noStrayWords(app.text("homeView"), "Home, nothing set up");
+    app.restore();
+  });
+
+  test("and not on an ordinary one, which is where it actually showed", async () => {
+    const app = await loadApp(syncPayload({ settings: { ai_provider: "gemini", has_key: true } }));
+    noStrayWords(app.text("homeView"), "Home, set up");
+    app.tab("notebook");
+    noStrayWords(app.text("clipList"), "the notebook");
+    app.restore();
+  });
+});

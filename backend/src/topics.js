@@ -341,11 +341,23 @@ export async function tidyTopics(env, userId, timestamp) {
         .bind(userId, doomed.id)
         .all();
 
+      // Checked INSIDE this loop, not only between folders. Checking only between them
+      // bounded nothing: once a folder was entered its whole cost landed however many
+      // sub-folders it had, and one folder with forty children measured 85 calls against a
+      // ceiling of 50. A folder left half-done keeps its remaining children and is finished
+      // by the next press — this loop re-reads them, so it picks up exactly where it left.
+      let ranOut = false;
+
       for (const child of children.results) {
+        if (spent >= CALL_BUDGET_PER_REQUEST) {
+          ranOut = true;
+          break;
+        }
+
         // The keeper may already have a sub-topic of that name, and the unique index on
         // (user_id, parent_id, name_key) would refuse the move. Where it does, the two
         // sub-topics are the same subject: the clips go to the one that stays.
-        spent += 2;
+        spent += 1;
         const clash = await env.DB.prepare(
           `SELECT id FROM topics
            WHERE user_id = ?1 AND parent_id = ?2 AND name_key = ?3 AND deleted_at IS NULL`
@@ -354,6 +366,10 @@ export async function tidyTopics(env, userId, timestamp) {
           .first();
 
         if (clash) {
+          // Three statements, not two. Charging two was how the count drifted under: a
+          // clash is the NORMAL case — merging "AI" and "AI tools", both of which have a
+          // "prompts" child, is the exact job this button exists for.
+          spent += 2;
           moved += await moveClips(env, userId, child.id, clash.id, timestamp);
           await env.DB.prepare(
             `UPDATE topics SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2`
@@ -362,12 +378,20 @@ export async function tidyTopics(env, userId, timestamp) {
             .run();
           merged += 1;
         } else {
+          spent += 1;
           await env.DB.prepare(
             `UPDATE topics SET parent_id = ?1, updated_at = ?2 WHERE id = ?3`
           )
             .bind(keeper.id, timestamp, child.id)
             .run();
         }
+      }
+
+      // Its children are not all moved yet, so the folder itself stays. Deleting it here
+      // would orphan whatever is still under it.
+      if (ranOut) {
+        remaining += 1;
+        continue;
       }
 
       spent += 2;

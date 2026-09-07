@@ -109,7 +109,9 @@ function classify(status) {
  *               so it stops and is shown: a key that has gone bad has to be noticed.
  *   other     — nothing to do with the key. The provider was down, or answered with prose
  *               instead of JSON. The key is left untouched, because marking a good key bad
- *               over somebody else's outage would take it out of the rotation for nothing.
+ *               over somebody else's outage would take it out of the rotation for nothing —
+ *               and the run STOPS, because a failure that is not about the key fails the
+ *               same way on every other key there is.
  */
 export function categoryOf(error) {
   const status = Number(String(error?.detail || "").split(" ")[0]);
@@ -727,9 +729,17 @@ export async function proposeTopic(env, userId, summary) {
  * Walks a list of keys, running `attempt` with each until one works (D35).
  *
  * The whole rotation rule lives here, once, so the automatic run and the topic button
- * cannot drift apart: a spent allowance is marked and moves on; a rejected key is marked
- * and STOPS, so the person sees it; anything else leaves the key alone and stops, because
- * a provider outage says nothing about the key that hit it.
+ * cannot drift apart:
+ *
+ *   spent allowance — marked, and moves to the next key, whosever it is.
+ *   rejected key    — marked, and ends THAT OWNER'S list, so the person sees it. The next
+ *                     saver's list is still tried: a reel two people saved is read on the
+ *                     earliest saver's keys (D10), and one dead key over there used to stop
+ *                     the reel dead over here with a working key never tried.
+ *   anything else   — the key is left alone and the run STOPS. A provider outage or a reply
+ *                     that came back as prose says nothing about the key that hit it, and
+ *                     fails the same way on every other key there is: going on would spend
+ *                     other people's allowance on a call that cannot succeed.
  *
  * Returns null for an empty list — that is the copy-paste tier, not a failure.
  */
@@ -759,6 +769,13 @@ async function spendKeys(env, candidates, attempt) {
         continue;
       }
 
+      // Nothing to do with anybody's key — the provider was down, or answered with prose
+      // instead of JSON. That fails the same way for EVERY account, so trying the next
+      // person's is guaranteed waste: two calls became eight across four savers, charged to
+      // people whose key was never at fault and who pressed nothing, and on a three-hour
+      // video each of those is a full-transcript prompt. It stops here, as it always did.
+      if (category === "other") throw error;
+
       // D35 stops on anything that is not a spent allowance, and that is right INSIDE one
       // person's list: a key that was refused is a thing its owner has to see and fix, and
       // quietly running down their other keys hides it.
@@ -769,8 +786,9 @@ async function spendKeys(env, candidates, attempt) {
       // sentence about a stranger's account shown to somebody whose own key is perfectly
       // good and was never tried.
       //
-      // So the refusal ends that person's list and no more. The next saver's list is a
-      // different account with a different answer.
+      // So a REJECTION ends that person's list and no more. The next saver's list is a
+      // different account with a different answer — which a rejection is about, and an
+      // outage or a mangled reply is not.
       firstRefusal = firstRefusal || error;
       givenUp.add(key.user_id);
     }

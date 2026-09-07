@@ -138,15 +138,19 @@ const MAX_ATTEMPTS = 3;
 // the writes before it already committed and, worse, six or seven calls to his AI account
 // already SPENT. Every press, for ever, and the money gone with nothing to show.
 //
-// Three, and the number was arrived at by counting rather than by feel. Four measured at
-// 45 database calls plus 5 calls to the AI provider — and a call to a provider is a
-// subrequest too, so that is 50 exactly, on the ceiling, going over the moment a first key
-// is spent and the next one is tried (which is the entire reason D35 exists). Three is
-// about 37 with room for a key to rotate.
+// Counted rather than guessed, and counted again after the count changed.
 //
-// The app presses again while anything is left, so the whole job still happens; it happens
-// in bites that each finish.
-const MAX_SORT_PER_REQUEST = 3;
+// Ten was over the platform's hard ceiling: a Worker on the free plan may make fifty calls
+// in ONE request, a call to an AI provider counts as one, and ten clips took seventy-five.
+// It was cut to four, then to three on a measurement of "45 calls plus 5" — which had
+// already stopped being true, because the fix that stopped a re-read rewriting other
+// people's notebooks also removed the filing pass that was most of that cost.
+//
+// Measured again on the code as it stands: three costs 21, four costs 26, eight costs 46.
+// Four it is — half the presses of three, and still comfortably inside fifty with room for
+// a spent key to roll onto the next. The ceiling itself is guarded by a test that presses
+// the real button and counts.
+const MAX_SORT_PER_REQUEST = 4;
 // How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
 // and a spare; low enough that a leaked one is noticed rather than lost in a list.
 const MAX_CONNECTORS = 5;
@@ -618,22 +622,15 @@ async function deltaSync(request, env, userId) {
   // Whether a re-look is being offered, and over how many reels (D41). Sent on every sync
   // like `settings`: it is one small object, it depends on the clock as much as on the
   // rows, and the banner has to be able to appear the moment enough time has passed.
-  // Only on a cold open, and the app keeps what it already had otherwise.
-  //
-  // Deciding whether to offer a look back means counting what has been sitting unread, and
-  // that count walks the clip list with two correlated lookups each. It ran every
-  // forty-five seconds, for ever, to answer a question about something that happens once a
-  // fortnight — about four in every ten rows this whole product reads. A cold open happens
-  // whenever the app is opened, which is when anybody actually reads the answer.
-  const relook = since === 0 ? await relookFor(env, userId, timestamp) : null;
+  const relook = await relookFor(env, userId, timestamp);
 
   return json(env, {
     now: timestamp,
     connectors: connectors.results,
-    // Omitted on a background refresh, never sent as an empty one: the app merges what it
-    // is given and keeps what it is not, so a missing answer leaves the last one standing
-    // rather than quietly clearing the offer off the screen.
-    ...(relook ? { relook } : {}),
+    // Sent on every sync, never omitted. The app keeps what it is not sent, so leaving
+    // this out of a background refresh left a stale answer standing for ever on any device
+    // that had a cache — which is every device after its first open.
+    relook,
     settings: {
       ai_provider: user?.ai_provider || null,
       // The list IS the setting now. Having any key at all is what makes the Worker
@@ -2288,20 +2285,34 @@ async function sortOldClips(request, env, userId) {
  * rather than spending the rest of the allowance on the same failure ten more times.
  */
 async function fillInKinds(request, env, userId) {
-  const pending = await env.DB.prepare(
-    `SELECT c.id, c.source_id, t.text, s.duration_sec
-     FROM clips c
+  // The words of a reel are the biggest thing in this database — up to four hundred
+  // thousand characters each (D42) — and this pulled EVERY pending one into memory to use
+  // four. At a hundred-odd waiting, with a few long videos among them, that is several
+  // megabytes dragged through a 128MB Worker on every one of forty presses, all but four
+  // of them thrown away unread.
+  //
+  // So: the batch, and then a count. The count touches no transcript at all.
+  const which = `FROM clips c
      JOIN analyses a ON a.source_id = c.source_id AND a.user_id = ?2
-     JOIN transcripts t ON t.source_id = c.source_id
      JOIN sources s ON s.id = c.source_id
      WHERE c.user_id = ?1
        AND c.deleted_at IS NULL
        AND ABS(COALESCE(a.shapes_version, 1)) < ?3
        AND a.items IS NULL
-     ORDER BY c.created_at DESC`
+       AND EXISTS (SELECT 1 FROM transcripts t WHERE t.source_id = c.source_id)`;
+
+  const pending = await env.DB.prepare(
+    `SELECT c.id, c.source_id, t.text, s.duration_sec
+     ${which.replace("FROM clips c", "FROM clips c JOIN transcripts t ON t.source_id = c.source_id")}
+     ORDER BY c.created_at DESC
+     LIMIT ?4`
   )
-    .bind(userId, SHARED, ITEM_SHAPES_VERSION)
+    .bind(userId, SHARED, ITEM_SHAPES_VERSION, MAX_SORT_PER_REQUEST)
     .all();
+
+  const waiting = await env.DB.prepare(`SELECT COUNT(*) AS n ${which}`)
+    .bind(userId, SHARED, ITEM_SHAPES_VERSION)
+    .first();
 
   const queue = pending.results;
   let done = 0;
@@ -2340,7 +2351,11 @@ async function fillInKinds(request, env, userId) {
     attempted += 1;
   }
 
-  return json(env, { done, remaining: Math.max(queue.length - attempted, 0), error: failure });
+  return json(env, {
+    done,
+    remaining: Math.max((waiting?.n || 0) - attempted, 0),
+    error: failure
+  });
 }
 
 // ---------------------------------------------------------------- the re-look (D41)
@@ -2400,7 +2415,7 @@ async function relookDue(env, userId) {
  * offer off, and never inside the period he has just been offered one. Both are answered
  * by the single row above, which is read anyway.
  */
-async function relookFor(env, userId, timestamp, countAnyway = true) {
+async function relookFor(env, userId, timestamp) {
   const user = await env.DB.prepare(
     `SELECT relook_days, relooked_at FROM users WHERE id = ?1`
   )
@@ -2424,19 +2439,24 @@ async function relookFor(env, userId, timestamp, countAnyway = true) {
     everyDays <= 0
     || (lastAt && timestamp - lastAt < everyDays * 24 * 60 * 60 * 1000);
 
-  // `countAnyway` is false only on a BACKGROUND refresh, which is where the cost lives —
-  // that runs every forty-five seconds and this count walks the clip list with two
-  // correlated lookups each. A cold open still counts, so the number the settings screen
-  // shows ("N videos are waiting for one") is there whenever the app is opened, which is
-  // when anybody reads it. Ten of those a day instead of nineteen hundred.
-  if (tooSoon && !countAnyway) {
+  // The COUNT is the expensive half — a walk of the clip list with two correlated lookups
+  // per clip — and nothing it could return changes the answer while the offer is switched
+  // off or the gap since the last one has not passed. So it is skipped there, and only
+  // there.
+  //
+  // What is NOT skipped is the answer itself. An earlier attempt saved the cost by leaving
+  // the whole block out of a background refresh, and that killed the feature: the app keeps
+  // what it is not sent, and a returning phone never asks for a cold sync — so the banner
+  // never appeared, never cleared after a look-back, and the settings dropdown snapped back
+  // to the old value every time he changed it. Cheap and wrong.
+  if (tooSoon) {
     return relookState({ everyDays: chosen, lastAt, dueCount: 0, oldestDueAt: null, at: timestamp });
   }
 
   const { due, oldest } = await relookDue(env, userId);
   return relookState({
-    everyDays: user?.relook_days ?? null,
-    lastAt: user?.relooked_at ?? null,
+    everyDays: chosen,
+    lastAt,
     dueCount: due,
     oldestDueAt: oldest,
     at: timestamp
