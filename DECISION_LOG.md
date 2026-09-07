@@ -2797,3 +2797,114 @@ Corrected here rather than quietly fixed, because the log is binding.
 
 **Ninety-three.** Ten rounds, and the last two each found three of their predecessor's own
 making. The rule has not once failed: the author cannot be the reviewer.
+
+---
+
+### D56 — Round eleven: the machine in his house
+**Date:** 2026-09-07
+**Amends:** D28, D40, D42, Golden Rule 29.
+
+Ten rounds had covered the Worker, the app, the connector, AI shapes, concurrency, the
+upgrade path and security. None had looked at the one part that runs on his own hardware,
+unattended, for hours at a time, and can be switched off mid-job. The question was: **does
+the PC worker survive a real week — and when it does not, does he find out?**
+
+**No, and no.** Eight defects, seven reproduced. Every one of them was invisible to the 35
+tests that already existed, because those read the source and none of them ran it.
+
+#### He could not find out. That is the one that makes the rest worse
+
+The scheduled task runs `pythonw.exe`, which has no console and no inherited handles — so
+CPython sets `sys.stdout` and `sys.stderr` to `None` and **every `print` in the file was a
+silent no-op.** Including the one whose own comment says it is "loud, because the
+alternative is the silent retirement described above". Including the only place the real
+yt-dlp or whisper text has ever existed. Including every crash traceback: the process died,
+the task restarted it five minutes later, and nothing was left anywhere.
+
+There is a `say()` now, writing to `worker.log` beside the file and to the console when
+there is one, capped and rolled over so it can never be the thing that fills his disk. A
+test fails if any `print` comes back.
+
+#### A live broadcast walked straight through every ceiling D42 built
+
+yt-dlp reports no duration for a live stream or a premiere, and zero is under every
+threshold — so it was never asked about, never refused, and the download ran until the
+broadcast ended. One shared live link and the machine is gone for the afternoon, filling the
+disk, with every other reel queued behind it. Nothing anywhere looked at `is_live`. It is
+refused now, before the length is read, in words that say what to do about it.
+
+#### Three attempts, gone in 79 milliseconds
+
+A failed source went back to `pending` with its claim cleared, so the very next poll —
+microseconds later — picked it up again. **All three attempts were spent in under a tenth of
+a second**, which makes the retry budget worthless for exactly the failures it exists for: an
+Instagram throttle after four saves, a two-second drop in his broadband, ffmpeg meeting a
+full disk, one 500 from Cloudflare on the way back. Each of those killed the reel outright
+and reported "this video could not be downloaded or transcribed", which says nothing and is
+usually untrue. On a long video it is worse: a dropped upload after three hours of
+transcription burns an attempt, and three of those is ten hours of his PC for nothing.
+
+Ten minutes between attempts now, using the claim time that was already there — no new
+column. A video nobody has tried waits for nothing, and pressing "Try again" goes at once.
+
+The contrast is the tell: the creator backfill has a carefully argued 30-minute backoff for
+precisely this reason. The path that actually matters had none.
+
+#### A reboot locked a long video away for eight hours
+
+A claim is a lease, and the lease for an approved video is eight hours because that is the
+length of the job it has to cover. So a reboot five minutes in left it locked for the
+remaining seven hours and fifty-five — with the app saying **"Being watched now"** the whole
+time — and three of those, which is one night of Windows updates, retired it as "gave up
+after 3 attempts" having done nothing at all.
+
+The worker writes down what it is holding and hands it back on its next start, through a new
+`POST /v1/sources/:id/release`. Nothing was attempted, so the attempt comes back with it. It
+carries the same state guard as `storeFailure`, so a machine returning hours later can never
+drag back a video another machine has since finished.
+
+#### One DNS wobble erased creators for ever
+
+`assert_public_host` raised the same `Refused` for "not a platform" and for a name that
+could not be resolved, and the caller settles every `Refused` as asked-and-answered. So a
+ten-minute wobble in his connection permanently recorded "asked, nobody named" against every
+video the backfill touched while it lasted — **precisely the mistake the asked/not-asked
+distinction was invented to prevent**, and D40's search-by-creator quietly wrong for those
+videos for good. A failure to reach something is now `CouldNotReach`, which settles nothing.
+
+#### And three smaller ones
+
+- **A blank line in `.env` ended the worker for good.** Every number was `int(os.getenv(…))`
+  at import, so `BATCH_SIZE=` — what happens when somebody clears a value instead of
+  deleting the line — raised before anything could report it, and the task relaunched it
+  every five minutes for ever. The only sign was the app saying the PC was off, with no
+  reason. `whole_number` falls back and says so.
+- **Two copies shared one media folder**, and the README tells him to run it by hand while
+  setting up. Either one quitting ran `rmtree` over the folder, deleting the audio of a
+  video the other had been transcribing for an hour — reported as "could not be downloaded
+  or transcribed", and with the point above, followed by two more instant attempts. Each run
+  owns its own folder now.
+- **Nothing swept at startup.** The folder is removed on the way out, and a hard kill skips
+  that, so a six-hour video's audio — about 700MB — sat there until somebody noticed. A run
+  that is no longer going has its folder cleared; a live one is left alone.
+
+#### What was already right
+
+The service token never leaves the machine and is never in a URL or a log. Nothing
+third-party reaches `sources.error` — every message there is this file's own words, and the
+ordering in `classify_failure` genuinely does keep a `requests` exception (which quotes the
+offending header) out of a row every saver of that reel can read. Both halves of the new
+queue contract agree in both directions, old worker to new API and new worker to old. The
+transport sizing from D54 holds.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Nine | 84 | 20 |
+| Ten | 9 | 3 |
+| Eleven | 8 | 0 |
+
+**A hundred and one.** Round eleven created none of its own, because it was the first look at
+a file the previous ten had never opened — which is the same lesson in a different shape: the
+rounds that changed the QUESTION found things, and this one changed the place.

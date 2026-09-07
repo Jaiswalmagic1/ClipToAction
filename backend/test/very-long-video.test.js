@@ -139,7 +139,9 @@ describe("the figures the warning is written from", () => {
     }
 
     const python = readFileSync(join(repo, "worker-pc", "worker.py"), "utf8");
-    const found = /LONG_VIDEO_SEC", "(\d+)"/.exec(python);
+    // Two shapes: os.getenv("X", "600") for the plain strings and whole_number("X", 600)
+    // for the numbers, which no longer bring the whole process down on one typo in .env.
+    const found = /LONG_VIDEO_SEC", "?(\d+)"?\)/.exec(python);
     assert.ok(found, "worker.py does not default LONG_VIDEO_SEC");
     assert.equal(Number(found[1]), LONG_VIDEO_SEC, "the two files disagree");
     assert.ok(
@@ -155,7 +157,7 @@ describe("the figures the warning is written from", () => {
   test("the PC worker's ceiling matches this file's, or a video is refused twice over", () => {
     const python = readFileSync(join(repo, "worker-pc", "worker.py"), "utf8");
     const read = (name) => {
-      const found = new RegExp(`${name}", "(\\d+)"`).exec(python);
+      const found = new RegExp(`${name}", "?(\\d+)"?\\)`).exec(python);
       assert.ok(found, `worker.py does not default ${name}`);
       return Number(found[1]);
     };

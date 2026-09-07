@@ -193,6 +193,29 @@ function limitsFor(durationSec) {
  * the placeholder numbering they already had — which is the part of a query that goes
  * wrong silently.
  */
+// How long a video that just failed is left alone before it is handed out again.
+//
+// There was no pause at all. A failed source went straight back to 'pending' with its
+// claim cleared, so the very next poll — microseconds later — picked it up again: all
+// three attempts burned in under a tenth of a second. Every failure that lasts longer than
+// an instant is therefore fatal on the first go. An Instagram throttle after four saves, a
+// two-second drop in his broadband, ffmpeg hitting a full disk, one 500 from Cloudflare on
+// the way back — each of those took the whole retry budget immediately and reported "this
+// video could not be downloaded or transcribed", which says nothing and is usually untrue.
+//
+// Ten minutes is long enough for a throttle to lift and a router to come back, and short
+// enough that a reel he is waiting on is not left all afternoon. It costs nothing when
+// nothing is failing: a video that has never been attempted is not delayed at all, and
+// pressing "Try again" clears the attempts and goes at once.
+const RETRY_PAUSE_MS = 10 * 60 * 1000;
+
+// Whether a pending source has waited out that pause. `claimed_at` is when it was last
+// handed to a machine, which is exactly the clock this needs — no new column, and it reads
+// the same way in the database. The argument is which bound parameter holds "now" in the
+// statement being built, because the two queries below number theirs differently.
+const readySql = (clock) =>
+  `(attempts = 0 OR COALESCE(claimed_at, 0) + ${RETRY_PAUSE_MS} < ${clock})`;
+
 const LEASE_SQL =
   "(CASE"
   + ` WHEN duration_sec IS NULL THEN ${UNMEASURED_CLAIM_LEASE_MS}`
@@ -830,7 +853,7 @@ async function claimQueue(request, env) {
             CASE WHEN long_ok_at IS NULL THEN 0 ELSE 1 END AS long_ok
      FROM sources
      WHERE attempts < ?3
-       AND (state = 'pending'
+       AND ((state = 'pending' AND ${readySql("?2")})
             OR (state = 'downloading'
                 AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?2))
      ORDER BY created_at
@@ -848,7 +871,7 @@ async function claimQueue(request, env) {
       `UPDATE sources
        SET state = 'downloading', attempts = attempts + 1, claimed_at = ?1, updated_at = ?1
        WHERE id = ?2
-         AND (state = 'pending'
+         AND ((state = 'pending' AND ${readySql("?1")})
               OR (state = 'downloading'
                   AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?1))`
     )
@@ -1256,6 +1279,38 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   return [];
 }
 
+/**
+ * Hands a video back that a machine was holding and is no longer working on.
+ *
+ * Not a failure: nothing was attempted, so the attempt comes back with it. The PC worker
+ * writes down what it has claimed and calls this on its next start, which is what turns a
+ * reboot into a few seconds' delay instead of a long silence.
+ *
+ * Without it, a claim was a lease and nothing else — and the lease for a video somebody
+ * approved is eight hours, because that is the length of the job it has to cover. So a
+ * reboot five minutes into a six-hour video locked it for the remaining seven hours and
+ * fifty-five minutes, with the app saying "being watched now" the whole time. Three of
+ * those, which is one night of Windows updates, and it was retired as "gave up after 3
+ * attempts" having done nothing at all.
+ */
+async function releaseClaim(env, sourceId) {
+  const result = await env.DB.prepare(
+    `UPDATE sources
+     SET state = 'pending',
+         claimed_at = NULL,
+         attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+         updated_at = ?2
+     WHERE id = ?1 AND state = 'downloading'`
+  )
+    .bind(sourceId, now())
+    .run();
+
+  // Not an error when it changes nothing: another machine may have finished the video
+  // while this one was away, and dragging it back would be the very thing storeFailure's
+  // own state guard exists to prevent.
+  return json(env, { ok: true, applied: Boolean(result.meta.changes) });
+}
+
 async function storeFailure(request, env, sourceId) {
   const body = await readJson(request);
   const message = String(body.error || "Unknown failure").slice(0, 500);
@@ -1267,7 +1322,7 @@ async function storeFailure(request, env, sourceId) {
   const result = await env.DB.prepare(
     `UPDATE sources
      SET state = CASE WHEN attempts >= ?4 THEN 'failed' ELSE 'pending' END,
-         error = ?1, error_detail = NULL, claimed_at = NULL, updated_at = ?2
+         error = ?1, error_detail = NULL, updated_at = ?2
      WHERE id = ?3 AND state = 'downloading'`
   )
     .bind(message, now(), sourceId, MAX_ATTEMPTS)
@@ -2377,6 +2432,9 @@ export default {
         }
         if (segments[3] === "creator" && request.method === "POST") {
           return await storeCreator(request, env, segments[2]);
+        }
+        if (segments[3] === "release" && request.method === "POST") {
+          return await releaseClaim(env, segments[2]);
         }
         if (segments[3] === "too-long" && request.method === "POST") {
           return await reportTooLong(request, env, segments[2]);

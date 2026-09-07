@@ -24,6 +24,8 @@ import { ANALYSIS_PROMPT, LONG_ANALYSIS_PROMPT, UNTRUSTED_WARNING } from "../src
 import { buildLearningPrompt } from "../src/learnings.js";
 import { createTestEnv } from "./helpers/testenv.js";
 
+const SERVICE_TOKEN = "service-token-for-tests";
+
 // ---------------------------------------------------------------- one address, one host
 
 describe("a link that two parsers read differently", () => {
@@ -271,5 +273,191 @@ describe("what one account can write in a day", () => {
       body: { clip_id: saved.body.clip.id, body: "my first note" }
     });
     assert.equal(response.status, 201);
+  });
+});
+
+// ---------------------------------------------------------------- the queue, over a bad week
+
+describe("a video that just failed is not handed straight back", () => {
+  // There was no pause at all. A failed source went back to 'pending' with its claim
+  // cleared, so the very next poll — microseconds later — picked it up again: all three
+  // attempts burned in under a tenth of a second. Every failure lasting longer than an
+  // instant was therefore fatal on the first go: an Instagram throttle, a two-second drop
+  // in his broadband, ffmpeg hitting a full disk. Measured at 79ms for all three.
+  let harness;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ABADWEEK/" }
+    });
+    sourceId = saved.body.clip.source_id;
+  });
+  after(() => harness.restore());
+
+  const claim = () =>
+    harness.call(worker, "/v1/queue?limit=5", { method: "GET", serviceToken: SERVICE_TOKEN });
+
+  const failIt = () =>
+    harness.call(worker, `/v1/sources/${sourceId}/error`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { error: "This video could not be downloaded or transcribed." }
+    });
+
+  const row = () =>
+    harness.database.prepare("SELECT * FROM sources WHERE id = ?").get(sourceId);
+
+  test("the whole budget is not spent in one second", async () => {
+    const first = await claim();
+    assert.equal(first.body.sources.length, 1, "it was never handed out at all");
+    await failIt();
+
+    const second = await claim();
+    assert.equal(second.body.sources.length, 0, "it came straight back round");
+    assert.equal(row().attempts, 1, "more than one attempt was spent");
+    assert.equal(row().state, "pending", "it was retired instead of waiting");
+  });
+
+  test("and it does come back, once the pause is over", async () => {
+    // Ten minutes ago, which is what the wait actually measures.
+    harness.database
+      .prepare("UPDATE sources SET claimed_at = ? WHERE id = ?")
+      .run(Date.now() - 11 * 60 * 1000, sourceId);
+    const again = await claim();
+    assert.equal(again.body.sources.length, 1, "it never came back at all");
+  });
+
+  test("a video nobody has tried yet waits for nothing", async () => {
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/BRANDNEW/" }
+    });
+    const handed = await claim();
+    assert.ok(
+      handed.body.sources.some((one) => one.id === saved.body.clip.source_id),
+      "a brand-new reel was made to wait behind somebody else's failure"
+    );
+  });
+
+  test("and pressing Try again goes at once", async () => {
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/PRESSEDIT/" }
+    });
+    const id = saved.body.clip.source_id;
+    harness.database
+      .prepare("UPDATE sources SET state = 'failed', attempts = 3, claimed_at = ? WHERE id = ?")
+      .run(Date.now(), id);
+
+    await harness.call(worker, `/v1/clips/${saved.body.clip.id}/retry`, {
+      method: "POST",
+      token
+    });
+    const handed = await claim();
+    assert.ok(
+      handed.body.sources.some((one) => one.id === id),
+      "he pressed the button and nothing happened for ten minutes"
+    );
+  });
+});
+
+describe("a machine that was switched off mid-job", () => {
+  // A claim is a lease, and the lease for a video somebody approved is eight hours,
+  // because that is the length of the job it covers. So a reboot five minutes into a
+  // six-hour video locked it for the remaining seven hours and fifty-five — with the app
+  // saying "being watched now" the whole time — and three of those retired it as "gave up
+  // after 3 attempts" having done nothing at all.
+  let harness;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/AREBOOT/" }
+    });
+    sourceId = saved.body.clip.source_id;
+    // Long, approved, and claimed — the eight-hour lease.
+    harness.database
+      .prepare(
+        `UPDATE sources SET duration_sec = 21600, long_ok_at = ?, long_ok_by = 'vish' WHERE id = ?`
+      )
+      .run(Date.now(), sourceId);
+    await harness.call(worker, "/v1/queue?limit=5", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+  });
+  after(() => harness.restore());
+
+  test("hands the video back on its next start, with the attempt", async () => {
+    const before = harness.database
+      .prepare("SELECT state, attempts FROM sources WHERE id = ?")
+      .get(sourceId);
+    assert.equal(before.state, "downloading");
+    assert.equal(before.attempts, 1);
+
+    const released = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: {}
+    });
+    assert.equal(released.status, 200);
+    assert.equal(released.body.applied, true);
+
+    const after = harness.database
+      .prepare("SELECT state, attempts, claimed_at FROM sources WHERE id = ?")
+      .get(sourceId);
+    assert.equal(after.state, "pending");
+    assert.equal(after.attempts, 0, "an attempt was spent on work nobody did");
+    assert.equal(after.claimed_at, null);
+
+    const handed = await harness.call(worker, "/v1/queue?limit=5", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+    assert.ok(
+      handed.body.sources.some((one) => one.id === sourceId),
+      "it is still locked away after being handed back"
+    );
+  });
+
+  test("and never drags back a video somebody else has since finished", async () => {
+    // The same guard `storeFailure` has: a late release from a machine that came back
+    // hours later must not undo a transcript another machine has since posted.
+    harness.database
+      .prepare("UPDATE sources SET state = 'analysed' WHERE id = ?")
+      .run(sourceId);
+    const released = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: {}
+    });
+    assert.equal(released.body.applied, false);
+    assert.equal(
+      harness.database.prepare("SELECT state FROM sources WHERE id = ?").get(sourceId).state,
+      "analysed"
+    );
+  });
+
+  test("and it is the PC worker's door, not anybody else's", async () => {
+    const token = await harness.mintToken("stranger");
+    const refused = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
+      method: "POST",
+      token,
+      body: {}
+    });
+    assert.equal(refused.status, 401);
   });
 });

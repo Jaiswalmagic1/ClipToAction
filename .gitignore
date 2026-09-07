@@ -14,6 +14,11 @@ venv/
 
 # Downloaded media is transient — transcribed, then deleted. Never committed.
 worker-pc/media/
+
+# What the worker on his PC has to say for itself (D56). It is the record of a machine,
+# not of the project, and it carries reel titles and URLs.
+worker-pc/worker.log
+worker-pc/worker.log.old
 .wrangler/
 
 # Assembled at deploy time from index.html; never edited by hand.

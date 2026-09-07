@@ -10,6 +10,7 @@ Host-agnostic by design: it only needs API_BASE and SERVICE_TOKEN, so moving it 
 cloud VM later is a config change, not a rewrite.
 """
 
+import io
 import ipaddress
 import os
 import re
@@ -27,50 +28,120 @@ from yt_dlp import YoutubeDL
 
 load_dotenv()
 
+LOG_PATH = Path(__file__).parent / "worker.log"
+MAX_LOG_BYTES = 2 * 1024 * 1024
+
+
+def say(message):
+    """Everything this file has to tell anybody.
+
+    It used to be `print`, and under the scheduled task that was the same as saying
+    nothing. The task runs `pythonw.exe`, which has no console and no inherited handles, so
+    CPython sets sys.stdout and sys.stderr to None and every print in this file became a
+    silent no-op -- including the one whose own comment says it is "loud, because the
+    alternative is a silent retirement", and including the only place the real yt-dlp or
+    whisper text has ever existed. A crash was the same: the process died, the task
+    restarted it five minutes later, and there was no trace of it anywhere.
+
+    So it goes to a file beside this one, and to the console as well when there is a
+    console. The file is capped and rolled over rather than rotated properly -- one
+    previous copy is enough to see what happened last night, and this must never be the
+    thing that fills his disk.
+    """
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
+    try:
+        if LOG_PATH.exists() and LOG_PATH.stat().st_size > MAX_LOG_BYTES:
+            LOG_PATH.replace(LOG_PATH.with_suffix(".log.old"))
+        with io.open(LOG_PATH, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        # A log that cannot be written is not a reason to stop transcribing.
+        pass
+    if sys.stdout is not None:
+        try:
+            print(line)
+        except (OSError, ValueError):
+            pass
+
+
+def whole_number(name, fallback):
+    """A setting that is a number, or the default -- never a crash at import.
+
+    Every one of these was `int(os.getenv(...))` at module level. A blanked line in .env
+    (`BATCH_SIZE=` reads as an empty string, which is what happens when somebody clears a
+    value instead of deleting the line) or one typo raised at import, before anything could
+    report it, and the scheduled task then relaunched it every five minutes for ever. The
+    only sign anywhere was the app saying the PC was off, with no reason.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return fallback
+    try:
+        value = int(raw)
+    except ValueError:
+        say(f"!! {name} is not a whole number ('{raw}'); using {fallback}")
+        return fallback
+    if value <= 0:
+        say(f"!! {name} must be more than zero (got {value}); using {fallback}")
+        return fallback
+    return value
+
+
 API_BASE = os.getenv("API_BASE", "").rstrip("/")
 SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "3"))
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small") or "small"
+POLL_SECONDS = whole_number("POLL_SECONDS", 30)
+BATCH_SIZE = whole_number("BATCH_SIZE", 3)
 # 6 hours, and still a real ceiling rather than no ceiling (D42). Past this no answer he
 # could give would help: the machine would be tied up for most of a day and the words would
 # not fit in the column that holds them, so it is refused out loud rather than accepted and
 # left to rot.
-MAX_DURATION_SEC = int(os.getenv("MAX_DURATION_SEC", "21600"))
+MAX_DURATION_SEC = whole_number("MAX_DURATION_SEC", 21600)
 # Past this, HE IS ASKED before anything is downloaded (D42). Nothing about the videos he
 # saves all the time -- 11 to 18 minutes -- comes near it, and that is the point: a warning
 # that always appears is a warning nobody reads.
-WARN_ABOVE_SEC = int(os.getenv("WARN_ABOVE_SEC", "1800"))
+WARN_ABOVE_SEC = whole_number("WARN_ABOVE_SEC", 1800)
 # As much transcript as the notebook will hold for one video. Checked HERE, before the work
 # and not after it: a six-hour video whose words did not fit would otherwise be discovered
 # at the last step, having already had three hours of the machine.
-MAX_TRANSCRIPT_CHARS = int(os.getenv("MAX_TRANSCRIPT_CHARS", "400000"))
+MAX_TRANSCRIPT_CHARS = whole_number("MAX_TRANSCRIPT_CHARS", 400000)
 # Past this, a video stops being a reel and starts being something you come back to. It
 # gets times written into the transcript so there is a way back into the video.
-LONG_VIDEO_SEC = int(os.getenv("LONG_VIDEO_SEC", "600"))
+LONG_VIDEO_SEC = whole_number("LONG_VIDEO_SEC", 600)
 MARK_EVERY_SEC = 30
 # Filling in who made the videos already saved (D40). Deliberately slow: this reads
 # metadata for videos that are already finished, so it may never compete with a reel
 # somebody is waiting on, and Facebook and Instagram will rate-limit a machine that asks
 # two hundred questions in two minutes. Two at a time, with a pause between each, and only
 # when there is no real work.
-CREATOR_BATCH = int(os.getenv("CREATOR_BATCH", "2"))
-CREATOR_PAUSE_SEC = int(os.getenv("CREATOR_PAUSE_SEC", "20"))
+CREATOR_BATCH = whole_number("CREATOR_BATCH", 2)
+CREATOR_PAUSE_SEC = whole_number("CREATOR_PAUSE_SEC", 20)
 # How long to leave the whole backfill alone after a lookup fails. A failure usually means
 # the platform is throttling this machine, and the worst possible response to being
 # throttled is to keep asking -- so it stops for half an hour rather than working down the
 # queue burning attempts on questions that are not being answered.
-CREATOR_BACKOFF_SEC = int(os.getenv("CREATOR_BACKOFF_SEC", "1800"))
-MEDIA_DIR = Path(__file__).parent / "media"
+CREATOR_BACKOFF_SEC = whole_number("CREATOR_BACKOFF_SEC", 1800)
+# One folder per run, inside media/.
+#
+# It used to be `media/` itself, shared, with `shutil.rmtree(MEDIA_DIR)` on the way out --
+# so a second copy started by hand (which the README tells him to do while setting it up)
+# would delete the audio of a video the scheduled one had been transcribing for an hour.
+# The victim reported "could not be downloaded or transcribed" and burned an attempt for
+# something that had worked. A run now owns its own folder and removes only that.
+MEDIA_ROOT = Path(__file__).parent / "media"
+MEDIA_DIR = MEDIA_ROOT / f"run-{os.getpid()}"
+# What this run has claimed and not finished, so a crash or a reboot can hand it back
+# rather than leaving it locked (see release_stale_claims).
+CLAIMS_PATH = MEDIA_ROOT / "claimed.txt"
 
 if not API_BASE or not SERVICE_TOKEN:
     sys.exit("Missing API_BASE or SERVICE_TOKEN. Copy .env.example to .env and fill it in.")
 
 HEADERS = {"X-Service-Token": SERVICE_TOKEN}
 
-print(f"Loading whisper model '{WHISPER_MODEL}' (first run downloads it)...")
+say(f"Loading whisper model '{WHISPER_MODEL}' (first run downloads it)...")
 model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-print("Model ready.")
+say("Model ready.")
 
 
 def claim_batch():
@@ -138,7 +209,7 @@ def report_failure(source_id, message):
         # and the video was eventually retired as "gave up after 3 attempts" instead.
         response.raise_for_status()
     except requests.RequestException as error:
-        print(f"  !! could not report failure for {source_id}: {error}")
+        say(f"  !! could not report failure for {source_id}: {error}")
 
 
 UUID_PATTERN = re.compile(r"\A[0-9a-fA-F-]{36}\Z")
@@ -190,7 +261,8 @@ def assert_public_host(url):
     try:
         resolved = socket.getaddrinfo(host, None)
     except socket.gaierror as error:
-        raise Refused(f"Could not resolve {host}.") from error
+        # Not a refusal. Nothing was learnt about this address -- see CouldNotReach.
+        raise CouldNotReach(f"Could not resolve {host} just now.") from error
 
     for entry in resolved:
         address = ipaddress.ip_address(entry[4][0])
@@ -202,6 +274,18 @@ def assert_public_host(url):
             or address.is_multicast
         ):
             raise Refused(f"{host} resolves to a private address; refusing to fetch it.")
+
+
+class CouldNotReach(Exception):
+    """A question this machine could not get an answer to -- yet.
+
+    Not the same as a refusal, and telling them apart is the whole point. `Refused` means
+    the answer will be the same tomorrow, so the question is settled. This means nothing
+    was learnt: a DNS timeout, a router restarting. They shared one exception, so a
+    ten-minute wobble in his connection permanently recorded "asked, nobody named" against
+    every video the backfill touched while it lasted -- which is precisely the mistake the
+    asked/not-asked distinction was invented to prevent.
+    """
 
 
 class Refused(ValueError):
@@ -256,6 +340,18 @@ def download_audio(source, limits):
 
     with YoutubeDL(options) as downloader:
         info = downloader.extract_info(source["url_original"], download=False)
+
+        # A broadcast, not a video. yt-dlp reports no duration for one, and zero is under
+        # every ceiling -- so it was never asked about, never refused, and the download ran
+        # until the broadcast ended. One shared live link and the machine is gone for the
+        # afternoon, filling the disk, with every other reel queued behind it: exactly what
+        # D42 exists to make impossible, walking straight through it.
+        if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+            raise Refused(
+                "This is a live broadcast rather than a finished video. Save it again once "
+                "it has ended."
+            )
+
         duration = int(info.get("duration") or 0)
 
         # Long enough to be worth asking about, and nobody has said yes yet. Stop here --
@@ -329,7 +425,7 @@ def report_creator(source_id, name, asked):
         response.raise_for_status()
     except requests.RequestException as error:
         # Nothing was recorded, so it comes round again. Nothing is lost.
-        print(f"  ! could not report the creator for {source_id}: {error}")
+        say(f"  ! could not report the creator for {source_id}: {error}")
 
 
 def fill_in_creators():
@@ -358,13 +454,13 @@ def fill_in_creators():
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as error:
-        print(f"  ! could not ask which videos need a creator: {error}")
+        say(f"  ! could not ask which videos need a creator: {error}")
         return
 
     pending = payload.get("sources", [])
     if not pending:
         return
-    print(f"- filling in who made {len(pending)} of {payload.get('remaining', '?')} videos")
+    say(f"- filling in who made {len(pending)} of {payload.get('remaining', '?')} videos")
 
     for index, source in enumerate(pending):
         try:
@@ -374,7 +470,7 @@ def fill_in_creators():
             try:
                 assert_public_host(source["url_original"])
             except Refused:
-                print(f"  . {source['id']} does not resolve publicly; leaving it alone")
+                say(f"  . {source['id']} is not a public address; leaving it alone")
                 report_creator(source["id"], None, asked=True)
                 continue
 
@@ -383,7 +479,7 @@ def fill_in_creators():
         # Deliberately broad, and deliberately not reported as a failure of the video:
         # this runs over reels that are already finished and analysed.
         except Exception as error:  # noqa: BLE001
-            print(
+            say(
                 f"  . could not look up {source['id']}: {type(error).__name__}"
                 " -- pausing the backfill"
             )
@@ -534,21 +630,118 @@ def ask_about_length(source_id, waiting):
     except requests.RequestException as error:
         # Loud, because the alternative is the silent retirement described above. Nothing
         # was downloaded, and the claim simply expires so it is asked again.
-        print(f"  !! could not ask about {source_id}: {error}")
+        say(f"  !! could not ask about {source_id}: {error}")
+
+
+def remember_claim(source_id):
+    """Writes down what this run is holding, so a crash does not lock it away."""
+    try:
+        with io.open(CLAIMS_PATH, "a", encoding="utf-8") as handle:
+            handle.write(f"{source_id}\n")
+    except OSError:
+        pass
+
+
+def forget_claim(source_id):
+    """Removes one id from the list, once it has reached an ending of its own."""
+    try:
+        if not CLAIMS_PATH.exists():
+            return
+        kept = [
+            line
+            for line in io.open(CLAIMS_PATH, encoding="utf-8").read().splitlines()
+            if line.strip() and line.strip() != source_id
+        ]
+        io.open(CLAIMS_PATH, "w", encoding="utf-8").write(
+            "\n".join(kept) + ("\n" if kept else "")
+        )
+    except OSError:
+        pass
+
+
+def release_stale_claims():
+    """Hands back anything a previous run was holding when it stopped.
+
+    A claim is a lease, and the lease for a video somebody approved is eight hours -- the
+    length of the job it has to cover. So a reboot five minutes into a six-hour video left
+    it locked for the remaining seven hours and fifty-five, with the app saying "being
+    watched now" the whole time. Three of those -- one Windows update night is enough --
+    and it was retired as "gave up after 3 attempts" having done nothing at all.
+
+    Nothing here reports a failure: no work was attempted, so the attempt is given back
+    with it.
+    """
+    try:
+        if not CLAIMS_PATH.exists():
+            return
+        ids = [line.strip() for line in io.open(CLAIMS_PATH, encoding="utf-8").read().splitlines()]
+    except OSError:
+        return
+
+    for source_id in [one for one in ids if one]:
+        try:
+            response = requests.post(
+                f"{API_BASE}/v1/sources/{source_id}/release",
+                json={},
+                headers=HEADERS,
+                timeout=30,
+            )
+            response.raise_for_status()
+            say(f"- handed back {source_id}, which the last run was still holding")
+        except requests.RequestException as error:
+            say(f"!! could not hand back {source_id}: {error}")
+            return
+    try:
+        CLAIMS_PATH.unlink()
+    except OSError:
+        pass
+
+
+def sweep_old_runs():
+    """Removes the folders of runs that are no longer going.
+
+    The per-run folder is deleted on the way out, and a hard kill -- End Task, a power cut,
+    a reboot -- skips that. Nothing swept at startup, so a six-hour video's audio (about
+    700MB of wav) sat there until somebody noticed.
+    """
+    for folder in MEDIA_ROOT.glob("run-*"):
+        if folder == MEDIA_DIR or not folder.is_dir():
+            continue
+        try:
+            pid = int(folder.name.split("-", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if still_running(pid):
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        say(f"- cleared {folder.name}, left behind by a run that is no longer going")
+
+
+def still_running(pid):
+    """Whether a process id is alive. Wrong in only the safe direction: if this cannot
+    tell, it says yes and the folder is left alone."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def process(source, limits):
-    print(f"- {source['platform']}: {source['url_canonical']}")
+    say(f"- {source['platform']}: {source['url_canonical']}")
+    remember_claim(source["id"])
     try:
         audio_path, title, duration, creator = download_audio(source, limits)
         text, lang = transcribe(
             audio_path, duration, limits["max_transcript_chars"], limits["long_video_sec"]
         )
         post_transcript(source["id"], text, lang, title, duration, creator)
-        print(f"  transcribed {len(text)} chars ({lang})")
+        say(f"  transcribed {len(text)} chars ({lang})")
     except NeedsPermission as waiting:
         # A question, not a failure. It sits waiting for an answer and keeps no error.
-        print(f"  waiting for permission: {waiting}")
+        say(f"  waiting for permission: {waiting}")
         ask_about_length(source["id"], waiting)
     # Deliberately broad: a whisper RuntimeError or an OSError killing the loop would
     # strand every source in this batch, and the operator would see clips stuck on
@@ -557,21 +750,27 @@ def process(source, limits):
         # The full text goes to this machine's console only. What gets posted is a short
         # classification, because sources.error is read by every user who saved the reel
         # and an exception string can carry a URL, a path, or a provider's response.
-        print(f"  failed: {type(error).__name__}: {error}")
+        say(f"  failed: {type(error).__name__}: {error}")
         report_failure(source["id"], classify_failure(error))
     finally:
+        # Whatever happened, this source has an ending of its own now -- transcribed,
+        # waiting on an answer, or reported as failed. Nothing to hand back.
+        forget_claim(source["id"])
         cleanup(source["id"])
 
 
 def main():
+    MEDIA_ROOT.mkdir(exist_ok=True)
     MEDIA_DIR.mkdir(exist_ok=True)
-    print(f"Polling {API_BASE} every {POLL_SECONDS}s. Ctrl+C to stop.")
+    sweep_old_runs()
+    release_stale_claims()
+    say(f"Polling {API_BASE} every {POLL_SECONDS}s. Ctrl+C to stop.")
 
     while True:
         try:
             batch, limits = claim_batch()
         except requests.RequestException as error:
-            print(f"Queue unreachable: {error}")
+            say(f"Queue unreachable: {error}")
             time.sleep(POLL_SECONDS)
             continue
 
@@ -588,6 +787,7 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        say("Stopped.")
     finally:
+        # This run's own folder, never the shared one -- see MEDIA_DIR.
         shutil.rmtree(MEDIA_DIR, ignore_errors=True)

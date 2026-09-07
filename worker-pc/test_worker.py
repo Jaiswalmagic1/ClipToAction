@@ -26,17 +26,20 @@ def find_call(name):
 
 
 def default_of(setting):
-    """Returns the fallback in `os.getenv("<setting>", "<default>")`."""
+    """Returns the fallback this file uses when a setting is missing.
+
+    Two shapes now: `os.getenv("X", "30")` for the plain strings, and
+    `whole_number("X", 30)` for the numbers, which no longer crash the process at import
+    when somebody blanks a line in .env.
+    """
     for node in ast.walk(SOURCE):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "getenv"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == setting
-        ):
-            return node.args[1].value if len(node.args) > 1 else None
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if not isinstance(node.args[0], ast.Constant) or node.args[0].value != setting:
+            continue
+        named = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if named in ("getenv", "whole_number") and len(node.args) > 1:
+            return node.args[1].value
     return None
 
 
