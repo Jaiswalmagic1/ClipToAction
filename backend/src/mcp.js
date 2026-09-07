@@ -624,7 +624,7 @@ async function runSaveLearning(env, userId, args) {
   // owner's own button answered 429 for the rest of the day, because his count included
   // every row this had written. The cap protected nobody and blamed him.
   if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR)) {
-    return { error: "This notebook has saved a lot of conversations today. Try again tomorrow." };
+    return { error: "This notebook has saved a lot of conversations in the last day. Try again in a few hours." };
   }
 
   const columns = learningColumns(args);

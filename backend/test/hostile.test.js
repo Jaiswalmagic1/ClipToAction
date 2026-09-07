@@ -23,6 +23,7 @@ import {
 import { ANALYSIS_PROMPT, LONG_ANALYSIS_PROMPT, UNTRUSTED_WARNING } from "../src/analyze.js";
 import { buildLearningPrompt } from "../src/learnings.js";
 import { validateLearning } from "../src/learnings.js";
+import { relookLines } from "../src/relook.js";
 import {
   MAX_LEARNINGS_PER_DAY,
   MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR
@@ -272,7 +273,7 @@ describe("what one account can write in a day", () => {
       body: { clip_id: clipId, body: "one more" }
     });
     assert.equal(response.status, 429);
-    assert.match(response.body.error, /notes today/);
+    assert.match(response.body.error, /notes in the last day/);
   });
 
   test("and somebody who has written nothing today is not affected", async () => {
@@ -555,7 +556,7 @@ describe("a day's worth applies to the connector too", () => {
     const response = await saveLearning();
     const said = JSON.parse(await response.text());
     const text = JSON.stringify(said);
-    assert.match(text, /a lot of conversations today/);
+    assert.match(text, /a lot of conversations in the last day/);
 
     const held = harness.database
       .prepare("SELECT COUNT(*) AS n FROM learnings WHERE user_id = 'vish'")
@@ -1489,5 +1490,96 @@ describe("one press reads only the reels it is going to use", () => {
     );
     harness.answerProviderWith(null);
     harness.restore();
+  });
+});
+
+// ---------------------------------------------------------------- three clocks, one truth
+
+describe("the pause after a failure is measured from the failure", () => {
+  // It was measured from when the video was CLAIMED, so every minute the machine spent
+  // working was a minute deducted from the pause: a job that ran ten minutes had none left.
+  // Three attempts back to back, no wait between any of them — and on a three-hour video
+  // the pause was three hours in the past before the failure even happened, which is the
+  // exact case it was written for. Worse on an ordinary day: a batch of three is claimed
+  // together, so the second and third reel's pause was spent by the videos ahead of them.
+  let harness;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ALONGFAIL/" }
+    });
+    sourceId = saved.body.clip.source_id;
+  });
+  after(() => harness.restore());
+
+  test("a video that failed after a long job still waits before it is tried again", async () => {
+    const handed = await harness.call(worker, "/v1/queue?limit=5", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+    assert.ok(handed.body.sources.some((one) => one.id === sourceId));
+
+    // The machine worked on it for twenty minutes, then the upload failed.
+    harness.database
+      .prepare("UPDATE sources SET claimed_at = ? WHERE id = ?")
+      .run(Date.now() - 20 * 60 * 1000, sourceId);
+    await harness.call(worker, `/v1/sources/${sourceId}/error`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { error: "This video could not be downloaded or transcribed." }
+    });
+
+    // The clock the pause reads is stamped at the FAILURE. Asserted directly, because it
+    // is the whole mechanism: leave it at the claim time and a twenty-minute job has spent
+    // its ten-minute pause before the failure has even happened.
+    const row = harness.database
+      .prepare("SELECT state, attempts, claimed_at FROM sources WHERE id = ?")
+      .get(sourceId);
+    assert.equal(row.state, "pending");
+    assert.equal(row.attempts, 1);
+    assert.ok(
+      Date.now() - row.claimed_at < 60 * 1000,
+      `the pause is being measured from ${Math.round((Date.now() - row.claimed_at) / 60000)} `
+      + "minutes ago — the work's own running time was deducted from it"
+    );
+
+    const again = await harness.call(worker, "/v1/queue?limit=5", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+    assert.ok(
+      !again.body.sources.some((one) => one.id === sourceId),
+      "it went straight back round — the pause was spent by the work itself"
+    );
+  });
+});
+
+describe("what the look back tells the AI about when things were saved", () => {
+  // India time, like every other date a person or an AI reads (D31). This one was UTC — so
+  // anything saved between midnight and half past five in the morning was handed over dated
+  // to the day BEFORE, and on New Year's night to the year before. The app draws the same
+  // batch's dates in India time, so the card and the AI that wrote it disagreed.
+  test("a reel saved at half past midnight is dated that day, not the one before", () => {
+    // 00:30 India time on 8 September 2026 = 19:00 UTC on the 7th.
+    const halfPastMidnightIST = Date.UTC(2026, 8, 7, 19, 0, 0);
+    const prompt = relookLines([
+      { id: "c1", created_at: halfPastMidnightIST, summary: "a reel", key_points: "[]", claims: "[]" }
+    ]);
+    assert.match(prompt, /2026-09-08/, prompt.slice(0, 400));
+    assert.ok(!prompt.includes("2026-09-07"), "it handed the AI the day before");
+  });
+
+  test("and New Year's night is not dated to last year", () => {
+    const newYearNightIST = Date.UTC(2025, 11, 31, 19, 0, 0);
+    const prompt = relookLines([
+      { id: "c1", created_at: newYearNightIST, summary: "a reel", key_points: "[]", claims: "[]" }
+    ]);
+    assert.match(prompt, /2026-01-01/);
+    assert.ok(!prompt.includes("2025-12-31"), "it handed the AI the wrong year");
   });
 });

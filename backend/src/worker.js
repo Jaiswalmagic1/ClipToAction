@@ -396,7 +396,7 @@ async function saveClip(request, env, userId) {
     .bind(userId, timestamp - DAY_MS)
     .first();
   if ((saved?.n || 0) >= MAX_SAVES_PER_DAY) {
-    return fail(env, "You have saved a lot today. Try again tomorrow.", 429);
+    return fail(env, "You have saved a lot in the last day. Try again in a few hours.", 429);
   }
 
   // Look, insert, then look AGAIN — because between the look and the insert somebody else
@@ -625,7 +625,11 @@ async function deltaSync(request, env, userId) {
   const relook = await relookFor(env, userId, timestamp);
 
   return json(env, {
-    now: timestamp,
+    // One millisecond behind the read, on purpose. The cursor is taken BEFORE the queries
+    // and the queries are `updated_at > since`, so a row written in that same millisecond
+    // and committed a moment later would never be returned again — silently, and for good.
+    // Winding it back by one costs at most re-sending a row that is merged by its own key.
+    now: timestamp - 1,
     connectors: connectors.results,
     // Sent on every sync, never omitted. The app keeps what it is not sent, so leaving
     // this out of a background refresh left a stale answer standing for ever on any device
@@ -669,7 +673,7 @@ async function addNote(request, env, userId) {
   if (text.length > LIMITS.note) return fail(env, "That note is too long.");
 
   if (await pastTheDayFor(env, "notes", userId, MAX_NOTES_PER_DAY)) {
-    return fail(env, "You have written a lot of notes today. Try again tomorrow.", 429);
+    return fail(env, "You have written a lot of notes in the last day. Try again in a few hours.", 429);
   }
 
   const owned = await env.DB.prepare(`SELECT id FROM clips WHERE id = ?1 AND user_id = ?2`)
@@ -1510,7 +1514,18 @@ async function storeFailure(request, env, sourceId) {
   const result = await env.DB.prepare(
     `UPDATE sources
      SET state = CASE WHEN attempts >= ?4 THEN 'failed' ELSE 'pending' END,
-         error = ?1, error_detail = NULL, updated_at = ?2
+         error = ?1, error_detail = NULL, updated_at = ?2,
+         -- Stamped with the moment it FAILED, which is the clock the retry pause reads.
+         --
+         -- It used to be left at the moment the video was CLAIMED, so every minute the
+         -- machine spent working was a minute deducted from the pause: a job that ran ten
+         -- minutes had none left at all. Three attempts back to back, no wait between any
+         -- of them — and on a three-hour video the pause was three hours in the past
+         -- before the failure even happened, which is the exact case it was written for.
+         --
+         -- Worse on an ordinary day: a batch of three is claimed together, so the second
+         -- and third reel's pause was already spent by the videos ahead of them.
+         claimed_at = ?2
      WHERE id = ?3 AND state = 'downloading'`
   )
     .bind(message, now(), sourceId, MAX_ATTEMPTS)
@@ -2061,7 +2076,7 @@ async function saveLearning(request, env, userId, clipId) {
   }
 
   if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY)) {
-    return fail(env, "You have saved a lot of conversations today. Try again tomorrow.", 429);
+    return fail(env, "You have saved a lot of conversations in the last day. Try again in a few hours.", 429);
   }
 
   const columns = learningColumns(payload);

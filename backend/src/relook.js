@@ -23,6 +23,18 @@
 /** Two weeks. What he asked for, and what a person gets if they never touch the setting. */
 export const DEFAULT_RELOOK_DAYS = 14;
 
+// India time, like every other date a person or an AI reads in this product (D31).
+//
+// This one was UTC, and it is the one that goes to an AI: anything saved between midnight
+// and half past five in the morning was handed over dated to the day BEFORE — and on New
+// Year's night, to the year before. The app draws the same batch's dates in India time, so
+// the round-up card and the AI that wrote it were working from different days.
+//
+// India has no daylight saving, so a fixed offset is exact rather than approximate.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const istDate = (milliseconds) =>
+  new Date(Number(milliseconds || 0) + IST_OFFSET_MS).toISOString().slice(0, 10);
+
 /** The gaps the app offers. 0 is off — the honest way to say "stop asking me". */
 export const RELOOK_CHOICES = [0, 7, 14, 30];
 
@@ -85,7 +97,7 @@ THE VIDEOS:
 export function relookLines(rows) {
   return rows
     .map((row) => {
-      const when = new Date(Number(row.created_at || 0)).toISOString().slice(0, 10);
+      const when = istDate(row.created_at);
       const title = String(row.title || "Saved video").replace(/\s+/g, " ").slice(0, 120);
       const summary = String(row.summary || "").replace(/\s+/g, " ").slice(0, SUMMARY_CHARS);
       return `- [${when}] ${title} :: ${summary}`;

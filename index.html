@@ -1326,7 +1326,8 @@ function whenText(milliseconds) {
   if (!milliseconds) return "";
   const then = new Date(milliseconds);
   // Counted in whole India days, not 24-hour blocks: 1am is "today", not "yesterday".
-  const days = istDay(Date.now()) - istDay(milliseconds);
+  // Against the SERVER's clock, because every time this is asked about was written by it.
+  const days = istDay(serverNow()) - istDay(milliseconds);
   const clock = { timeZone: IST_ZONE, hour: "numeric", minute: "2-digit" };
   // A time still to come is not today. `days <= 0` folded tomorrow into "Today", so a key
   // due back after midnight read as "tried again after Today, 12:30 am" — a past tense
@@ -1388,8 +1389,28 @@ function show(view) {
 }
 
 /** "3 days", "2 hours", "a few minutes" — how long since something happened. */
+/**
+ * The server's clock, as of the last sync — and the one to use for anything measured
+ * against a time the SERVER wrote.
+ *
+ * Three machines are involved in this product and only one of them decides when things
+ * happened. Judging a server timestamp by the phone's clock is how a device twenty minutes
+ * fast silently dropped a reel out of "what's new", how a device two days fast printed
+ * "Since tomorrow" above "nothing new", and how one ninety days fast announced that three
+ * subjects had gone quiet for two months.
+ *
+ * `store.since` is the Worker's own `now` from the last sync. Falling back to the device
+ * clock is right for the very first draw, before any sync has landed.
+ */
+const serverNow = () => store.since || Date.now();
+
 function agoText(timestamp) {
-  const minutes = Math.floor((Date.now() - timestamp) / 60000);
+  // A time that has not happened yet, or none at all. `Math.floor` of a negative gave
+  // "a minute ago" for something two days away, and a missing timestamp gave
+  // "20703 days ago" — the age of the epoch, printed as a fact about his machine.
+  if (!timestamp) return "";
+  const minutes = Math.floor((serverNow() - timestamp) / 60000);
+  if (minutes < 0) return "just now";
   if (minutes < 60) return minutes <= 1 ? "a minute ago" : `${minutes} minutes ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
@@ -1416,7 +1437,18 @@ function workerNotice() {
     return notice;
   }
 
-  if (state.running) {
+  // The cached verdict, re-judged against the clock rather than trusted.
+  //
+  // `running` is a yes/no the Worker worked out at the moment it answered, and the app
+  // draws its own cache when it is offline or before the first sync lands. So a three-day-
+  // old cache said "is running — last checked 3 days ago", a sentence that contradicts
+  // itself, and told him to wait for a machine that had not spoken since Tuesday. The
+  // server's rule is five minutes; it is applied here too rather than taken on trust.
+  const stillSpeaking =
+    state.busy
+    || (state.last_seen_at && serverNow() - state.last_seen_at < WORKER_QUIET_MS);
+
+  if (state.running && stillSpeaking) {
     notice.className = "notice ok";
     // "Busy" is its own sentence, because the two were indistinguishable and the app got it
     // wrong every time it mattered: the machine transcribes a whole batch before it asks for
@@ -1464,6 +1496,10 @@ function workerNotice() {
 const snoozeKey = (what = "relook") =>
   `cliptoaction-${what}-snoozed-${user ? user.uid : "none"}`;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
+// How long the machine may say nothing before it counts as stopped. The same five minutes
+// the Worker uses (WORKER_QUIET_AFTER_MS) — it is here because the app draws a CACHED
+// answer when it is offline, and a stale yes is worse than no answer at all.
+const WORKER_QUIET_MS = 5 * 60 * 1000;
 
 /**
  * Whether this notebook has an AI account behind it at all.
@@ -3316,15 +3352,45 @@ const seenKey = () => `cliptoaction-home-last-seen-${user ? user.uid : "none"}`;
 let seenBefore = null;
 // Whether this device has ever remembered a visit. A date it made up is worse than none.
 let firstEverVisit = false;
+// Whether this visit has been written down yet. It waits for a sync, so that the mark is
+// the server's clock rather than the phone's — see markHomeSeen.
+let visitMarked = false;
 
 function markHomeSeen() {
-  if (seenBefore !== null) return;
+  // The mark is written with the SERVER's clock, and only once a sync has told us what
+  // that is. Everything it is later compared against — when a clip was saved, when a reel
+  // was summarised — was written by the Worker, so marking the visit with the phone's
+  // clock meant a phone running fast hid new reels from the one section whose entire job
+  // is to show them, and a phone two days fast printed "Since tomorrow" over "nothing new".
+  //
+  // Home draws once before the first sync lands, which is why this is two steps: what was
+  // remembered is read on that first draw, and the new mark is laid down when there is a
+  // server clock to lay it down with.
+  if (seenBefore !== null) {
+    if (!visitMarked && store.since) {
+      visitMarked = true;
+      try {
+        localStorage.setItem(seenKey(), String(store.since));
+      } catch { /* storage refused; the mark simply does not move */ }
+    }
+    return;
+  }
+
   try {
     seenBefore = Number(localStorage.getItem(seenKey()) || 0);
-    localStorage.setItem(seenKey(), String(Date.now()));
+    if (store.since) {
+      visitMarked = true;
+      localStorage.setItem(seenKey(), String(store.since));
+    }
   } catch {
     seenBefore = 0;
   }
+  // A mark from the future is not a mark. Devices written by an earlier version used the
+  // phone's own clock, so a phone running fast left one dated ahead of the server — and
+  // "since you last looked" then hid everything saved since, under the words "Since
+  // tomorrow". Treated as nothing remembered, which heals it on this very draw.
+  if (seenBefore > serverNow()) seenBefore = 0;
+
   // Nothing remembered: a first visit, a new device, or storage that was cleared. A week
   // is the honest answer to "since you last looked" when nobody knows — but a date is not.
   // On a brand-new account it printed a day before that person existed, which is the first
@@ -3494,7 +3560,10 @@ function actOnSection() {
  * interest, and the other way round is a dead one.
  */
 function subjectsByWeight() {
-  const now = Date.now();
+  // The server's clock: "growing" and "gone quiet" are judgements about when clips were
+  // SAVED, and the save times were all written by the Worker. On a phone ninety days fast
+  // this announced that three reels saved that week had gone quiet for two months.
+  const now = serverNow();
   const totals = new Map();
 
   for (const clip of store.clips) {
@@ -4574,6 +4643,7 @@ onAuthStateChanged(auth, async (account) => {
   // of the session.
   seenBefore = null;
   firstEverVisit = false;
+  visitMarked = false;
   // Everything else that is about looking at ONE person's notebook. A search still typed
   // in the box, a filter, a view and a sort order all carried over into the next account
   // and quietly showed it the wrong slice of itself.

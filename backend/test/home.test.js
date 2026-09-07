@@ -761,3 +761,104 @@ describe("nothing on Home is a stray word", () => {
     app.restore();
   });
 });
+
+describe("whose clock the app believes", () => {
+  // Three machines are involved and only one of them decides when things happened. Judging
+  // a server timestamp by the phone's clock is how a device twenty minutes fast silently
+  // dropped a reel out of "what's new", and how one two days fast printed "Since tomorrow"
+  // above "Nothing new" while two videos sat there waiting to be read.
+  const reelAt = (id, when) => ({
+    clip: {
+      id,
+      user_id: "vish",
+      source_id: `s-${id}`,
+      status: "inbox",
+      created_at: when,
+      updated_at: when
+    },
+    source: {
+      id: `s-${id}`,
+      url_canonical: `https://instagram.com/reel/${id}`,
+      url_original: `https://instagram.com/reel/${id}`,
+      platform: "instagram",
+      state: "analyzed",
+      title: `Reel ${id}`,
+      created_at: when,
+      updated_at: when
+    }
+  });
+
+  test("a phone running two days fast still sees what is new", async () => {
+    const serverNow = Date.now();
+    const twoDaysFast = serverNow + 2 * 24 * 60 * 60 * 1000;
+    const one = reelAt("A", serverNow - 60 * 1000);
+    const two = reelAt("B", serverNow - 30 * 1000);
+
+    const app = await loadApp(
+      syncPayload({
+        now: serverNow,
+        clips: [one.clip, two.clip],
+        sources: [one.source, two.source]
+      }),
+      // A visit remembered by the phone's own fast clock, the way it used to be written.
+      { seed: [["cliptoaction-home-last-seen-vish", String(twoDaysFast)]] }
+    );
+
+    const home = app.text("homeView");
+    assert.ok(!home.includes("Since tomorrow"), `it printed a date from the future: ${home.slice(0, 200)}`);
+    assert.ok(
+      !home.includes("Nothing new. Share a reel"),
+      "two reels were saved and it said nothing was new"
+    );
+    app.restore();
+  });
+
+  test("and the visit it remembers is stamped with the server's clock", async () => {
+    const serverNow = Date.now() - 5 * 60 * 1000;
+    const app = await loadApp(syncPayload({ now: serverNow }));
+    const written = Number(app.localStore.get("cliptoaction-home-last-seen-vish"));
+    assert.ok(
+      Math.abs(written - serverNow) < 1000,
+      `the visit was marked with the device clock (${written - serverNow}ms out)`
+    );
+    app.restore();
+  });
+
+  test("a cached 'it is running' is not drawn as present tense days later", async () => {
+    // The app draws its own cache when it is offline. A three-day-old yes said "is running
+    // — last checked 3 days ago", a sentence that contradicts itself, and told him to wait
+    // for a machine that had not spoken since Tuesday.
+    const serverNow = Date.now();
+    const app = await loadApp(
+      syncPayload({
+        now: serverNow,
+        worker: { last_seen_at: serverNow - 3 * 24 * 60 * 60 * 1000, running: true, busy: false }
+      })
+    );
+    const home = app.text("homeView");
+    assert.ok(!home.includes("is running"), `it still claims to be running: ${home.slice(0, 200)}`);
+    assert.match(home, /is off/);
+    app.restore();
+  });
+
+  test("but one that spoke a minute ago is still running", async () => {
+    const serverNow = Date.now();
+    const app = await loadApp(
+      syncPayload({
+        now: serverNow,
+        worker: { last_seen_at: serverNow - 60 * 1000, running: true, busy: false }
+      })
+    );
+    assert.match(app.text("homeView"), /is running/);
+    app.restore();
+  });
+
+  test("a machine that has never spoken is not said to have checked in 20,703 days ago", async () => {
+    const app = await loadApp(
+      syncPayload({ worker: { last_seen_at: null, running: true, busy: true } })
+    );
+    const home = app.text("homeView");
+    assert.ok(!/\d{4,} days ago/.test(home), `it printed the age of the epoch: ${home.slice(0, 200)}`);
+    app.restore();
+  });
+});

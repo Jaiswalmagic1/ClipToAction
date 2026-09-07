@@ -3621,3 +3621,109 @@ the real one.
 predecessor's faults. This one is the sharpest argument yet for the loop: the word "null" was
 on the home screen of a build that had passed fourteen review rounds and 543 tests, and it
 was there because a test double was gentler than the real thing.
+
+---
+
+### D64 — Round sixteen: the clock
+**Date:** 2026-09-07
+**Amends:** D31, D35, D41, D59.
+
+Fifteen rounds had covered correctness, security, cost, the second user, the machine in his
+house and whether the screens tell the truth. **None had been about time**, and this product
+is made of dates, ages, gaps and cool-offs read across three different machines' clocks.
+
+Seven findings. The display side came back genuinely clean — `whenText`, `savedText` and
+`exactWhen` produce byte-identical output under Kolkata, London, Los Angeles and Kiritimati,
+at 23:59 and 00:01 India time, across a month end, across 31 December and on a leap day.
+D31 holds. What did not hold is everything that COMPARES two times.
+
+#### The ten-minute pause after a failure was measured from when the work STARTED
+
+`storeFailure` left `claimed_at` at the moment the video was claimed, and that is the clock
+the pause reads. So every minute the machine spent working was a minute deducted from the
+pause:
+
+| | |
+|---|---|
+| failed after 9 minutes of work | pause holds |
+| failed after 10+ minutes | handed straight back out on the next poll |
+| a 20-minute job failing | three attempts in three consecutive polls, no wait at all |
+| a batch of three claimed together | the second and third reel's pause was already spent by the videos ahead of them |
+
+His ordinary saves are 11–18 minutes, so on nearly every full batch the pause did nothing.
+And D59 wrote the fix specifically for the long-video case — where, after three hours, the
+pause was three hours in the past before the failure had even happened.
+
+It is stamped at the failure now, which is the only time it could ever have meant.
+
+#### The look-back handed the AI UTC dates — the exact thing D31 exists to prevent
+
+`relook.js` built its lines with `toISOString()`. Anything saved between midnight and half
+past five in the morning went to the AI dated to the **day before**, and on New Year's night
+to the **year** before. The app draws the same batch's span in India time, so the round-up
+card and the AI that wrote it were working from different days. `mcp.js` has done this
+correctly since D31; this one file was missed, and the existing test used midnight UTC —
+05:30 IST — which passes either way.
+
+#### "What's new since you last looked" was the phone's clock judging the Worker's
+
+Three machines, one of which decides when things happened. The visit watermark was written
+with `Date.now()` on the device and compared against timestamps the Worker wrote:
+
+| The phone's clock | What Home said |
+|---|---|
+| correct | both new reels listed |
+| 20 minutes fast | one reel silently missing |
+| 2 days fast | **"Since tomorrow, 11:05 pm."** above **"Nothing new."** — with two reels waiting |
+
+The same fault ran through "growing" and "gone quiet": a phone 90 days fast announced that
+three reels saved that week had gone quiet for two months.
+
+Anything measured against a server timestamp now uses `serverNow()` — the Worker's own clock
+from the last sync — and the visit is marked only once a sync has said what that clock is.
+A watermark already written from the future is treated as no watermark, so a device that has
+one heals on the next draw.
+
+#### And a cached "it is running" was drawn as present tense however old it was
+
+Offline, or before the first sync lands, the app draws its cache — so a three-day-old yes
+read **"is running — last checked 3 days ago"**, a sentence that contradicts itself, about a
+machine that had not spoken since Tuesday. The server's rule is five minutes; the app applies
+it to the cached answer now instead of taking the boolean on trust.
+
+#### Smaller
+
+- **A live but idle PC worker looked abandoned after a day.** "Abandoned" was judged partly
+  on how long its folder had gone untouched — and the folder is only touched when work
+  happens. A second copy would then hand back its claims and delete its media folder out from
+  under it. The run touches its own folder every time round the loop now.
+- **A row written in the same millisecond as a sync could never be returned again.** The
+  cursor is taken before the reads and the query is `updated_at > since`. It is wound back
+  one millisecond, which costs at most re-sending a row that is merged by its own key.
+- **`agoText` had no guard** for a time that has not happened (it said "a minute ago" for two
+  days away) or for none at all (**"20703 days ago"** — the age of the epoch, printed as a
+  fact about his machine). Guarded, though with the cached-verdict fix above the null branch
+  is now unreachable from the screen — defence in depth, and said here rather than claimed as
+  proven.
+- **Three daily caps are rolling 24-hour windows and all three said "try again tomorrow."**
+  Hit one at eleven at night and tomorrow morning is still refused. They say what is true.
+
+#### What the round established as sound
+
+The key cool-off (D35) is computed end to end on the server clock and its two halves agree
+exactly at one hour. `releaseClaim` matches the exact claim stamp the server issued, so no
+cross-machine comparison happens there. The creator backfill's backoff uses a monotonic
+clock, immune to a wall-clock jump. `istDay`'s fixed +5:30 is exact — India has no daylight
+saving. The long-video thresholds are exact to the second. Every timestamp sort is stable and
+no column it reads is nullable.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Fifteen | 184 | 67 |
+| Sixteen (the clock) | 7 | 1 |
+
+**A hundred and ninety-one.** One of the seven was D59's own — a fix that could not work
+because it measured from the wrong end — which is the third time a round has caught a fix
+that fixed nothing while this log said it was done.

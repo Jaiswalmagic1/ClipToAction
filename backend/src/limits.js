@@ -26,6 +26,9 @@ export const MAX_LEARNINGS_PER_DAY = 200;
  */
 export const MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR = 150;
 
+// A rolling twenty-four hours, not a calendar day — which is why nothing here says "try
+// again tomorrow". Hitting the cap at eleven at night and being refused all next morning
+// is a sentence that lies about when the allowance comes back.
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**

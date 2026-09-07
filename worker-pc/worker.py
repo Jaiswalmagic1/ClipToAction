@@ -929,6 +929,18 @@ def main():
     say(f"Polling {API_BASE} every {POLL_SECONDS}s. Ctrl+C to stop.")
 
     while True:
+        # A sign of life on this run's own folder, every time round.
+        #
+        # "Abandoned" is judged partly on how long the folder has gone untouched, because
+        # Windows hands the same process number out again and a dead run's number can look
+        # alive. But the folder is only touched when work happens -- so a copy that had
+        # been polling quietly for a day looked abandoned to the next one, which then handed
+        # back its claims and deleted its media folder out from under it.
+        try:
+            MEDIA_DIR.touch(exist_ok=True)
+        except OSError:
+            pass
+
         try:
             batch, limits = claim_batch()
         except requests.RequestException as error:
