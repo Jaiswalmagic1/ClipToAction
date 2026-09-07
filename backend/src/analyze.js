@@ -340,6 +340,45 @@ export function cleanItems(kind, raw) {
   return raw.filter((item) => item && typeof item === "object" && !Array.isArray(item));
 }
 
+/**
+ * The chapters of a long video, kept only where they are the shape that was asked for.
+ *
+ * A list of STRINGS is the commonest thing a model gets wrong here, and it used to be
+ * stored as-is. `entry.at` on a string then resolves to `String.prototype.at` — a function
+ * — which is truthy, so the app printed `function at() { [native code] }` where the time
+ * should be and lost the heading entirely. D33's one deliverable, rendered as JS internals.
+ */
+export function cleanSections(raw) {
+  if (!Array.isArray(raw)) return null;
+  const kept = raw.filter(
+    (part) =>
+      part
+      && typeof part === "object"
+      && !Array.isArray(part)
+      && String(part.heading ?? "").trim()
+  );
+  return kept.length ? kept : null;
+}
+
+/**
+ * The claims a video made, kept only where each is the shape that was asked for.
+ *
+ * Same failure as chapters, with a worse ending: a claim that came back as a string lost
+ * its own text on screen and could never reach "doubted, and not checked" on the home
+ * screen, because that reads `confidence`. And a single `null` in the list threw out of
+ * the render entirely, which left the reel permanently unopenable.
+ */
+export function cleanClaims(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry) =>
+      entry
+      && typeof entry === "object"
+      && !Array.isArray(entry)
+      && String(entry.claim ?? "").trim()
+  );
+}
+
 /** What a person may say about one tracker row. Labelled per kind by the app. */
 export const ITEM_STATUSES = ["want", "doing", "done", "no"];
 
@@ -578,7 +617,13 @@ export async function askOnTheirOwnKeys(env, userId, prompt, maxTokens = MAX_OUT
  */
 export async function proposeTopic(env, userId, summary) {
   const answer = await askOnTheirOwnKeys(env, userId, TOPIC_PROMPT + summary);
-  return answer ? { topic: answer.payload?.topic, sub_topic: answer.payload?.sub_topic } : null;
+  if (!answer) return null;
+  // Only a string is a name. This path writes to the SHARED analysis row, so a reply of
+  // `{"topic": {"name": "Meesho"}}` became the folder "[object Object]" — in his notebook
+  // and in the notebook of everyone else who had saved that reel. The analysis path has
+  // rejected a non-string topic since D27; this one skipped the check entirely.
+  const name = (value) => (typeof value === "string" ? value : null);
+  return { topic: name(answer.payload?.topic), sub_topic: name(answer.payload?.sub_topic) };
 }
 
 /**

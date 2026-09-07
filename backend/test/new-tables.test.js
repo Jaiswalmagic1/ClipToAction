@@ -367,7 +367,7 @@ describe("a new table never spends an allowance by itself", () => {
   // list of strings where objects were asked for — has every row thrown away. Recording
   // that as "asked and had nothing" would take it out of this queue for ever, leaving an
   // empty table nothing can fill and no signal anywhere that it went wrong.
-  test("a reply whose rows were all unusable is left for another go", async () => {
+  test("a reply whose rows were all unusable is recorded as such, and stops there", async () => {
     harness.database
       .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL WHERE source_id = ?")
       .run(sourceId);
@@ -385,15 +385,30 @@ describe("a new table never spends an allowance by itself", () => {
       .prepare("SELECT items, shapes_version FROM analyses WHERE source_id = ? AND user_id = ''")
       .get(sourceId);
     assert.equal(row.items, null, "nothing usable came back");
-    assert.equal(
-      row.shapes_version,
-      null,
-      "and it must NOT be recorded as asked, or the table can never be filled"
-    );
+    // The NEGATIVE of the current version: one number saying two things. Its size puts the
+    // reel at the current version, so the queue still shrinks — an earlier attempt left it
+    // NULL, and every press then re-read the same reels for ever: four hundred provider
+    // calls on twelve videos, on one press of his own allowance. Its SIGN says the answer
+    // could not be used, so it is diagnosable and comes round by itself when the shapes
+    // next change.
+    assert.equal(row.shapes_version, -ITEM_SHAPES_VERSION);
 
+    const before = harness.providerCalls.length;
     const again = await harness.call(worker, "/v1/kinds", { method: "POST", token });
-    assert.equal(again.body.remaining, 0);
-    assert.equal(again.body.done, 1, "it comes round again rather than being lost");
+    assert.equal(again.body.done, 0, "it must not be read again on the next press");
+    assert.equal(again.body.remaining, 0, "and the offer has to be able to go away");
+    assert.equal(harness.providerCalls.length, before, "nothing more may be spent on it");
+  });
+
+  test("and the app counts it the same way, or the offer never clears", () => {
+    // The app's own rule has to match, or Home shows a number that never falls beside a
+    // button that costs an allowance every press.
+    const app = readFileSync(join(repo, "index.html"), "utf8");
+    assert.match(
+      app,
+      /Math\.abs\(Number\(analysis\.shapes_version \|\| 1\)\) < SHAPES_VERSION/,
+      "the app reads the version straight, so a reel it could not use counts as behind for ever"
+    );
   });
 
   test("without a key nothing is attempted, and it says so", async () => {

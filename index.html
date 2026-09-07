@@ -1149,6 +1149,11 @@ function searchText(clip) {
     // What the reel claimed, and why it was doubted. Already stored and already drawn on
     // the page, but never findable — so "that reel that said X" missed it.
     jsonList(analysis?.claims).map((c) => `${c?.claim || ""} ${c?.why || ""}`).join(" "),
+    // The chapters of a long video. Somebody looking for what was said at the twelve-minute
+    // mark could search the connector for it (D44) and not the box above their own list.
+    jsonList(analysis?.sections)
+      .map((part) => `${part?.heading || ""} ${part?.detail || ""}`)
+      .join(" "),
     // The rows a video carries (D34, D38). The connector was given these in D44 and the
     // app's own search box was not — so a product or a prompt was findable from Claude and
     // not from the box directly above the notebook.
@@ -1298,6 +1303,29 @@ function workerNotice() {
 const snoozeKey = () => `cliptoaction-relook-snoozed-${user ? user.uid : "none"}`;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Whether this notebook has an AI account behind it at all.
+ *
+ * Both of the offers below spend one — and both used to be shown to somebody on the
+ * copy-and-paste tier (D9, a tier this product supports on purpose), who would press and
+ * be told "Connect an AI account in Settings first." A button whose only outcome is a
+ * refusal is worse than no button: it says a feature exists and then blames you for it.
+ */
+const canSpend = () => Boolean(store.settings && store.settings.has_key);
+
+/** The same offer, turned into what it actually is for somebody with no key: a setting. */
+function needsAnAccount(what) {
+  const notice = document.createElement("div");
+  notice.className = "notice";
+  notice.append(document.createTextNode(`${what} `));
+  const link = document.createElement("a");
+  link.href = "#/settings";
+  link.textContent = "Connect one in Settings";
+  notice.append(link);
+  notice.append(document.createTextNode(" — or use copy and paste, which needs no account."));
+  return notice;
+}
+
 /** "Not now" means not today, on this device. It is a convenience, not a setting. */
 function relookSnoozed() {
   try {
@@ -1326,6 +1354,15 @@ const RELOOK_EVERY = [
 function relookBanner() {
   const state = store.relook;
   if (!state || !state.ready || !state.due || relookSnoozed()) return null;
+
+  // A look back is one call on his own account. Without one there is nothing to offer, and
+  // offering it anyway is a button that can only ever answer back.
+  if (!canSpend()) {
+    return needsAnAccount(
+      `${state.due} ${state.due === 1 ? "video has" : "videos have"} been sitting here `
+      + "unread. Looking back over them needs an AI account."
+    );
+  }
 
   const offer = document.createElement("div");
   offer.className = "notice";
@@ -1400,9 +1437,14 @@ function relookPanel(row) {
   when.className = "muted";
   // The span it covered, which was stored from the start and shown nowhere: "over 9
   // videos" says nothing about whether that was last week or last spring.
+  // Dates only. `whenText` puts a comma inside the value ("Today, 3:15 pm"), which read as
+  // a run-on sentence with commas in the middle of a clause.
+  const plainDate = (at) =>
+    new Date(at).toLocaleDateString([], {
+      timeZone: IST_ZONE, day: "numeric", month: "short", year: "numeric"
+    });
   const span = row.covers_from && row.covers_to
-    ? ` saved between ${whenText(row.covers_from).toLowerCase()} and `
-      + `${whenText(row.covers_to).toLowerCase()}`
+    ? ` saved between ${plainDate(row.covers_from)} and ${plainDate(row.covers_to)}`
     : "";
   when.textContent = `${whenText(row.created_at)} — over ${row.clip_count} `
     + `${row.clip_count === 1 ? "video" : "videos"}${span} you had not returned to.`;
@@ -1730,7 +1772,11 @@ const behindClips = () =>
     // carrying no rows — a reel that already has rows is left alone, because re-reading
     // replaces them and a decision he made is keyed on a row's name (D34, D39).
     const rows = jsonList(analysis.items);
-    return Number(analysis.shapes_version || 1) < SHAPES_VERSION && !rows.length;
+    // `Math.abs`, because the Worker records a reply whose rows were ALL unusable as the
+    // NEGATIVE of the version — asked, and what came back could not be used. Reading it
+    // straight would count those reels as behind for ever, and the offer would sit on Home
+    // with a number that never falls and a button that costs an allowance every press.
+    return Math.abs(Number(analysis.shapes_version || 1)) < SHAPES_VERSION && !rows.length;
   });
 
 /**
@@ -1748,15 +1794,22 @@ function backfillOffer() {
   const older = behindClips();
   if (!older.length) return null;
 
+  if (!canSpend()) {
+    return needsAnAccount(
+      `${older.length} ${older.length === 1 ? "video was" : "videos were"} read before `
+      + "these tables existed. Filling them in needs an AI account."
+    );
+  }
+
   const offer = document.createElement("div");
   offer.className = "notice";
   offer.style.background = "var(--pill-topic-bg)";
   offer.style.color = "var(--pill-topic-text)";
   offer.append(document.createTextNode(
-    `${older.length} ${older.length === 1 ? "video was" : "videos were"} read before these `
-    + "tables existed, so nothing has been picked out of them for them yet. Reading them "
-    + "again fills the tables in. It runs on your own AI account, a few at a time, and "
-    + "nothing starts until you press. "
+    `${older.length} ${older.length === 1 ? "video has" : "videos have"} nothing in these `
+    + "tables yet — either they were read before the tables existed, or what came back "
+    + "could not be used. Reading them again fills the tables in. It runs on your own AI "
+    + "account, a few at a time, and nothing starts until you press. "
   ));
   const button = document.createElement("button");
   button.textContent = older.length === 1
@@ -2760,7 +2813,15 @@ function renderClip(clipId) {
 
     // Only a long video has these, and they go straight after the summary — on an hour of
     // talk this is the part somebody actually reads, and the way back into the video.
-    const sections = jsonList(analysis.sections);
+    // Only the chapters that are the shape they should be. The Worker cleans these on the
+    // way in now, but a row stored before it did not — and `entry.at` on a STRING resolves
+    // to `String.prototype.at`, a function, which is truthy: the page printed
+    // `function at() { [native code] }` where the time belonged and lost the heading with
+    // it. One `null` in the list threw out of the render entirely and left the reel
+    // permanently unopenable.
+    const sections = jsonList(analysis.sections).filter(
+      (part) => part && typeof part === "object" && !Array.isArray(part)
+    );
     if (sections.length) {
       const chaptersHeading = document.createElement("h3");
       chaptersHeading.textContent = "What happens when";
@@ -2821,7 +2882,11 @@ function renderClip(clipId) {
       panel.append(pointsHeading, list);
     }
 
-    const claims = jsonList(analysis.claims);
+    // Same guard, same reason: a claim that came back as a string lost its own text on
+    // screen, and a null threw out of the whole page.
+    const claims = jsonList(analysis.claims).filter(
+      (entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+    );
     if (claims.length) {
       const claimsHeading = document.createElement("h3");
       claimsHeading.textContent = "Worth checking before you act on it";
@@ -3395,6 +3460,8 @@ function attentionSection() {
     return jsonList(analysisOf(clip)?.claims)
       .some((claim) => String(claim?.confidence || "").toLowerCase() === "low");
   });
+  // A claim stored as a string has no `confidence`, so it can never reach this section.
+  // The Worker drops those on the way in now; nothing further is needed here.
   if (doubted.length) {
     anything = true;
     const heading = document.createElement("h3");

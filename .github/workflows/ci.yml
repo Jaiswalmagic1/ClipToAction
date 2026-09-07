@@ -47,7 +47,10 @@ jobs:
             const path = require('path');
             const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-'));
             let total = 0;
-            for (const file of ['index.html', 'app.html']) {
+            // share-target.html is the only way a reel gets in (D17) and now carries the
+            // check deciding whether a shared link is his or somebody else's. A typo in it
+            // means every share is silently lost, with no error anywhere.
+            for (const file of ['index.html', 'app.html', 'share-target.html']) {
               const html = fs.readFileSync(file, 'utf8');
               const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/g)];
               if (!blocks.length) throw new Error('no inline script found in ' + file);

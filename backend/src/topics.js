@@ -32,6 +32,10 @@ const EMPTY_NAMES = new Set(["", "null", "none", "n/a", "na", "unknown", "other"
  * app can visibly offer to sort.
  */
 export function cleanTopicName(raw) {
+  // Anything that is not a string is not a name. `String({})` is "[object Object]", which
+  // is a perfectly good-looking folder until you read it — and this is the one place every
+  // path that names a topic passes through.
+  if (typeof raw !== "string") return "";
   const text = String(raw ?? "")
     .replace(/\s+/g, " ")
     .trim()

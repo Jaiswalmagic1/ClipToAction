@@ -120,7 +120,12 @@ export function validateLearning(payload) {
     }
   }
 
-  for (const entry of payload.verdicts || []) {
+  // Array.isArray, not a truthiness check. `verdicts` as an object, a number or a string
+  // is not iterable, so `for...of` THREW — out of a function whose whole contract is to
+  // return a list of problems, past the route, into the router's catch, and back to him as
+  // a bare 500 with his entire copied AI conversation discarded and nothing saying what
+  // was wrong with it.
+  for (const entry of Array.isArray(payload.verdicts) ? payload.verdicts : []) {
     if (!entry || typeof entry !== "object") { problems.push("a verdict is not an object"); break; }
     if (!String(entry.claim || "").trim()) { problems.push("a verdict has no claim"); break; }
     if (!VERDICTS.includes(String(entry.verdict || "").toLowerCase())) {

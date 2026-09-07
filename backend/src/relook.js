@@ -41,11 +41,16 @@ export const MAX_RELOOK_CLIPS = 60;
 const SUMMARY_CHARS = 400;
 
 export const RELOOK_LIMITS = {
-  theme: 600,
+  // Generous on purpose. These are a ceiling against an absurd reply, not a style guide:
+  // the prompt asks for "one or two sentences" and a model routinely writes four, and at
+  // 600 characters per entry a perfectly good round-up was REFUSED — costing him the call
+  // and the whole batch to enforce brevity nobody needs enforced. Twelve entries at this
+  // size is still a bounded object.
+  theme: 2000,
   themes: 12,
-  action: 600,
+  action: 2000,
   actions: 12,
-  note: 2000
+  note: 4000
 };
 
 export const RELOOK_PROMPT = `Below is a list of short videos one person saved and has not looked at again. Each line has when it was saved, what it was called, and what it said.

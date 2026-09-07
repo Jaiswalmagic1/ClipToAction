@@ -2378,3 +2378,93 @@ hundred reels could fill them; it is on Home now.
 by the previous round — because half of it came from asking a different question. Five
 rounds of "is this code correct" never asked "does the thing he wanted actually happen",
 and that question found a data-loss bug on its first pass.
+
+---
+
+### D52 — Round seven: what happens when the AI returns the wrong shape
+**Date:** 2026-09-07
+**Amends:** D27, D29, D33, D38, D39, D41, D51.
+
+Both round-seven reviewers independently found the same top finding, and one of them went
+at a question nobody had asked in six rounds: **every feature in this product rests on a
+model returning an agreed shape — what happens when it does not?** That found seven places
+where it did not matter what the code did, because what came back was already garbage. One
+of them wrote garbage into a row every other saver of that reel can read.
+
+#### The loop D51 re-opened, found by both reviewers
+
+D51 left `shapes_version` NULL when a reply's rows were all unusable, so the reel would come
+round again. It never left the queue: `NULL` and `items IS NULL` are exactly what the queue
+selects on. Once more than ten such reels were in it, every pass re-read **the same first
+ten** and reported `done: 10`, so the app's stop condition never fired and the loop ran to
+its forty-pass cap. **One press: up to 400 provider calls, ~390 of them repeats of ten
+videos**, on his own free allowance — and the offer on Home would then show a number that
+never fell, beside a button that cost money each press.
+
+That is the exact failure the code twenty lines above it warns about in D39's own words.
+
+**Fixed with one number doing two jobs.** A reply whose rows were all unusable is now
+recorded as the **negative** of the version. Its size puts the reel at the current version,
+so `ABS(...)` excludes it and the queue shrinks; its sign says "asked, and what came back
+could not be used", so it is diagnosable in the database and comes round by itself the next
+time the shapes change. Bounded, distinguishable, self-healing.
+
+#### The shapes nobody was checking
+
+| What came back | What happened |
+|---|---|
+| `sections: ["Opening", "Pricing"]` | `entry.at` on a string resolves to `String.prototype.at` — a function, and truthy. The page printed **`function at() { [native code] }`** where the time belonged and lost the heading with it. D33's one deliverable, and D44's connector fix, both rendering JS internals. |
+| `claims: [null]` | Threw out of `renderClip` entirely. That reel became permanently unopenable, and a cold start on a link to it drew **nothing at all**. |
+| `claims: ["Meesho charges 5 percent"]` | The claim's own text vanished from the page, and it could never reach "doubted, and not checked" on Home, which reads `confidence`. |
+| `topic: {name: "Meesho"}` from `proposeTopic` | `String({})` is `"[object Object]"`, which became a real folder — written to the SHARED analysis, so **in the notebook of every other person who saved that reel**. The analysis path has rejected a non-string topic since D27; this path skipped the check. |
+| `verdicts: {a: "true"}` | `for...of` on a non-iterable **threw**, out of a function whose entire contract is to return a list of problems — so his copied AI conversation came back as a bare 500 with nothing saying what was wrong with it. |
+| `summary: {text: "..."}` | `String({})` is non-empty, so it passed and sat under "What it said" for ever. |
+
+All six are now dropped or refused at one place each, on the way in, rather than defended
+against at every place that reads them. `cleanSections` and `cleanClaims` join `cleanItems`
+and `cleanKind`; `cleanTopicName` refuses anything that is not a string; `validateLearning`
+tests `Array.isArray`; `validateAnalysis` requires a summary to actually be text.
+
+**And one thing became MORE forgiving.** A topic of the wrong type used to make the whole
+analysis malformed — throwing away the summary, the points and the claims to punish one
+field. Now that `cleanTopicName` cannot be fooled, a wrong type behaves like a missing one:
+the clip is left unfiled and the app offers to sort it. Keeping the good nine tenths beats
+discarding it.
+
+#### A good look back could be refused for being wordy
+
+The size cap was 600 characters per entry, applied to the whole object. The prompt asks for
+"one or two sentences" and models routinely write four — so a perfectly well-shaped round-up
+was rejected, costing him the call and the whole batch, to enforce a brevity nobody needed
+enforced. The caps are generous now; they exist against an absurd reply, not as a style
+guide.
+
+#### And the tier this product supports on purpose was shown two buttons it cannot press
+
+Neither the look-back banner nor the backfill offer checked whether there was an AI account
+at all. Somebody on the copy-and-paste tier (D9) saw both, pressed, and got "Connect an AI
+account in Settings first." A button whose only outcome is a refusal says a feature exists
+and then blames you for it. Both now say what is needed and link to Settings — and mention
+that copy and paste needs no account, which is the whole point of that tier.
+
+#### Also
+
+`share-target.html` was the only file with new security logic that CI did not syntax-check —
+the one file whose own header says nothing in it may throw, because it is the only way a
+reel gets in. It is checked now.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+| Four | 7 | 5 |
+| Five | 3 | 3 |
+| Six | 5 | 1 |
+| Seven | 9 | 1 |
+
+**Seventy-one.** The rounds that changed the QUESTION found more than the rounds that
+repeated it. "Is this code correct" was exhausted by round five; "does the thing he asked
+for happen" found three more; "what if the model slips" found nine.

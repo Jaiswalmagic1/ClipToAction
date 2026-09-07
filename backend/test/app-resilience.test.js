@@ -89,7 +89,7 @@ describe("the new app against the previous backend", () => {
     const views = app.$("views");
     views.onclick({ target: views.children.find((b) => b.dataset.view === "prompt") });
     const list = app.text("clipList");
-    assert.ok(list.includes("read before these tables existed"));
+    assert.ok(list.includes("nothing in these tables yet"));
     app.restore();
   });
 

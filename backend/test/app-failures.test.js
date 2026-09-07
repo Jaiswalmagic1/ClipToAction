@@ -323,6 +323,47 @@ describe("somebody linking straight to the share target", () => {
   });
 });
 
+describe("somebody with no AI account", () => {
+  // The copy-and-paste tier is a tier this product supports on purpose (D9). Both of these
+  // offers spend an AI account, and both used to be shown to somebody who has none — so
+  // pressing got them "Connect an AI account in Settings first." A button whose only
+  // outcome is a refusal says a feature exists and then blames you for it.
+  const noKey = () => {
+    const p = payload({ relook: { every_days: 14, last_at: null, due: 5, ready: true } });
+    p.settings = { ai_provider: "manual", has_key: false };
+    p.analyses[0].shapes_version = null;
+    return p;
+  };
+
+  test("is told what a look back needs, not given a button that refuses", async () => {
+    const app = await loadApp(noKey());
+    const home = app.text("homeView");
+    assert.ok(home.includes("needs an AI account"));
+    assert.ok(home.includes("Connect one in Settings"));
+    assert.ok(home.includes("copy and paste, which needs no account"));
+    assert.ok(!home.includes("Look back over them"), "no button that can only refuse");
+    app.restore();
+  });
+
+  test("and the same for filling in the tables", async () => {
+    const app = await loadApp(noKey());
+    const home = app.text("homeView");
+    assert.ok(home.includes("Filling them in needs an AI account"));
+    assert.ok(!home.includes("Read those"), "no button that can only refuse");
+    app.restore();
+  });
+
+  test("while somebody who has one is still offered both", async () => {
+    const withKey = noKey();
+    withKey.settings = { ai_provider: "gemini", has_key: true };
+    const app = await loadApp(withKey);
+    const home = app.text("homeView");
+    assert.ok(home.includes("Look back over them"));
+    assert.ok(home.includes("Read those") || home.includes("Read that one again"));
+    app.restore();
+  });
+});
+
 describe("a parked video never claims he parked it", () => {
   test("because on a shared pipeline somebody else may have", async () => {
     const parked = payload();

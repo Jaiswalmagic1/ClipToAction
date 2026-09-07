@@ -25,6 +25,8 @@ import {
   askOnTheirOwnKeys,
   cleanKind,
   cleanItems,
+  cleanSections,
+  cleanClaims,
   KINDS_WITH_ROWS,
   itemKey,
   ITEM_STATUSES,
@@ -943,7 +945,9 @@ export function validateAnalysis(payload, durationSec = 0) {
   const problems = [];
   const limits = limitsFor(durationSec);
 
-  const summary = String(payload?.summary || "").trim();
+  // A string, not merely something that stringifies. `String({})` is "[object Object]",
+  // which is non-empty and sailed through — and then sat under "What it said" for ever.
+  const summary = typeof payload?.summary === "string" ? payload.summary.trim() : "";
   if (!summary) problems.push("summary");
   else if (summary.length > limits.summary) problems.push("summary is too long");
 
@@ -990,13 +994,16 @@ export function validateAnalysis(payload, durationSec = 0) {
 
   // Optional, like suggested_task. A missing topic is not a broken analysis — it leaves
   // the clip unfiled, which the app shows and offers to sort, rather than throwing away a
-  // good summary over a field the model happened to skip. A topic of the wrong *type*
-  // does mean the reply is malformed, so that is still reported.
-  for (const field of ["topic", "sub_topic"]) {
-    const value = payload?.[field];
-    if (value === null || value === undefined) continue;
-    if (typeof value !== "string") problems.push(field);
-  }
+  // good summary over a field the model happened to skip.
+  //
+  // A topic of the wrong TYPE used to be reported as malformed, which threw the whole
+  // analysis away — summary, points, claims and all — over one field. `cleanTopicName`
+  // now refuses anything that is not a string outright, so a wrong type behaves exactly
+  // like a missing one: the clip is left unfiled and the app offers to sort it. Keeping
+  // the good nine tenths of a reply beats discarding it to punish the tenth.
+  //
+  // Being lenient here is only safe BECAUSE that guard exists. Without it an object became
+  // the folder "[object Object]" — on the shared row, so in everybody's notebook.
 
   return problems;
 }
@@ -1017,6 +1024,10 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   // has to be backfilled.
   const kind = cleanKind(payload.kind);
   const rows = cleanItems(kind, payload.items);
+  // Chapters and claims get the same treatment as rows: anything not the agreed shape is
+  // dropped HERE, once, rather than defended against at every place that reads it.
+  const chapters = cleanSections(payload.sections);
+  const claims = cleanClaims(payload.claims);
 
   // The AI sent rows and every one of them was thrown away — which is what happens when a
   // tactic video comes back as `items: ["Sunday Pickup", "Open Box Delivery"]`, a list of
@@ -1052,22 +1063,26 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
       String(payload.summary).trim(),
       JSON.stringify(payload.key_points),
       JSON.stringify(payload.learn_more),
-      JSON.stringify(payload.claims),
+      JSON.stringify(claims),
       payload.suggested_task || null,
       cleanTopicName(payload.topic) || null,
       cleanTopicName(payload.sub_topic) || null,
       // Null rather than "[]" when there are none, so a reel's row is exactly what it was
       // before chapters existed and the app can tell "no chapters" from "none found".
-      Array.isArray(payload.sections) && payload.sections.length
-        ? JSON.stringify(payload.sections)
-        : null,
+      chapters ? JSON.stringify(chapters) : null,
       kind,
       rows && rows.length ? JSON.stringify(rows) : null,
       // Which set of row shapes this reply was asked for. Written whatever came back,
       // including "nothing to track": the point of the number is that a reel which was
-      // ASKED and had nothing is never offered for re-reading again (D39). The one
-      // exception is a reply whose rows were all unusable — see above.
-      rowsWereMangled ? null : ITEM_SHAPES_VERSION,
+      // ASKED and had nothing is never offered for re-reading again (D39).
+      //
+      // A reply whose rows were ALL unusable is recorded as the NEGATIVE of the version.
+      // That is one number doing two jobs, deliberately: `ABS(...)` puts it at the current
+      // version so the queue still shrinks — leaving it NULL made every press re-read the
+      // same reels for ever and spent four hundred calls on twelve of them — while the
+      // sign says "asked, and what came back was not usable", so it is distinguishable in
+      // the database and comes round again by itself the next time the shapes change.
+      rowsWereMangled ? -ITEM_SHAPES_VERSION : ITEM_SHAPES_VERSION,
       timestamp
     )
   ];
@@ -1894,7 +1909,7 @@ async function fillInKinds(request, env, userId) {
      JOIN sources s ON s.id = c.source_id
      WHERE c.user_id = ?1
        AND c.deleted_at IS NULL
-       AND COALESCE(a.shapes_version, 1) < ?3
+       AND ABS(COALESCE(a.shapes_version, 1)) < ?3
        AND a.items IS NULL
      ORDER BY c.created_at DESC`
   )
