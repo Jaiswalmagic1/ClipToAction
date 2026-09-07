@@ -169,6 +169,31 @@ describe("a sync that answers after the account has changed", () => {
     app.restore();
   });
 
+  test("a request that FAILS after the switch is not shouted at the next person either", async () => {
+    // The reply-arrived case was fixed and the request-failed case was missed. The offline
+    // path threw before the account check, so Bob — online, his own notebook loaded fine —
+    // was told in red on the front door of the product that he appeared to be offline,
+    // because Alice's save had given up a moment after he signed in.
+    const app = await loadApp(notebookFor, { who: "alice" });
+    app.$("saveUrl").value = "https://www.instagram.com/reel/ALICEPRIVATE/";
+    const release = app.hold(1);
+    app.$("saveForm").onsubmit({ preventDefault() {} });
+    await new Promise((done) => setTimeout(done, 0));
+
+    await app.signInAs("bob");
+    // Alice's request now gives up at the network rather than answering.
+    release("gave up");
+    await new Promise((done) => setTimeout(done, 0));
+
+    assert.equal(
+      app.text("saveMsg").trim(),
+      "",
+      `bob was told: ${app.text("saveMsg")}`
+    );
+    assert.equal(app.text("syncMsg").trim(), "", `and on the sync line: ${app.text("syncMsg")}`);
+    app.restore();
+  });
+
   test("and what was on screen is the new account's, not a mix", async () => {
     const app = await loadApp(notebookFor, { who: "alice" });
     await app.signInAs("bob");

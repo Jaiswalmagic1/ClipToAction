@@ -86,11 +86,11 @@ export function parsesTheSameEverywhere(url) {
   const text = String(url);
   if (text.includes("\\")) return false;
   try {
+    // Credentials before the host. This parser puts them in their own fields, and another
+    // one further along may not — `https://youtube.com@somewhere.else/` is the same trick
+    // as the backslash, wearing a different hat.
     const parsed = new URL(text);
-    if (parsed.username || parsed.password) return false;
-    // A host is the only thing before the path. Anything else here is a parser disagreeing
-    // with itself about where the authority ends.
-    return !/[\\@]/.test(parsed.host);
+    return !parsed.username && !parsed.password;
   } catch {
     return false;
   }

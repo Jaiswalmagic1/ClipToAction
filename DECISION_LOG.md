@@ -2908,3 +2908,92 @@ transport sizing from D54 holds.
 **A hundred and one.** Round eleven created none of its own, because it was the first look at
 a file the previous ten had never opened — which is the same lesson in a different shape: the
 rounds that changed the QUESTION found things, and this one changed the place.
+
+---
+
+### D57 — Round eleven, part two: fixes nobody could prove
+**Date:** 2026-09-07
+**Amends:** D55, D56.
+
+The other half of round eleven re-read round ten's own diff. Its answer was uncomfortable in
+a new way: **the fixes work, but seven of them were not proved by anything, one was
+incomplete on the route that matters most, and one reintroduced a bug class an earlier round
+had already fixed.** No false refusals — 369 real link shapes through the new gate, zero
+behaviour changes and zero canonical drift, so nothing he has saved is re-downloaded and
+dedupe is intact.
+
+#### The cap went on the wrong door
+
+D55 added a day's worth of writing per person and put it on the app's own routes. The
+connector — the writer an **AI drives in a loop**, reachable with a secret sitting in a URL
+in somebody's AI-app config — had none.
+
+**Three hundred learnings, thirty megabytes into the shared free database, in under half a
+second, not one refused.** And then the owner's own "save what you learned" button answered
+429 for the rest of the day, because his count included every row the connector had written.
+The cap protected nobody and blamed him. D55 says "Both are capped per day now"; that was
+not true of learnings.
+
+The caps and the check now live in `backend/src/limits.js`, imported by both writers, so
+there is one number and one door. Deleted rows no longer count either — a day spent tidying
+up should not lock him out.
+
+#### One number, two units, again
+
+The connector's new 128KB cap was enforced twice: once against `Content-Length`, which
+counts **bytes**, and once against `text.length`, which counts **characters**. Cloudflare
+always sets `Content-Length`, so a conversation saved in Devanagari was refused at about
+43,000 characters where the same content in English got 131,072 — inside the shape
+`validateLearning` itself permits. The connector reports a transport error and the whole
+conversation's conclusions are lost.
+
+This is the exact drift D54 fixed for transcripts, reintroduced two files over, eleven days
+of review later. There are two numbers now: characters decide, and the byte figure is that
+same number at four bytes each, which is the worst UTF-8 can do.
+
+#### Seven fixes that could be silently reverted
+
+The reviewer mutated each one and ran the suite. Green, every time:
+
+| Fix | Now pinned by |
+|---|---|
+| storing the address as it was understood | a link this parser rewrites — a fullwidth full stop in the host, which the old test could not see because it compared a settled URL against itself |
+| the learnings cap | 200 rows, then a connector call that must be refused |
+| the account check in the offline `catch` | a held request released as "gave up", not as a reply |
+| the per-notice snooze key | two notices on Home, one press, one still standing |
+| the relabelled learnings block | the connector's own page, which must name a learning as written by an AI |
+| the PC worker's platform check | already closed by D56's `test_machine.py` |
+| the connector's `Content-Length` pre-check | still unprovable here — Node's `Request` does not expose the header, and that is written down rather than pretended away |
+
+Every one of them now fails when the fix is taken out. The pattern is worth naming: a fix
+with no test is a fix with a shelf life, and this project has already lost two of those to
+its own later edits.
+
+#### Also
+
+`parsesTheSameEverywhere` had a check on `parsed.host` for characters a WHATWG host can
+never contain — dead, and it read as a live guard. Gone; the credentials check, which is
+real, stays.
+
+#### What was clean
+
+369 link shapes: YouTube handles, shorts, live and embed, `youtu.be?si=`, `m.` and `music.`,
+every Instagram and Facebook form including `share/r/` and `story.php`, X with tracking
+parameters, LinkedIn, uppercase hosts, ports, percent-encoding, fragments, `@` in the path
+and in the query, links pasted inside sentences, trailing punctuation, Android share-sheet
+shapes — **no refusals and no canonical drift.** The two host lists agree on every one. The
+caps use their indexes rather than scanning. The app keeps his typed text and re-enables the
+button on a 429. No legitimate preflight breaks. `SECRET_SHAPE` accepts every secret this
+code has ever minted. `UNTRUSTED_WARNING` costs about 76 tokens on a 1,100-token prompt.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Ten | 93 | 23 |
+| Eleven (the machine) | 8 | 0 |
+| Eleven (the regression) | 9 | 9 |
+
+**A hundred and ten.** Every one of round eleven's regression findings was made by round
+ten — the highest proportion yet, and it kept its shape: the smaller and more load-bearing
+the change, the more of its own faults it carries.

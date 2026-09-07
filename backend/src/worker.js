@@ -20,6 +20,7 @@ import {
   asItWasUnderstood
 } from "./canonical.js";
 import { forDisplay } from "./keys.js";
+import { pastTheDayFor, MAX_NOTES_PER_DAY, MAX_LEARNINGS_PER_DAY } from "./limits.js";
 import {
   promptFor,
   tidyTranscript,
@@ -108,13 +109,6 @@ const MAX_BODY_BYTES = 256 * 1024;
 // allow. A test pins the worst case — every character escaped — rather than English.
 export const MAX_TRANSCRIPT_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_SAVES_PER_DAY = 200;
-// The same idea for the two things a person can write as often as they like. Every
-// notebook shares ONE free database, so filling it or burning the day's write allowance
-// does not hurt the person doing it — it takes every other notebook down with it, and an
-// empty notebook reads exactly like lost data. Set far above any real day's work: he
-// writes a handful of notes a day, and a learning is the end of a whole conversation.
-const MAX_NOTES_PER_DAY = 500;
-const MAX_LEARNINGS_PER_DAY = 200;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
 // A long video is a different size of job (D42): six hours of video is around three and a
 // half hours of a machine's time, and the lease above would expire in the middle of it —
@@ -545,22 +539,6 @@ async function deltaSync(request, env, userId) {
     transcripts: transcripts.results,
     analyses: analyses.results
   });
-}
-
-/**
- * Whether this person has already written their day's worth into one table.
- *
- * Not about them: D1 is ONE free database behind every notebook, so the cost of an
- * unbounded writer falls on everybody else's. The caps are far above any real day's use —
- * they exist so that one account cannot end the day for the rest.
- */
-async function pastTheDayFor(env, table, userId, cap) {
-  const written = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?1 AND created_at > ?2`
-  )
-    .bind(userId, now() - DAY_MS)
-    .first();
-  return (written?.n || 0) >= cap;
 }
 
 async function addNote(request, env, userId) {

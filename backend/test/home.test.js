@@ -427,3 +427,75 @@ describe("what's new since you last looked", () => {
     app.restore();
   });
 });
+
+describe("two notices, two dismiss buttons", () => {
+  // Both offers spend an AI account, so somebody on the copy-and-paste tier is shown a
+  // notice instead of a button. They shared one "not now" key — first the re-look's, then
+  // one of their own between the two of them — so dismissing either hid both for the day,
+  // and the one he had not answered never came back.
+  test("pressing 'not now' on one leaves the other where it is", async () => {
+    const app = await loadApp(
+      syncPayload({
+        settings: { ai_provider: "manual", has_key: false },
+        relook: { every_days: 14, last_at: null, due: 3, ready: true },
+        clips: [behindClip()],
+        sources: [behindSource()],
+        analyses: [behindAnalysis()]
+      })
+    );
+
+    const notices = app
+      .$("homeView")
+      .walk()
+      .filter((node) => node.tag === "button" && node.textContent === "Not now");
+    assert.equal(notices.length, 2, "both notices should be offering to be dismissed");
+
+    notices[0].onclick();
+    const left = app
+      .$("homeView")
+      .walk()
+      .filter((node) => node.tag === "button" && node.textContent === "Not now");
+    assert.equal(left.length, 1, "dismissing one notice took the other with it");
+    app.restore();
+  });
+});
+
+function behindClip() {
+  return {
+    id: "clip-behind",
+    user_id: "vish",
+    source_id: "src-behind",
+    status: "inbox",
+    created_at: 1,
+    updated_at: 1
+  };
+}
+
+function behindSource() {
+  return {
+    id: "src-behind",
+    url_canonical: "https://instagram.com/reel/BEHIND",
+    url_original: "https://instagram.com/reel/BEHIND",
+    platform: "instagram",
+    state: "analysed",
+    title: "An older reel",
+    created_at: 1,
+    updated_at: 1
+  };
+}
+
+function behindAnalysis() {
+  return {
+    source_id: "src-behind",
+    user_id: "",
+    provider: "gemini",
+    summary: "Read before the tables existed.",
+    key_points: "[]",
+    learn_more: "[]",
+    claims: "[]",
+    kind: "tactic",
+    items: null,
+    shapes_version: 1,
+    created_at: 1
+  };
+}

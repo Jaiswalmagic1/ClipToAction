@@ -443,13 +443,26 @@ export async function loadApp(
      * The second argument is how a test reaches the SECOND request of a two-request
      * action — pressing "Add" sends the key and then re-reads the list, and it is the
      * re-read that writes a whole list straight into the store.
+     *
+     * The release takes `"gave up"` for the other ending: the request never got there at
+     * all, which is a different path in the app from a reply that arrived, and the one
+     * that was missed the first time.
      */
     hold(many = 1, letThrough = 0) {
       let open;
-      held = { promise: new Promise((done) => { open = done; }) };
+      let giveUp;
+      held = {
+        promise: new Promise((done, fail) => { open = done; giveUp = fail; })
+      };
       holdCount = many;
       skipLeft = letThrough;
-      return () => { held = null; holdCount = 0; skipLeft = 0; open(); };
+      return (how) => {
+        held = null;
+        holdCount = 0;
+        skipLeft = 0;
+        if (how === "gave up") giveUp(new TypeError("Failed to fetch"));
+        else open();
+      };
     },
     /** Fires a window event the app listens for, e.g. returning to the page. */
     fire(name) {

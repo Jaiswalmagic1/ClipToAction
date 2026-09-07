@@ -20,6 +20,7 @@
 // and why neither of them stores anything: a Cloudflare Worker has no session to keep.
 
 import { learningColumns, validateLearning } from "./learnings.js";
+import { pastTheDayFor, MAX_LEARNINGS_PER_DAY } from "./limits.js";
 
 // Newest first — this is also the order the list is offered in when a client asks for a
 // version we cannot serve.
@@ -99,7 +100,18 @@ export function newConnectorSecret() {
 /** SHA-256, hex. What is stored — never the secret itself. */
 // What one MCP request may weigh. A tool call is a few hundred bytes and the largest
 // thing that comes this way — a saved learning — is a few kilobytes.
-const MAX_MCP_BODY_BYTES = 128 * 1024;
+//
+// TWO numbers, because there are two units and the first attempt used one number for both.
+// `Content-Length` counts BYTES and `text.length` counts characters, and they are only the
+// same thing for plain English — so a conversation saved in Hindi was refused at about a
+// third of the size an English one was allowed, with the connector reporting a transport
+// error and the conclusions of the whole conversation lost. Precisely the drift that
+// D54 fixed for transcripts, reintroduced two files over.
+//
+// The byte figure is the character figure at four bytes each, which is the worst UTF-8
+// can do. The character figure is the one that actually decides.
+const MAX_MCP_BODY_CHARS = 128 * 1024;
+const MAX_MCP_BODY_BYTES = 4 * MAX_MCP_BODY_CHARS;
 
 // The shape this product's own secrets have: 32 random bytes, base64 in the URL-safe
 // alphabet (see newConnectorSecret). Checked before anything touches the database, so a
@@ -603,6 +615,18 @@ async function runSaveLearning(env, userId, args) {
   const problems = validateLearning(args);
   if (problems.length) return { error: `That learning is missing or malformed: ${problems.join(", ")}.` };
 
+  // The same day's worth the app's own button is held to.
+  //
+  // It was on the app's route and NOT on this one, which is exactly the wrong way round:
+  // this is the writer an AI drives in a loop, reachable with a secret sitting in a URL in
+  // somebody's AI-app config. Three hundred of these went in, thirty megabytes into the
+  // shared free database, in under half a second and without one refusal — and then the
+  // owner's own button answered 429 for the rest of the day, because his count included
+  // every row this had written. The cap protected nobody and blamed him.
+  if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY)) {
+    return { error: "This notebook has saved a lot of conversations today. Try again tomorrow." };
+  }
+
   const columns = learningColumns(args);
   const timestamp = Date.now();
   const id = crypto.randomUUID();
@@ -715,7 +739,7 @@ export async function handleMcp(request, env, secret) {
   let body;
   try {
     const text = await request.text();
-    if (text.length > MAX_MCP_BODY_BYTES) {
+    if (text.length > MAX_MCP_BODY_CHARS) {
       return respond(rpcError(null, -32600, "That request is too large."), 413);
     }
     body = JSON.parse(text);

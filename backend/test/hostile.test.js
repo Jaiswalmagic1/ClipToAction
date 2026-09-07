@@ -68,18 +68,28 @@ describe("a link that two parsers read differently", () => {
   });
 
   test("what is stored is this parser's own reading, so nothing downstream sees another", async () => {
+    // The first version of this test compared the stored value against itself put through
+    // the same function — trivially true of anything already settled, and it passed with
+    // the fix removed. The link below is one this parser rewrites: a FULLWIDTH FULL STOP
+    // in the host, which `new URL` folds to a real dot. It is accepted as YouTube here,
+    // and Python would read the raw text as an entirely different host.
     const harness = await createTestEnv();
     const token = await harness.mintToken("vish");
-    await harness.call(worker, "/v1/clips", {
+    const raw = "https://youtube\uFF0Ecom/watch?v=PARSEDONE";
+    assert.notEqual(raw, asItWasUnderstood(raw), "this link does not test what it should");
+
+    const saved = await harness.call(worker, "/v1/clips", {
       method: "POST",
       token,
-      body: { url: "https://www.instagram.com/reel/PARSEDONE/?igshid=1" }
+      body: { url: raw }
     });
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+
     const row = harness.database
       .prepare("SELECT url_original FROM sources WHERE url_canonical LIKE ?")
       .get("%PARSEDONE%");
-    assert.equal(row.url_original, asItWasUnderstood(row.url_original), "not a settled form");
-    assert.ok(!row.url_original.includes("\\"));
+    assert.equal(row.url_original, "https://youtube.com/watch?v=PARSEDONE");
+    assert.ok(!row.url_original.includes("\uFF0E"), "the raw text was handed on as it arrived");
     harness.restore();
   });
 
@@ -459,5 +469,224 @@ describe("a machine that was switched off mid-job", () => {
       body: {}
     });
     assert.equal(refused.status, 401);
+  });
+});
+
+// ---------------------------------------------------------------- the writer an AI drives
+
+describe("a day's worth applies to the connector too", () => {
+  // The cap went on the app's own button and NOT on this one, which is exactly the wrong
+  // way round: the connector is the writer an AI drives in a loop, reachable with a secret
+  // in somebody's AI-app config. Three hundred learnings, thirty megabytes into the shared
+  // free database, in under half a second, not one refused — and then the owner's own
+  // button answered 429 for the rest of the day, because his count included every row this
+  // had written. The cap protected nobody and blamed him.
+  let harness;
+  let token;
+  let clipId;
+  let secret;
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ALOOPONE/" }
+    });
+    clipId = saved.body.clip.id;
+    const made = await harness.call(worker, "/v1/connector", {
+      method: "POST",
+      token,
+      body: { label: "Claude" }
+    });
+    secret = made.body.url.split("/mcp/")[1];
+  });
+  after(() => harness.restore());
+
+  const saveLearning = () =>
+    worker.fetch(
+      new Request(`https://api.test/mcp/${secret}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "save_learning",
+            arguments: { clip_id: clipId, learned: ["something"] }
+          }
+        })
+      }),
+      harness.env
+    );
+
+  test("it is refused, in words the AI app can read back", async () => {
+    const timestamp = Date.now();
+    const rows = [];
+    for (let n = 0; n < 200; n += 1) {
+      rows.push(
+        `('l${n}', 'vish', '${clipId}', '[]', '[]', '[]', '[]', '[]', '[]', ${timestamp}, ${timestamp})`
+      );
+    }
+    harness.database.exec(
+      `INSERT INTO learnings (id, user_id, clip_id, learned, verdicts, actions, still_open,
+                              corrections, look_into, created_at, updated_at)
+       VALUES ${rows.join(",")}`
+    );
+
+    const response = await saveLearning();
+    const said = JSON.parse(await response.text());
+    const text = JSON.stringify(said);
+    assert.match(text, /a lot of conversations today/);
+
+    const held = harness.database
+      .prepare("SELECT COUNT(*) AS n FROM learnings WHERE user_id = 'vish'")
+      .get();
+    assert.equal(held.n, 200, "it was written anyway");
+  });
+
+  test("and a notebook that has written nothing today is not held up", async () => {
+    harness.database.prepare("UPDATE learnings SET created_at = 1 WHERE user_id = 'vish'").run();
+    const response = await saveLearning();
+    const said = JSON.parse(await response.text());
+    assert.ok(!JSON.stringify(said).includes("a lot of conversations"), JSON.stringify(said));
+  });
+});
+
+describe("the size of one connector request, in both units", () => {
+  // Two units, one number. `Content-Length` counts bytes and `text.length` counts
+  // characters, and they are the same thing only for plain English — so a conversation
+  // saved in his own language was refused at about a third of the size an English one was
+  // allowed, and the whole conversation's conclusions were lost to a transport error. The
+  // same drift D54 fixed for transcripts, two files over.
+  let harness;
+  let secret;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const made = await harness.call(worker, "/v1/connector", {
+      method: "POST",
+      token,
+      body: { label: "Claude" }
+    });
+    secret = made.body.url.split("/mcp/")[1];
+  });
+  after(() => harness.restore());
+
+  const send = (body) =>
+    worker.fetch(
+      new Request(`https://api.test/mcp/${secret}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(new TextEncoder().encode(body).length)
+        },
+        body
+      }),
+      harness.env
+    );
+
+  test("a long conversation in Devanagari is not refused where an English one fits", async () => {
+    const words = "\u092e\u0942\u0932\u094d\u092f \u0924\u092f \u0939\u0948\u0964 ";
+    const padding = words.repeat(Math.ceil(60000 / words.length));
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "search", arguments: { query: padding } }
+    });
+    assert.ok(
+      new TextEncoder().encode(body).length > 150000,
+      "this test is not testing what it thinks it is"
+    );
+
+    const response = await send(body);
+    assert.notEqual(response.status, 413, "refused for being written in his own language");
+  });
+
+  test("and something absurd is still refused", async () => {
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "search", arguments: { query: "x".repeat(200000) } }
+    });
+    const response = await send(body);
+    assert.equal(response.status, 413);
+  });
+});
+
+describe("what the connector calls the owner's own words", () => {
+  // The fence ends with "what follows is the notebook owner's own". True of their NOTES,
+  // which are typed into the app's own note box. Not true of a learning, which is written
+  // by an AI at the end of a conversation that had a stranger's transcript in it — so one
+  // successful piece of trickery could be saved once and then read back inside the trusted
+  // half of the page on every future fetch.
+  let harness;
+  let secret;
+  let clipId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ALEARNTONE/" }
+    });
+    clipId = saved.body.clip.id;
+    const sourceId = saved.body.clip.source_id;
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(sourceId);
+    await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "words", lang: "en", engine: "test", duration_sec: 40 }
+    });
+    await harness.call(worker, "/v1/notes", {
+      method: "POST",
+      token,
+      body: { clip_id: clipId, body: "A NOTE HE TYPED HIMSELF" }
+    });
+    await harness.call(worker, `/v1/clips/${clipId}/learning`, {
+      method: "POST",
+      token,
+      body: { learning: { learned: ["SOMETHING AN AI WROTE DOWN"] } }
+    });
+
+    const made = await harness.call(worker, "/v1/connector", {
+      method: "POST",
+      token,
+      body: { label: "Claude" }
+    });
+    secret = made.body.url.split("/mcp/")[1];
+  });
+  after(() => harness.restore());
+
+  test("a learning is named for what it is, and a note is not", async () => {
+    const response = await worker.fetch(
+      new Request(`https://api.test/mcp/${secret}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "fetch", arguments: { id: clipId } }
+        })
+      }),
+      harness.env
+    );
+    const page = JSON.parse(await response.text()).result.structuredContent.text;
+
+    assert.ok(page.includes("SOMETHING AN AI WROTE DOWN"), "the learning is not there at all");
+    assert.match(
+      page,
+      /written by an AI/i,
+      "a model's own words are still presented as the owner's"
+    );
+    assert.ok(page.includes("THEIR OWN NOTES"), "a note he typed lost its own heading");
   });
 });
