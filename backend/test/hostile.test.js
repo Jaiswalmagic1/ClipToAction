@@ -1146,60 +1146,6 @@ describe("one person's dead AI account, and everybody else's reel", () => {
     assert.ok(calls <= 2, `an outage cost ${calls} calls across other people's accounts`);
   });
 
-  test("a model one account has not got is tried on the next person's provider", async () => {
-    // A key list can hold gemini, anthropic, groq and openai at once (D35), so "it failed
-    // here" says nothing about what happens over there. Treating a missing model like a
-    // provider outage stopped the reel dead for the second saver, whose own account was
-    // fine and was never tried — and put a sentence about somebody else's account on the
-    // row they read.
-    let call = 0;
-    harness.answerProviderWith(() => {
-      call += 1;
-      // Twice: a 404 is worth one retry (it can be a blip), so the account is only out of
-      // the running once the retry has failed too.
-      if (call <= 2) {
-        return new Response(JSON.stringify({ error: { message: "model not found" } }), {
-          status: 404,
-          headers: { "Content-Type": "application/json" }
-        });
-      }
-      return harness.geminiReplyWith({
-        summary: "The other account had the model.",
-        key_points: [],
-        learn_more: [],
-        claims: []
-      });
-    });
-
-    const url = "https://www.instagram.com/reel/NOMODEL/";
-    const owner = await harness.mintToken("owner");
-    const newbie = await harness.mintToken("newbie");
-    for (const who of [owner, newbie]) {
-      await harness.call(worker, "/v1/clips", { method: "POST", token: who, body: { url } });
-    }
-    const row = harness.database
-      .prepare("SELECT id FROM sources WHERE url_canonical LIKE ?")
-      .get("%NOMODEL%");
-    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(row.id);
-
-    const posted = await harness.call(worker, `/v1/sources/${row.id}/transcript`, {
-      method: "POST",
-      serviceToken: SERVICE_TOKEN,
-      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
-    });
-    assert.equal(
-      posted.body.analyzed,
-      true,
-      `it stopped at the first account: ${JSON.stringify(posted.body)}`
-    );
-
-    // And nothing is marked against the first key — there is nothing wrong with it.
-    const first = harness.database
-      .prepare("SELECT state FROM ai_keys WHERE user_id = 'owner'")
-      .get();
-    assert.equal(first.state, "ready", "a working key was taken out of the rotation");
-  });
-
   test("the next person's account is tried, and the reel is read", async () => {
     let call = 0;
     harness.answerProviderWith(() => {
@@ -1256,17 +1202,33 @@ describe("no button may ask the database for more than a request is allowed", ()
   let token;
   let calls;
 
+  // Counting EXECUTIONS, not `prepare` calls. A prepared statement can be bound and run
+  // more than once — `findOrCreateTopic` does exactly that — and it is the run that costs a
+  // subrequest, so counting preparations undercounted the expensive button by one per
+  // folder it created.
+  const countingDb = (real, bump) => ({
+    ...real,
+    prepare(sql) {
+      const statement = real.prepare(sql);
+      return {
+        ...statement,
+        bind(...params) {
+          const bound = statement.bind(...params);
+          return {
+            first: (...rest) => { bump(); return bound.first(...rest); },
+            all: (...rest) => { bump(); return bound.all(...rest); },
+            run: (...rest) => { bump(); return bound.run(...rest); }
+          };
+        }
+      };
+    },
+    batch: real.batch ? (...args) => { bump(); return real.batch(...args); } : undefined
+  });
+
   const counting = () => {
     const real = harness.env.DB;
     calls = 0;
-    harness.env.DB = {
-      ...real,
-      prepare(sql) {
-        calls += 1;
-        return real.prepare(sql);
-      },
-      batch: real.batch ? (...args) => { calls += 1; return real.batch(...args); } : undefined
-    };
+    harness.env.DB = countingDb(real, () => { calls += 1; });
     return () => { harness.env.DB = real; };
   };
 
@@ -1720,6 +1682,7 @@ describe("no button goes over fifty with a full list of keys", () => {
       .run();
 
     let spent = 0;
+    let answered = 0;
     harness.answerProviderWith(() => {
       if (spent < 9) {
         spent += 1;
@@ -1728,13 +1691,17 @@ describe("no button goes over fifty with a full list of keys", () => {
           headers: { "Content-Type": "application/json" }
         });
       }
+      // A DIFFERENT subject each time, so every clip really pays for creating its folders.
+      // One shared subject meant every folder after the first already existed, and the test
+      // measured the cheapest arrangement of the most expensive button.
+      answered += 1;
       return harness.geminiReplyWith({
         summary: "read",
         key_points: [],
         learn_more: [],
         claims: [],
-        topic: "Selling",
-        sub_topic: "Meesho",
+        topic: `Subject ${answered}`,
+        sub_topic: `Corner ${answered}`,
         kind: "tactic",
         items: [{ name: "a thing", does: "something" }]
       });
@@ -1745,11 +1712,22 @@ describe("no button goes over fifty with a full list of keys", () => {
     const providerBefore = harness.providerCalls.length;
     let statements = 0;
     const real = harness.env.DB;
+    // Executions, not preparations — see the note on `countingDb` above.
     harness.env.DB = {
       ...real,
       prepare(sql) {
-        statements += 1;
-        return real.prepare(sql);
+        const statement = real.prepare(sql);
+        return {
+          ...statement,
+          bind(...params) {
+            const bound = statement.bind(...params);
+            return {
+              first: (...rest) => { statements += 1; return bound.first(...rest); },
+              all: (...rest) => { statements += 1; return bound.all(...rest); },
+              run: (...rest) => { statements += 1; return bound.run(...rest); }
+            };
+          }
+        };
       },
       batch: real.batch ? (...args) => { statements += 1; return real.batch(...args); } : undefined
     };
@@ -1797,6 +1775,8 @@ describe("no button goes over fifty with a full list of keys", () => {
     harness.database
       .prepare("UPDATE clips SET topic_id = NULL, topic_set_by = NULL WHERE user_id = 'vish'")
       .run();
+    // No topic on any of them, so the AI is asked for one per clip — and the stub answers
+    // with a different subject each time, so every clip really pays for creating folders.
     harness.database.prepare("UPDATE analyses SET topic = NULL, sub_topic = NULL").run();
 
     const { response, spent } = await countingOne("/v1/topics/sort");
@@ -1849,5 +1829,142 @@ describe("tidying when a folder of that name was deleted before", () => {
       .get();
     assert.equal(kept.n, 1, "the sub-folder was lost or duplicated");
     harness.restore();
+  });
+});
+
+describe("a model one account has not got", () => {
+  // A key list can hold gemini, anthropic, groq and openai at once (D35), so "it failed
+  // here" says nothing about what happens over there — but it says everything about the
+  // same provider, whose model names are hard-coded one apiece.
+  let harness;
+
+  before(async () => {
+    harness = await createTestEnv();
+  });
+  after(() => {
+    harness.answerProviderWith(null);
+    harness.restore();
+  });
+
+  test("a model one account has not got is tried on the next person's provider", async () => {
+    // A key list can hold gemini, anthropic, groq and openai at once (D35), so "it failed
+    // here" says nothing about what happens over there. Treating a missing model like a
+    // provider outage stopped the reel dead for the second saver, whose own account was
+    // fine and was never tried — and put a sentence about somebody else's account on the
+    // row they read.
+    let calls = 0;
+    harness.answerProviderWith((url) => {
+      calls += 1;
+      // Gemini has not got the model — twice, because a 404 is worth one retry. Groq, on
+      // the second person's account, answers perfectly well. DIFFERENT providers is the
+      // whole point: the same one would say the same thing.
+      if (String(url).includes("generativelanguage")) {
+        return new Response(JSON.stringify({ error: { message: "model not found" } }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{
+            message: {
+              content: [
+                "```json",
+                JSON.stringify({
+                  summary: "The other account had the model.",
+                  key_points: [],
+                  learn_more: [],
+                  claims: []
+                }),
+                "```"
+              ].join(String.fromCharCode(10))
+            }
+          }],
+          model: "llama-test"
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    });
+
+    const url = "https://www.instagram.com/reel/NOMODEL/";
+    const owner = await harness.mintToken("owner");
+    const newbie = await harness.mintToken("newbie");
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: owner,
+      body: { provider: "gemini", api_key: "the-owners-key-value-here" }
+    });
+    // The second person is on a different provider — which is the only reason there is
+    // anything to try. Two accounts on the same one get the same answer, and asking twice
+    // is somebody else's allowance spent for nothing.
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token: newbie,
+      body: { provider: "groq", api_key: "a-groq-key-value-here" }
+    });
+    for (const who of [owner, newbie]) {
+      await harness.call(worker, "/v1/clips", { method: "POST", token: who, body: { url } });
+    }
+    const row = harness.database
+      .prepare("SELECT id FROM sources WHERE url_canonical LIKE ?")
+      .get("%NOMODEL%");
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(row.id);
+
+    const posted = await harness.call(worker, `/v1/sources/${row.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
+    });
+    assert.equal(
+      posted.body.analyzed,
+      true,
+      `it stopped at the first account: ${JSON.stringify(posted.body)}`
+    );
+
+    // And nothing is marked against the first key — there is nothing wrong with it.
+    const first = harness.database
+      .prepare("SELECT state FROM ai_keys WHERE user_id = 'owner'")
+      .get();
+    assert.equal(first.state, "ready", "a working key was taken out of the rotation");
+  });
+
+  test("but the SAME provider is not asked twice, however many people saved it", async () => {
+    // The model names are hard-coded, one per provider, so the commonest 404 there is — a
+    // model that has been retired — is identical on every account using it. Without this,
+    // one reel twelve people had saved cost twenty-four full-transcript prompts charged to
+    // people who pressed nothing, and past twenty-five savers the request died on the
+    // platform's own ceiling halfway through.
+    let calls = 0;
+    harness.answerProviderWith(() => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: { message: "model retired" } }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+
+    const url = "https://www.instagram.com/reel/RETIRED/";
+    for (const who of ["one", "two", "three", "four", "five", "six"]) {
+      const token = await harness.mintToken(who);
+      await harness.call(worker, "/v1/settings", {
+        method: "PUT",
+        token,
+        body: { provider: "gemini", api_key: `a-key-for-${who}-here` }
+      });
+      await harness.call(worker, "/v1/clips", { method: "POST", token, body: { url } });
+    }
+    const row = harness.database
+      .prepare("SELECT id FROM sources WHERE url_canonical LIKE ?")
+      .get("%RETIRED%");
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(row.id);
+
+    await harness.call(worker, `/v1/sources/${row.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
+    });
+
+    // One attempt and its retry. Not one pair per person who saved it.
+    assert.ok(calls <= 2, `six savers on one provider cost ${calls} calls`);
   });
 });

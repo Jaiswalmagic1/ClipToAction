@@ -3900,3 +3900,94 @@ working tree were deleted.
 **Two hundred and eight.** Another round that changed where it stood rather than how hard it
 looked, and another that created nothing of its own — the fourth time that has happened, and
 every one of those four asked about a part of the product from the outside.
+
+---
+
+### D67 — Round seventeen's regression half: a clock that only moves when the network does
+**Date:** 2026-09-08
+**Amends:** D31, D64, D65.
+
+The regression reviewer re-read the clock round and the round after it. `646cbb5` came back
+sound — every one of its code fixes is real and fails the suite when reverted. **D64's central
+mechanism did not.** It could be deleted entirely with all 566 tests green, and in the one
+situation it exists for it made three screens read *more* falsely than before.
+
+#### `serverNow()` was the wrong clock for "what time is it now"
+
+D64 was right that a **mark** must be written in the server's units: the watermark is compared
+against times the Worker wrote, so a fast phone was silently dropping reels out of "what's
+new". It then applied the same clock to every question of the form *how long ago*, and that
+clock only moves when the network does.
+
+| | before D64 | after D64 | now |
+|---|---|---|---|
+| a reel saved a week ago, app offline six days | "Saved 1 Sept 2026" | **"Saved today"** | a date |
+| a machine silent three days, cache three days old | "is running — last checked 3 days ago" | **"is running — last checked a minute ago"** | "is off — last running 3 days ago" |
+| a machine off eight days | "off — last running 8 days ago" | **"off — last running 10 minutes ago"** | the real age |
+
+The old sentence contradicted itself and at least carried its own clue. The new one carried
+none. And the guard that was supposed to catch it — re-judging `running` against the clock —
+was a **tautology**: the server computes `running` from `last_seen_at` and `now`, both of
+which arrive in the same reply, so recomputing it from those same numbers can never disagree.
+It fired in exactly one state, a cache the quota had shrunk.
+
+The split is now the honest one. **The device's clock answers "what time is it now"** —
+`whenText`, `agoText`, the folder ages, and the machine's status line, whose whole job is to
+notice that nothing has been heard for a while. **The server's clock marks a moment** — the
+visit watermark, and nothing else.
+
+#### And the watermark was permanently one visit behind
+
+`markHomeSeen` waited for a server clock before laying the mark — but `loadCache()` restores
+one from the previous session's cache before the first draw, so the mark was laid with the
+LAST visit's clock and then latched. Every session showed a visit's worth of things he had
+already read. It waits for a sync **in this session** now.
+
+#### Three savers' allowances for one retired model name
+
+D65 let a 404 move on to the next person's list, because a model missing from one account
+says nothing about a different provider. True — and it says everything about the same one.
+The model names here are hard-coded, one per provider, so the commonest 404 there is — a
+retired model — is identical on every account using it. Measured: one reel twelve people had
+saved cost **twenty-four full-transcript prompts**, charged to people who pressed nothing,
+and past twenty-five savers the request died on the platform's ceiling halfway through.
+
+A provider that has said it cannot do this is not asked again in the same run. Six savers on
+one provider now cost two calls; they cost twelve.
+
+#### The ceiling tests were counting the wrong thing, and measuring the easy case
+
+They wrapped `prepare()`, and Cloudflare charges for each **execution** — `findOrCreateTopic`
+prepares once and runs twice, so every folder created was undercounted. And all six reels in
+the sort test shared one subject, so every folder after the first already existed: the test
+measured the cheapest arrangement of the most expensive button. **The third round running
+that this exact shape has appeared.** Counting executions, with a new subject per clip, the
+sort button costs 55 at a batch of four — over the line — and comfortably under at two.
+
+#### Also
+
+The key labels on the settings screen could still be deleted from the app with the whole
+suite green: D65 restored the harness's ability to see an element's own text and wrote no
+test that used it. A capability restored is not a bug closed. There is one now.
+
+#### What the reviewer established as sound
+
+`storeFailure` stamping `claimed_at` — all eleven readers traced, none can see a failed row as
+claimed. `relookFor` on every sync — measured at exactly one extra statement in the two states
+that run it, with the right answer in all four. The tidy's clash lookup and un-delete —
+`spent` still exact, the tidy still terminates, the resurrected folder always has a live
+parent. Both new batch sizes, `categoryOf`'s split, and the India dates in the look-back.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Sixteen | 199 | 74 |
+| Seventeen (the connector in use) | 9 | 0 |
+| Seventeen (regression) | 7 | 7 |
+
+**Two hundred and fifteen.** Eight rounds running the regression half has found only its
+predecessor's faults, and this is the fourth time it has caught a fix that fixed nothing —
+this one by noticing that no test in the suite could reach the state the fix was for. Every
+payload the harness builds carries `now: Date.now()`, so a clock frozen at the last sync
+looked exactly like the current one. There are tests for a stale app now.

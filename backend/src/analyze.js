@@ -759,10 +759,14 @@ async function spendKeys(env, candidates, attempt) {
   // Whose list has already refused, and the first refusal, which is what gets reported if
   // nobody's keys work at all.
   const givenUp = new Set();
+  // Providers that have already said they cannot do this. A different account on the same
+  // provider will say the same thing.
+  const triedAndFailed = new Set();
   let firstRefusal = null;
 
   for (const key of candidates) {
     if (givenUp.has(key.user_id)) continue;
+    if (triedAndFailed.has(key.provider)) continue;
     try {
       const value = await attempt(key);
       await markKeyWorked(env, key.id);
@@ -804,6 +808,16 @@ async function spendKeys(env, candidates, attempt) {
       // outage or a mangled reply is not.
       firstRefusal = firstRefusal || error;
       givenUp.add(key.user_id);
+      // And the PROVIDER, when the failure was about what that provider could do.
+      //
+      // "The model is not on this account" says nothing about a different provider — which
+      // is why this moves on at all — but it says everything about the same one, and the
+      // model names here are hard-coded, one per provider. So the commonest 404 there is,
+      // a model that has been retired, is identical on every account using it: without
+      // this, one reel that twelve people had saved cost TWENTY-FOUR full-transcript
+      // prompts, charged to people who pressed nothing, and past twenty-five savers the
+      // request died on the platform's own ceiling halfway through.
+      if (category === "unsuitable") triedAndFailed.add(key.provider);
     }
   }
 

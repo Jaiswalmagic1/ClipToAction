@@ -837,6 +837,8 @@ function mergeRows(existing, incoming, keyOf) {
  */
 function applyDelta(delta, forAccount = whoIsSignedIn()) {
   if (forAccount !== whoIsSignedIn()) return;
+  // The server has spoken in this session, so its clock is this visit's clock.
+  syncedThisSession = true;
   const byId = (row) => row.id;
   const bySource = (row) => row.source_id;
   store.clips = mergeRows(store.clips, delta.clips || [], byId);
@@ -1326,8 +1328,10 @@ function whenText(milliseconds) {
   if (!milliseconds) return "";
   const then = new Date(milliseconds);
   // Counted in whole India days, not 24-hour blocks: 1am is "today", not "yesterday".
-  // Against the SERVER's clock, because every time this is asked about was written by it.
-  const days = istDay(serverNow()) - istDay(milliseconds);
+  // Against the DEVICE's clock: what day it is today is a question about now. Counting from
+  // the last sync meant an app that had not synced for six days called a week-old reel
+  // "Saved today".
+  const days = istDay(Date.now()) - istDay(milliseconds);
   const clock = { timeZone: IST_ZONE, hour: "numeric", minute: "2-digit" };
   // A time still to come is not today. `days <= 0` folded tomorrow into "Today", so a key
   // due back after midnight read as "tried again after Today, 12:30 am" — a past tense
@@ -1390,17 +1394,19 @@ function show(view) {
 
 /** "3 days", "2 hours", "a few minutes" — how long since something happened. */
 /**
- * The server's clock, as of the last sync — and the one to use for anything measured
- * against a time the SERVER wrote.
+ * The server's clock, as of the last sync — for MARKING a moment, and nothing else.
  *
- * Three machines are involved in this product and only one of them decides when things
- * happened. Judging a server timestamp by the phone's clock is how a device twenty minutes
- * fast silently dropped a reel out of "what's new", how a device two days fast printed
- * "Since tomorrow" above "nothing new", and how one ninety days fast announced that three
- * subjects had gone quiet for two months.
+ * Three machines are involved and only one of them decides when things happened. The visit
+ * watermark is compared against times the Worker wrote, so it has to be written in the
+ * Worker's own units: a phone twenty minutes fast silently dropped a reel out of "what's
+ * new", and one two days fast printed "Since tomorrow" above "nothing new".
  *
- * `store.since` is the Worker's own `now` from the last sync. Falling back to the device
- * clock is right for the very first draw, before any sync has landed.
+ * It is NOT the answer to "what time is it now". That was the mistake the round after made:
+ * `whenText`, `agoText` and the machine's status line all began measuring against this, so
+ * an app that had not synced for six days said a week-old reel was "Saved today" and a
+ * three-day-old cache said the machine was "last checked a minute ago". A clock that only
+ * moves when the network does is worse than the device's own, whose only failing is being
+ * wrong on the rare phone that is set wrong. Those three read `Date.now()`.
  */
 const serverNow = () => store.since || Date.now();
 
@@ -1409,7 +1415,10 @@ function agoText(timestamp) {
   // "a minute ago" for something two days away, and a missing timestamp gave
   // "20703 days ago" — the age of the epoch, printed as a fact about his machine.
   if (!timestamp) return "";
-  const minutes = Math.floor((serverNow() - timestamp) / 60000);
+  // The DEVICE's clock: "how long ago" is a question about now, and only the device knows
+  // what now is. Measuring it against the last sync made every age freeze while offline —
+  // a machine silent for three days read "last checked a minute ago".
+  const minutes = Math.floor((Date.now() - timestamp) / 60000);
   if (minutes < 0) return "just now";
   if (minutes < 60) return minutes <= 1 ? "a minute ago" : `${minutes} minutes ago`;
   const hours = Math.floor(minutes / 60);
@@ -1437,16 +1446,19 @@ function workerNotice() {
     return notice;
   }
 
-  // The cached verdict, re-judged against the clock rather than trusted.
+  // The cached verdict, re-judged against the DEVICE's clock rather than trusted.
   //
   // `running` is a yes/no the Worker worked out at the moment it answered, and the app
-  // draws its own cache when it is offline or before the first sync lands. So a three-day-
-  // old cache said "is running — last checked 3 days ago", a sentence that contradicts
-  // itself, and told him to wait for a machine that had not spoken since Tuesday. The
-  // server's rule is five minutes; it is applied here too rather than taken on trust.
+  // draws its own cache when it is offline or before the first sync lands — so a three-day-
+  // old cache said "is running", about a machine that had not spoken since Tuesday.
+  //
+  // Judged against the last sync this was a tautology: the server computes `running` from
+  // `last_seen_at` and `now`, both of which arrive in the same reply, so recomputing it
+  // from those same numbers can never disagree. It has to be measured against a clock that
+  // KEEPS MOVING while the app is offline, and the device's is the only one there is.
   const stillSpeaking =
     state.busy
-    || (state.last_seen_at && serverNow() - state.last_seen_at < WORKER_QUIET_MS);
+    || (state.last_seen_at && Date.now() - state.last_seen_at < WORKER_QUIET_MS);
 
   if (state.running && stillSpeaking) {
     notice.className = "notice ok";
@@ -3353,9 +3365,10 @@ const seenKey = () => `cliptoaction-home-last-seen-${user ? user.uid : "none"}`;
 let seenBefore = null;
 // Whether this device has ever remembered a visit. A date it made up is worse than none.
 let firstEverVisit = false;
-// Whether this visit has been written down yet. It waits for a sync, so that the mark is
-// the server's clock rather than the phone's — see markHomeSeen.
+// Whether this visit has been written down yet, and whether the server has answered in
+// THIS session — a cache carries the last session's clock, which is not this visit.
 let visitMarked = false;
+let syncedThisSession = false;
 
 function markHomeSeen() {
   // The mark is written with the SERVER's clock, and only once a sync has told us what
@@ -3365,10 +3378,15 @@ function markHomeSeen() {
   // is to show them, and a phone two days fast printed "Since tomorrow" over "nothing new".
   //
   // Home draws once before the first sync lands, which is why this is two steps: what was
-  // remembered is read on that first draw, and the new mark is laid down when there is a
-  // server clock to lay it down with.
+  // remembered is read on that first draw, and the new mark is laid down when THIS session
+  // has heard from the server.
+  //
+  // `store.since` alone was not enough — `loadCache` restores it from the previous
+  // session's cache before the first draw, so the mark was laid with the LAST visit's clock
+  // and then latched. Every session was one visit behind: things he had already read came
+  // back under "what's new", every time.
   if (seenBefore !== null) {
-    if (!visitMarked && store.since) {
+    if (!visitMarked && syncedThisSession) {
       visitMarked = true;
       try {
         localStorage.setItem(seenKey(), String(store.since));
@@ -3379,7 +3397,7 @@ function markHomeSeen() {
 
   try {
     seenBefore = Number(localStorage.getItem(seenKey()) || 0);
-    if (store.since) {
+    if (syncedThisSession) {
       visitMarked = true;
       localStorage.setItem(seenKey(), String(store.since));
     }
@@ -3561,10 +3579,10 @@ function actOnSection() {
  * interest, and the other way round is a dead one.
  */
 function subjectsByWeight() {
-  // The server's clock: "growing" and "gone quiet" are judgements about when clips were
-  // SAVED, and the save times were all written by the Worker. On a phone ninety days fast
-  // this announced that three reels saved that week had gone quiet for two months.
-  const now = serverNow();
+  // The device's clock, like every other "how long ago" in this file. Judged against the
+  // last sync instead, "you have not added to this since…" stopped moving the moment the
+  // app went offline.
+  const now = Date.now();
   const totals = new Map();
 
   for (const clip of store.clips) {
@@ -4645,6 +4663,7 @@ onAuthStateChanged(auth, async (account) => {
   seenBefore = null;
   firstEverVisit = false;
   visitMarked = false;
+  syncedThisSession = false;
   // Everything else that is about looking at ONE person's notebook. A search still typed
   // in the box, a filter, a view and a sort order all carried over into the next account
   // and quietly showed it the wrong slice of itself.

@@ -862,3 +862,158 @@ describe("whose clock the app believes", () => {
     app.restore();
   });
 });
+
+describe("an app that has not heard from the server for days", () => {
+  // The condition no test could reach: every payload in this suite carries
+  // `now: Date.now()`, so a clock frozen at the last sync looked exactly like the current
+  // one. That is precisely the state the freeze does damage in — offline, or before the
+  // first sync lands — and it is where a week-old reel started reading "Saved today" and a
+  // machine silent for three days read "last checked a minute ago".
+  const DAY = 24 * 60 * 60 * 1000;
+
+  /** A device that last synced `daysAgo` ago and cannot reach the network now. */
+  const staleApp = async (daysAgo, extras = {}) => {
+    const lastSync = Date.now() - daysAgo * DAY;
+    const cached = {
+      ...syncPayload({ now: lastSync, ...extras }),
+      since: lastSync
+    };
+    return loadApp(syncPayload({}), {
+      failAfter: 0,
+      seed: [["cliptoaction-notebook-vish", JSON.stringify(cached)]]
+    });
+  };
+
+  test("still says what day a reel was really saved on", async () => {
+    // Six days since the last sync, and a reel saved a few hours before it. Measured
+    // against the frozen clock they are the same India day, so it reads "Today"; measured
+    // against the real one it is six days ago and reads as a date.
+    const lastSync = Date.now() - 6 * DAY;
+    const savedAt = lastSync - 3 * 60 * 60 * 1000;
+    const app = await staleApp(6, {
+      clips: [{
+        id: "old",
+        user_id: "vish",
+        source_id: "s-old",
+        status: "inbox",
+        created_at: savedAt,
+        updated_at: savedAt
+      }],
+      sources: [{
+        id: "s-old",
+        url_canonical: "https://instagram.com/reel/OLD",
+        url_original: "https://instagram.com/reel/OLD",
+        platform: "instagram",
+        state: "analyzed",
+        title: "A week old reel",
+        created_at: savedAt,
+        updated_at: savedAt
+      }]
+    });
+
+    app.tab("notebook");
+    const drawn = app.text("clipList");
+    assert.ok(drawn.includes("A week old reel"), drawn.slice(0, 200));
+    assert.ok(
+      !/Saved (Today|Yesterday)/i.test(drawn),
+      `a reel from six days ago is being dated by a clock that stopped: ${drawn.slice(0, 300)}`
+    );
+    app.restore();
+  });
+
+  test("and does not claim the machine spoke a minute ago when it was days", async () => {
+    const app = await staleApp(3, {
+      worker: { last_seen_at: Date.now() - 3 * DAY, running: true, busy: false }
+    });
+    const home = app.text("homeView");
+    assert.ok(
+      !home.includes("last checked a minute ago"),
+      `an age frozen at the last sync: ${home.slice(0, 300)}`
+    );
+    assert.match(home, /is off/, "a machine silent for three days is still called running");
+    app.restore();
+  });
+
+  test("and a folder untouched for months does not read as busy", async () => {
+    const app = await staleApp(90, {});
+    // Nothing to assert about folders on an empty notebook — what matters is that the
+    // screen drew at all from a ninety-day-old cache, with no stray words in it.
+    for (const stray of ["null", "undefined", "NaN", "[object Object]"]) {
+      assert.ok(!app.text("homeView").includes(stray));
+    }
+    app.restore();
+  });
+});
+
+describe("what's new since you last looked, over three visits", () => {
+  // The watermark was laid with the clock the CACHE carried — the previous session's — and
+  // then latched, so every session was one visit behind and things he had already read came
+  // back under "what's new" every time.
+  const DAY = 24 * 60 * 60 * 1000;
+  const KEY = "cliptoaction-home-last-seen-vish";
+
+  test("the mark moves to this visit, not the one before it", async () => {
+    const first = Date.now() - 2 * DAY;
+    const second = Date.now() - 1 * DAY;
+
+    // A device that has been here before: a cache from the first visit, and the mark it
+    // left behind.
+    const cached = { ...syncPayload({ now: first }), since: first };
+    const app = await loadApp(syncPayload({ now: second }), {
+      seed: [
+        [KEY, String(first)],
+        ["cliptoaction-notebook-vish", JSON.stringify(cached)]
+      ]
+    });
+    await new Promise((done) => setTimeout(done, 0));
+    app.tab("home");
+
+    const mark = Number(app.localStore.get(KEY));
+    assert.ok(
+      Math.abs(mark - second) < 1000,
+      `the visit was marked at ${new Date(mark).toISOString()} — the clock the cache `
+      + "carried, which is the visit before this one"
+    );
+    app.restore();
+  });
+});
+
+describe("the settings screen names the keys he added", () => {
+  // The harness was made faithful about an element's own text, and then nothing used it:
+  // the AI key labels could still be deleted from the app entirely with the whole suite
+  // green. A capability restored is not a bug closed.
+  test("each key shows the name he gave it", async () => {
+    const app = await loadApp(
+      syncPayload({
+        settings: { ai_provider: "gemini", has_key: true },
+        ai_keys: [
+          {
+            id: "k1",
+            label: "work gmail",
+            provider: "gemini",
+            position: 0,
+            state: "ready",
+            created_at: 1,
+            updated_at: 1
+          },
+          {
+            id: "k2",
+            label: "the spare one",
+            provider: "groq",
+            position: 1,
+            state: "ready",
+            created_at: 1,
+            updated_at: 1
+          }
+        ]
+      }),
+      { hash: "#/settings" }
+    );
+
+    const drawn = app.text("keyList");
+    assert.match(drawn, /work gmail/, `the key's own name is missing: ${drawn.slice(0, 200)}`);
+    assert.match(drawn, /the spare one/);
+    assert.match(drawn, /gemini/);
+    app.restore();
+  });
+});

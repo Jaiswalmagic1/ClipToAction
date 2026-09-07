@@ -227,9 +227,11 @@ describe("what an AI can actually answer from this notebook", () => {
     assert.match(found.text, /account is private/);
 
     // Listed by date rather than by words, since a failed reel has no words in it.
-    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
+    // India dates, like the server's — a UTC one is a different day for five and a half
+    // hours out of every twenty-four.
+    const istDay = (at) =>
+      new Date(at + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const threeDaysAgo = istDay(Date.now() - 3 * 24 * 60 * 60 * 1000);
     const listed = await call("search", { saved_before: threeDaysAgo });
     const row = listed.results.find((one) => one.id === clipOf.get("BROKEN").id);
     assert.ok(row, "a failed reel is missing from the list altogether");
