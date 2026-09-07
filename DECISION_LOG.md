@@ -3727,3 +3727,87 @@ no column it reads is nullable.
 **A hundred and ninety-one.** One of the seven was D59's own — a fix that could not work
 because it measured from the wrong end — which is the third time a round has caught a fix
 that fixed nothing while this log said it was done.
+
+---
+
+### D65 — Round sixteen's regression half: one number for two buttons
+**Date:** 2026-09-07
+**Amends:** D35, D59, D60, D63.
+
+The regression reviewer re-read `42ddd05`. Four of its six fixes were proven correct — the
+`append` faithfulness was driven across **93 state × view combinations** with zero stray
+words, the tidy accounting matches the statements actually issued exactly, and the LIMIT on
+the backfill is equivalent to what it replaced. Three things were wrong.
+
+#### One measurement, two buttons, and the expensive one went over the ceiling
+
+`MAX_SORT_PER_REQUEST` drove both "Read those again" and "Sort my old clips", and D63 raised
+it 3 → 4 on a measurement of the **cheap** button. Sorting also looks up or creates two
+folders and files the clip — roughly twice the work. Measured, with ten keys and nine of them
+spent, which is D35's own reason for a key list:
+
+| | read again | sort |
+|---|---|---|
+| 3 clips | 39 | 51 — **over** |
+| 4 clips | 44 | **52 — over** |
+| 2 clips | — | 41 |
+
+At 51 the Worker throws mid-request: the folders already created and the clips already filed
+stay, and **the provider calls already made are already spent**. Every press, for ever.
+
+Two numbers now — four for reading, two for sorting — and a test that presses each button at
+the worst permitted key list and counts. It reports 52 when the sort number goes back to
+four. The app's sort loop goes to 150 passes, which still covers three hundred reels.
+
+#### A missing model on one account killed the reel for everybody
+
+D63 stopped an outage walking every saver's list, which was right. But it swept in every
+failure that is not about the key — and a key list can hold gemini, anthropic, groq and
+openai at once. A model missing from one account (404), a request that provider refused
+(400), or one model that answers in prose rather than JSON is **not** a fact about anybody
+else's provider, and stopping there killed the reel for a second saver whose own account was
+fine and was never tried — and put a sentence about a stranger's account on the row they read.
+
+There is a category for that now. An outage still stops outright; "this account or model
+cannot do it" ends that owner's list and tries the next. Neither marks the key, because
+there is nothing wrong with it.
+
+#### The tidy guard that does the work had no test at all
+
+D63's inner-loop budget check could be deleted with all 552 tests green. Measured with it
+gone: **125 statements for one folder with forty clashing children**, against a ceiling of
+50. The test written for it used five children per folder, which never reaches the case the
+fix exists for. There is one with forty now, and it reports 125 when the guard goes.
+
+#### And two the reviewer found in passing
+
+- **A soft-deleted sub-folder of the same name made the tidy throw a 500.** The unique index
+  does not care that a row is deleted; the clash check did. Latent — I could not reach it
+  through the app either — but it is the same half-committed failure the budget exists to
+  prevent. A deleted sub-folder of that name is the same subject: the clips go into it and it
+  comes back, which is what `findOrCreateTopic` already does everywhere else.
+- **The harness dropped an element's own text** once anything was appended to it, so the
+  settings screen's key labels were invisible to every test — deleting the label from the app
+  entirely left the suite green. Fixed, and `prepend` made faithful to match `append`.
+
+#### Written down, not fixed
+
+`relookFor` still runs its count on a background refresh for the two states that matter: a
+notebook that has never had a look-back (his, today) and one past the gap that keeps ignoring
+the banner. That is one extra statement and ~600 rows every forty-five seconds while the tab
+is open. The functional half is right and had to stay — leaving the answer out is what killed
+the feature in D61 — but the cost claim in D63 is not true for the majority state. Making it
+cheap needs either a counter kept up to date on write, or the app asking for it only on the
+refreshes a person can see; both are builds, not review-round edits.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Fifteen | 184 | 67 |
+| Sixteen (the clock) | 7 | 1 |
+| Sixteen (regression) | 8 | 6 |
+
+**A hundred and ninety-nine.** Seven rounds running, the regression half has found mostly its
+predecessor's faults — and this one caught the same shape twice over: a number measured on
+one thing and applied to another, and a guard whose test never reached the case it guards.

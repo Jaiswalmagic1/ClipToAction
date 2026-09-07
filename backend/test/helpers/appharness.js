@@ -68,8 +68,12 @@ class FakeNode {
   }
 
   get textContent() {
-    if (!this.children.length) return this._text;
-    return this.children.map((child) => child.textContent).join("");
+    // The node's OWN text comes first, then its children's. Dropping it once anything was
+    // appended is another way this stand-in was different from a browser: the settings
+    // screen sets a key's label and then appends to the same element, so a browser reads
+    // "mine · working" and this read " · working" — the label gone, and any test about it
+    // unwritable. Deleting the label from the app entirely left every test green.
+    return this._text + this.children.map((child) => child.textContent).join("");
   }
 
   set textContent(value) {
@@ -110,9 +114,18 @@ class FakeNode {
   }
 
   prepend(...nodes) {
+    // Same rule as `append`: a browser inserts a text node for anything that is not one,
+    // rather than throwing. Asymmetry here is how the next null slips through.
     for (const node of nodes.reverse()) {
-      node.parentNode = this;
-      this.children.unshift(node);
+      if (node && typeof node === "object") {
+        node.parentNode = this;
+        this.children.unshift(node);
+        continue;
+      }
+      const text = new FakeNode("#text");
+      text.textContent = String(node);
+      text.parentNode = this;
+      this.children.unshift(text);
     }
   }
 

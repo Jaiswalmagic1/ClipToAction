@@ -1146,6 +1146,60 @@ describe("one person's dead AI account, and everybody else's reel", () => {
     assert.ok(calls <= 2, `an outage cost ${calls} calls across other people's accounts`);
   });
 
+  test("a model one account has not got is tried on the next person's provider", async () => {
+    // A key list can hold gemini, anthropic, groq and openai at once (D35), so "it failed
+    // here" says nothing about what happens over there. Treating a missing model like a
+    // provider outage stopped the reel dead for the second saver, whose own account was
+    // fine and was never tried — and put a sentence about somebody else's account on the
+    // row they read.
+    let call = 0;
+    harness.answerProviderWith(() => {
+      call += 1;
+      // Twice: a 404 is worth one retry (it can be a blip), so the account is only out of
+      // the running once the retry has failed too.
+      if (call <= 2) {
+        return new Response(JSON.stringify({ error: { message: "model not found" } }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return harness.geminiReplyWith({
+        summary: "The other account had the model.",
+        key_points: [],
+        learn_more: [],
+        claims: []
+      });
+    });
+
+    const url = "https://www.instagram.com/reel/NOMODEL/";
+    const owner = await harness.mintToken("owner");
+    const newbie = await harness.mintToken("newbie");
+    for (const who of [owner, newbie]) {
+      await harness.call(worker, "/v1/clips", { method: "POST", token: who, body: { url } });
+    }
+    const row = harness.database
+      .prepare("SELECT id FROM sources WHERE url_canonical LIKE ?")
+      .get("%NOMODEL%");
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(row.id);
+
+    const posted = await harness.call(worker, `/v1/sources/${row.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "some words", lang: "en", engine: "test", duration_sec: 50 }
+    });
+    assert.equal(
+      posted.body.analyzed,
+      true,
+      `it stopped at the first account: ${JSON.stringify(posted.body)}`
+    );
+
+    // And nothing is marked against the first key — there is nothing wrong with it.
+    const first = harness.database
+      .prepare("SELECT state FROM ai_keys WHERE user_id = 'owner'")
+      .get();
+    assert.equal(first.state, "ready", "a working key was taken out of the rotation");
+  });
+
   test("the next person's account is tried, and the reel is read", async () => {
     let call = 0;
     harness.answerProviderWith(() => {
@@ -1342,6 +1396,53 @@ describe("no button may ask the database for more than a request is allowed", ()
     assert.equal(orphans.n, 0, "a sub-folder was left under a folder that had been removed");
   });
 
+  test("one folder with forty sub-folders, which is where the guard actually lives", async () => {
+    // The budget is checked INSIDE the child loop, not only between folders — and nothing
+    // tested that. Deleting the inner check left every test green while one folder with
+    // forty children cost 125 statements against a ceiling of 50, because once a folder was
+    // entered its whole cost landed however many children it had.
+    const at = Date.now();
+    const rows = [];
+    for (const [id, name] of [["keeps", "Amazon"], ["goes", "Amazon listings"]]) {
+      rows.push(`('${id}', 'vish', '${name}', '', '${name.toLowerCase()}', ${at}, ${at})`);
+      for (let child = 0; child < 40; child += 1) {
+        rows.push(
+          `('${id}k${child}', 'vish', 'Sub ${child}', '${id}', 'shared ${child}', ${at}, ${at})`
+        );
+      }
+    }
+    harness.database.exec(
+      `INSERT INTO topics (id, user_id, name, parent_id, name_key, created_at, updated_at)
+       VALUES ${rows.join(",")}`
+    );
+
+    let passes = 0;
+    for (;;) {
+      const stop = counting();
+      const response = await harness.call(worker, "/v1/topics/tidy", { method: "POST", token });
+      stop();
+      assert.ok(
+        calls <= CEILING,
+        `one press asked the database ${calls} times, and it is allowed ${CEILING}`
+      );
+      passes += 1;
+      if (!response.body.remaining) break;
+      assert.ok(passes < 60, "the tidy never finished");
+    }
+    assert.ok(passes > 1, "forty children fitted in one press — this test proves nothing");
+
+    // The half-done folder is never left with children under a folder that has gone.
+    const orphans = harness.database
+      .prepare(
+        `SELECT COUNT(*) AS n FROM topics child
+         WHERE child.user_id = 'vish' AND child.deleted_at IS NULL AND child.parent_id <> ''
+           AND EXISTS (SELECT 1 FROM topics parent
+                       WHERE parent.id = child.parent_id AND parent.deleted_at IS NOT NULL)`
+      )
+      .get();
+    assert.equal(orphans.n, 0, "a sub-folder was left under a folder that had been removed");
+  });
+
   test("reading old clips again, including a key that turns out to be spent", async () => {
     // A spent first key is the whole reason a LIST of keys exists (D35), and the second
     // call to a provider is another subrequest.
@@ -1412,7 +1513,8 @@ describe("no button may ask the database for more than a request is allowed", ()
 
     // Calls to a provider are subrequests too, and count against the same ceiling.
     const spent = calls + providerCallsDuringThePress;
-    assert.ok(spent <= CEILING, `one press cost ${spent} of the ${CEILING} allowed`);
+    assert.ok(spent <= CEILING, `KINDS cost ${spent} of the ${CEILING} allowed`);
+    assert.ok(spent > 15, `this test measured almost nothing: ${spent}`);
   });
 });
 
@@ -1581,5 +1683,171 @@ describe("what the look back tells the AI about when things were saved", () => {
     ]);
     assert.match(prompt, /2026-01-01/);
     assert.ok(!prompt.includes("2025-12-31"), "it handed the AI the wrong year");
+  });
+});
+
+// ------------------------------------------ every spending button, at the worst key list
+
+describe("no button goes over fifty with a full list of keys", () => {
+  // The worst case is the maximum ten keys with nine of them spent — which is D35's own
+  // reason for a list existing, not a freak setup. Each spent key costs an attempt, and an
+  // attempt is a subrequest like any database call.
+  //
+  // "Sort my old clips" was measured at 51 and 61 because it shared a batch size with the
+  // cheaper button: sorting asks the AI AND looks up or creates two folders and files the
+  // clip. Raising the number on a measurement of the cheap one pushed the expensive one
+  // over. They have a number each now, and both are counted here.
+  const CEILING = 50;
+  let harness;
+  let token;
+
+  const withTenKeysNineSpent = async () => {
+    const held = harness.database
+      .prepare("SELECT COUNT(*) AS n FROM ai_keys WHERE user_id = 'vish'")
+      .get();
+    for (let n = held.n; n < 10; n += 1) {
+      await harness.call(worker, "/v1/keys", {
+        method: "POST",
+        token,
+        body: { provider: "gemini", api_key: `key-number-${n}-value`, label: `k${n}` }
+      });
+    }
+    // Every key ready again. Seeding the reels runs the automatic analysis, which would
+    // otherwise spend the nine before the button under test is ever pressed — and then the
+    // press would measure the easy case rather than the worst one.
+    harness.database
+      .prepare("UPDATE ai_keys SET state = 'ready', exhausted_at = NULL, last_error = NULL")
+      .run();
+
+    let spent = 0;
+    harness.answerProviderWith(() => {
+      if (spent < 9) {
+        spent += 1;
+        return new Response(JSON.stringify({ error: { message: "quota" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return harness.geminiReplyWith({
+        summary: "read",
+        key_points: [],
+        learn_more: [],
+        claims: [],
+        topic: "Selling",
+        sub_topic: "Meesho",
+        kind: "tactic",
+        items: [{ name: "a thing", does: "something" }]
+      });
+    });
+  };
+
+  const countingOne = async (path) => {
+    const providerBefore = harness.providerCalls.length;
+    let statements = 0;
+    const real = harness.env.DB;
+    harness.env.DB = {
+      ...real,
+      prepare(sql) {
+        statements += 1;
+        return real.prepare(sql);
+      },
+      batch: real.batch ? (...args) => { statements += 1; return real.batch(...args); } : undefined
+    };
+    const response = await harness.call(worker, path, { method: "POST", token });
+    harness.env.DB = real;
+    return {
+      response,
+      spent: statements + (harness.providerCalls.length - providerBefore)
+    };
+  };
+
+  const seedReels = async (many) => {
+    for (let i = 0; i < many; i += 1) {
+      const saved = await harness.call(worker, "/v1/clips", {
+        method: "POST",
+        token,
+        body: { url: `https://www.instagram.com/reel/CEIL${i}/` }
+      });
+      const sourceId = saved.body.clip.source_id;
+      harness.database
+        .prepare("UPDATE sources SET state = 'downloading' WHERE id = ?")
+        .run(sourceId);
+      await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+        method: "POST",
+        serviceToken: SERVICE_TOKEN,
+        body: { text: "words", lang: "en", engine: "test", duration_sec: 40 }
+      });
+    }
+  };
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+  });
+  after(() => {
+    harness.answerProviderWith(null);
+    harness.restore();
+  });
+
+  test("sorting old clips", async () => {
+    await withTenKeysNineSpent();
+    await seedReels(6);
+    await withTenKeysNineSpent();
+    // Every clip unfiled and never looked at, which is what the button is for.
+    harness.database
+      .prepare("UPDATE clips SET topic_id = NULL, topic_set_by = NULL WHERE user_id = 'vish'")
+      .run();
+    harness.database.prepare("UPDATE analyses SET topic = NULL, sub_topic = NULL").run();
+
+    const { response, spent } = await countingOne("/v1/topics/sort");
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.ok(response.body.sorted >= 1, `it sorted nothing: ${JSON.stringify(response.body)}`);
+    assert.ok(spent <= CEILING, `SORT cost ${spent} of the ${CEILING} allowed`);
+    assert.ok(spent > 20, `this test measured almost nothing: ${spent}`);
+  });
+
+  test("and reading old clips again", async () => {
+    await withTenKeysNineSpent();
+    harness.database
+      .prepare("UPDATE analyses SET shapes_version = NULL, items = NULL")
+      .run();
+
+    const { response, spent } = await countingOne("/v1/kinds");
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.ok(response.body.done >= 1, `it read nothing: ${JSON.stringify(response.body)}`);
+    assert.ok(spent <= CEILING, `one press cost ${spent} of the ${CEILING} allowed`);
+  });
+});
+
+describe("tidying when a folder of that name was deleted before", () => {
+  // The unique index does not care that a row is soft-deleted. Filtering deleted rows out
+  // of the clash check meant the move hit `UNIQUE constraint failed` and threw — a 500,
+  // with the merges before it already committed and nothing recording which.
+  test("does not fall over, and brings the deleted one back", async () => {
+    const harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    await harness.call(worker, "/v1/sync?since=0", { token });
+
+    const at = Date.now();
+    harness.database.exec(
+      `INSERT INTO topics (id, user_id, name, parent_id, name_key, created_at, updated_at, deleted_at)
+       VALUES ('dk', 'vish', 'Pricing', '', 'pricing', ${at}, ${at}, NULL),
+              ('dg', 'vish', 'Pricing tips', '', 'pricing tips', ${at}, ${at}, NULL),
+              ('dkc', 'vish', 'Margins', 'dk', 'margins', ${at}, ${at}, ${at}),
+              ('dgc', 'vish', 'Margins', 'dg', 'margins', ${at}, ${at}, NULL)`
+    );
+
+    const response = await harness.call(worker, "/v1/topics/tidy", { method: "POST", token });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+
+    const kept = harness.database
+      .prepare(
+        `SELECT COUNT(*) AS n FROM topics
+         WHERE user_id = 'vish' AND parent_id = 'dk' AND name_key = 'margins'
+           AND deleted_at IS NULL`
+      )
+      .get();
+    assert.equal(kept.n, 1, "the sub-folder was lost or duplicated");
+    harness.restore();
   });
 });

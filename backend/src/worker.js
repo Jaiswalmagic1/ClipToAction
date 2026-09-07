@@ -138,19 +138,24 @@ const MAX_ATTEMPTS = 3;
 // the writes before it already committed and, worse, six or seven calls to his AI account
 // already SPENT. Every press, for ever, and the money gone with nothing to show.
 //
-// Counted rather than guessed, and counted again after the count changed.
+// How much one press of each button may take on. TWO numbers, because the two buttons cost
+// very different amounts and one measurement was being used for both.
 //
-// Ten was over the platform's hard ceiling: a Worker on the free plan may make fifty calls
-// in ONE request, a call to an AI provider counts as one, and ten clips took seventy-five.
-// It was cut to four, then to three on a measurement of "45 calls plus 5" — which had
-// already stopped being true, because the fix that stopped a re-read rewriting other
-// people's notebooks also removed the filing pass that was most of that cost.
+// A Worker on the free plan may make fifty calls in ONE request, and a call to an AI
+// provider counts as one. "Read those again" asks the AI and stores the answer; "Sort my
+// old clips" asks the AI AND looks up or creates two folders and files the clip, which is
+// roughly twice the work. Sharing a number meant raising it on a measurement of the cheap
+// button pushed the expensive one over the ceiling: 51 calls at five keys, 61 at ten.
 //
-// Measured again on the code as it stands: three costs 21, four costs 26, eight costs 46.
-// Four it is — half the presses of three, and still comfortably inside fifty with room for
-// a spent key to roll onto the next. The ceiling itself is guarded by a test that presses
-// the real button and counts.
-const MAX_SORT_PER_REQUEST = 4;
+// Measured on the code as it stands, worst case being the maximum ten keys with nine of
+// them spent (D35's own reason for a list), because each spent key costs an attempt:
+//
+//   read-those-again   3 clips → 39   4 clips → 44
+//   sort-my-old-clips  2 clips → 41   3 clips → 51  (over)
+//
+// The ceilings are guarded by tests that press the real buttons and count.
+const MAX_KINDS_PER_REQUEST = 4;
+const MAX_SORT_PER_REQUEST = 2;
 // How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
 // and a spare; low enough that a leaked one is noticed rather than lost in a list.
 const MAX_CONNECTORS = 5;
@@ -2322,7 +2327,7 @@ async function fillInKinds(request, env, userId) {
      ORDER BY c.created_at DESC
      LIMIT ?4`
   )
-    .bind(userId, SHARED, ITEM_SHAPES_VERSION, MAX_SORT_PER_REQUEST)
+    .bind(userId, SHARED, ITEM_SHAPES_VERSION, MAX_KINDS_PER_REQUEST)
     .all();
 
   const waiting = await env.DB.prepare(`SELECT COUNT(*) AS n ${which}`)
@@ -2334,7 +2339,7 @@ async function fillInKinds(request, env, userId) {
   let attempted = 0;
   let failure = null;
 
-  for (const row of queue.slice(0, MAX_SORT_PER_REQUEST)) {
+  for (const row of queue.slice(0, MAX_KINDS_PER_REQUEST)) {
     try {
       const analysis = await analyzeSource(env, row.source_id, row.text, userId, row.duration_sec);
       if (!analysis) {

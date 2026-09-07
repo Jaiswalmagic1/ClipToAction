@@ -107,16 +107,25 @@ function classify(status) {
  *               to the next key.
  *   rejected  — the key itself is wrong, or its account cannot pay. Waiting fixes neither,
  *               so it stops and is shown: a key that has gone bad has to be noticed.
- *   other     — nothing to do with the key. The provider was down, or answered with prose
- *               instead of JSON. The key is left untouched, because marking a good key bad
- *               over somebody else's outage would take it out of the rotation for nothing —
- *               and the run STOPS, because a failure that is not about the key fails the
- *               same way on every other key there is.
+ *   unsuitable — the account or the model cannot do this, whoever owns it: the model is
+ *               not on that account (404), the request was refused (400), or the reply came
+ *               back as prose rather than JSON. The key is left untouched — there is
+ *               nothing wrong with it — but ANOTHER PERSON'S list is worth trying, because
+ *               a list can span providers and a different one may answer perfectly well.
+ *   other      — the provider is down. That is nothing to do with any account and fails the
+ *               same way on every one of them, so the run stops rather than spending other
+ *               people's allowance on a call that cannot succeed.
  */
 export function categoryOf(error) {
   const status = Number(String(error?.detail || "").split(" ")[0]);
   if (status === 429) return "exhausted";
   if (status === 401 || status === 402 || status === 403) return "rejected";
+  // Not the key's fault, and not the provider being down either. A key list may hold
+  // gemini, anthropic, groq and openai at once (D35), so "it failed here" says nothing
+  // about what happens over there: a model missing from one account, or one model that
+  // will not answer in JSON, stopped the reel dead for everybody with a working account
+  // never tried.
+  if (status === 400 || status === 404 || status === 200) return "unsuitable";
   return "other";
 }
 
@@ -761,7 +770,7 @@ async function spendKeys(env, candidates, attempt) {
     } catch (error) {
       if (!(error instanceof AnalysisError)) throw error;
       const category = categoryOf(error);
-      if (category !== "other") {
+      if (category === "exhausted" || category === "rejected") {
         await markKeyFailed(env, key.id, category, error.publicReason, error.detail);
       }
       if (category === "exhausted") {
@@ -769,11 +778,15 @@ async function spendKeys(env, candidates, attempt) {
         continue;
       }
 
-      // Nothing to do with anybody's key — the provider was down, or answered with prose
-      // instead of JSON. That fails the same way for EVERY account, so trying the next
-      // person's is guaranteed waste: two calls became eight across four savers, charged to
-      // people whose key was never at fault and who pressed nothing, and on a three-hour
-      // video each of those is a full-transcript prompt. It stops here, as it always did.
+      // The provider is down. That is nothing to do with anybody's account and fails the
+      // same way on every one of them, so trying the next person's is guaranteed waste:
+      // two calls became eight across four savers, charged to people whose key was never at
+      // fault and who pressed nothing, and on a three-hour video each is a full-transcript
+      // prompt. It stops here.
+      //
+      // "Unsuitable" is deliberately NOT here — a model missing from one account, or one
+      // that will not answer in JSON, says nothing about a different provider on somebody
+      // else's list, and stopping there killed the reel for them too.
       if (category === "other") throw error;
 
       // D35 stops on anything that is not a spent allowance, and that is right INSIDE one

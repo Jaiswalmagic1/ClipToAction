@@ -52,13 +52,23 @@ describe("which failures are about the key, and which are not", () => {
     assert.equal(categoryOf(new AnalysisError("x", "402 billing_error")), "rejected");
   });
 
-  test("an outage or a mangled reply is not the key's fault at all", () => {
-    // This distinction is why a good key does not get taken out of the rotation the day
-    // a provider has a bad afternoon.
+  test("an outage is not the key's fault, and is not anybody else's account's either", () => {
+    // This distinction is why a good key does not get taken out of the rotation the day a
+    // provider has a bad afternoon — and why the run stops instead of walking every other
+    // saver's list spending their allowance on a call that cannot succeed.
     assert.equal(categoryOf(new AnalysisError("x", "503 service_unavailable")), "other");
-    assert.equal(categoryOf(new AnalysisError("x", "200 unparseable_reply")), "other");
-    assert.equal(categoryOf(new AnalysisError("x", "400 unrecognised")), "other");
+    assert.equal(categoryOf(new AnalysisError("x", "500 upstream")), "other");
     assert.equal(categoryOf(new AnalysisError("x")), "other");
+  });
+
+  test("but a model that account has not got is worth trying somewhere else", () => {
+    // A key list can hold gemini, anthropic, groq and openai at once (D35). "It failed
+    // here" then says nothing about what happens over there: a model missing from one
+    // account, or one model that will not answer in JSON, used to stop the reel dead for
+    // everybody, with a perfectly good account on another provider never tried.
+    assert.equal(categoryOf(new AnalysisError("x", "404 model_not_found")), "unsuitable");
+    assert.equal(categoryOf(new AnalysisError("x", "400 unrecognised")), "unsuitable");
+    assert.equal(categoryOf(new AnalysisError("x", "200 unparseable_reply")), "unsuitable");
   });
 });
 

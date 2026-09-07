@@ -358,12 +358,27 @@ export async function tidyTopics(env, userId, timestamp) {
         // (user_id, parent_id, name_key) would refuse the move. Where it does, the two
         // sub-topics are the same subject: the clips go to the one that stays.
         spent += 1;
+        // Deleted ones count. The unique index does not care that a row is soft-deleted,
+        // so filtering them out here meant the move below hit `UNIQUE constraint failed`
+        // and threw — a 500, with the merges before it already committed and nothing
+        // recording which. A deleted sub-folder of the same name is the same subject: the
+        // clips go into it and it comes back, which is what findOrCreateTopic already does
+        // with one everywhere else.
         const clash = await env.DB.prepare(
-          `SELECT id FROM topics
-           WHERE user_id = ?1 AND parent_id = ?2 AND name_key = ?3 AND deleted_at IS NULL`
+          `SELECT id, deleted_at FROM topics
+           WHERE user_id = ?1 AND parent_id = ?2 AND name_key = ?3`
         )
           .bind(userId, keeper.id, child.name_key)
           .first();
+
+        if (clash?.deleted_at) {
+          spent += 1;
+          await env.DB.prepare(
+            `UPDATE topics SET deleted_at = NULL, updated_at = ?1 WHERE id = ?2`
+          )
+            .bind(timestamp, clash.id)
+            .run();
+        }
 
         if (clash) {
           // Three statements, not two. Charging two was how the count drifted under: a

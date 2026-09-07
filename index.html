@@ -2477,10 +2477,9 @@ async function fillInTrackers(button) {
   let filled = 0;
 
   try {
-    // A hundred passes of three, because a pass is smaller than it was: the API may make
-    // only fifty calls to the database in ONE request — and a call to an AI provider counts
-    // too — while ten clips took seventy-five. A hundred covers three hundred reels, which
-    // is more than his notebook and leaves room for it to grow.
+    // A hundred passes of four. The API may make only fifty calls to the database in ONE
+    // request — and a call to an AI provider counts too — while ten clips took seventy-five.
+    // A hundred covers four hundred reels, more than his notebook with room to grow.
     //
     // Nothing here starts a pass that has nothing to do: the loop stops the moment a pass
     // reports nothing left.
@@ -2519,8 +2518,10 @@ async function sortOldClips(button) {
   let sorted = 0;
 
   try {
-    // A hundred passes, because a pass is three clips rather than ten — see fillInTrackers.
-    for (let pass = 0; pass < 100; pass += 1) {
+    // A hundred and fifty passes, because a pass here is TWO clips: sorting also looks up
+    // or creates two folders and files the clip, which is roughly twice the work of a
+    // re-read, and the fifty-call ceiling is the same for both. See MAX_SORT_PER_REQUEST.
+    for (let pass = 0; pass < 150; pass += 1) {
       const result = await api("/v1/topics/sort", { method: "POST" });
       sorted += result.sorted || 0;
       if (result.error) {
