@@ -20,7 +20,7 @@
 // and why neither of them stores anything: a Cloudflare Worker has no session to keep.
 
 import { learningColumns, validateLearning } from "./learnings.js";
-import { pastTheDayFor, MAX_LEARNINGS_PER_DAY } from "./limits.js";
+import { pastTheDayFor, MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR } from "./limits.js";
 
 // Newest first — this is also the order the list is offered in when a client asks for a
 // version we cannot serve.
@@ -623,7 +623,7 @@ async function runSaveLearning(env, userId, args) {
   // shared free database, in under half a second and without one refusal — and then the
   // owner's own button answered 429 for the rest of the day, because his count included
   // every row this had written. The cap protected nobody and blamed him.
-  if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY)) {
+  if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR)) {
     return { error: "This notebook has saved a lot of conversations today. Try again tomorrow." };
   }
 

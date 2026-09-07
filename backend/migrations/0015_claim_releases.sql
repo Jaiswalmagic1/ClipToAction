@@ -1,0 +1,12 @@
+-- Handing work back, and how often that may be free (2026-09-07, D58).
+--
+-- The PC worker hands back anything it was holding when it stopped, and that refunds the
+-- attempt because nothing was tried. Which removed the only thing that ever stopped a
+-- crash loop: a video that kills the interpreter was claimed, released, refunded and
+-- claimed again every five minutes for ever, with nothing on any screen.
+--
+-- Counting the hand-backs is what puts a floor under it. Past a few, the refund stops and
+-- the video retires with an error he can see.
+--
+-- Additive and safe on a database holding real reels: every existing row starts at zero.
+ALTER TABLE sources ADD COLUMN releases INTEGER NOT NULL DEFAULT 0;

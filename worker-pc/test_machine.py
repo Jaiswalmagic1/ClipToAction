@@ -12,6 +12,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -218,11 +219,18 @@ class WhatItWasHolding(unittest.TestCase):
 
     The app said "being watched now" the whole time, and three of those -- one night of
     Windows updates -- retired it as "gave up after 3 attempts" having done nothing.
+
+    The record lives in the run's OWN folder, and a hand-back names the claim it means.
+    Both were learnt the hard way: a shared list plus a state-only release meant the copy
+    he starts by hand, on its next start, cancelled the scheduled copy's work in progress.
     """
 
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
-        self.path = Path(self.folder.name) / "claimed.txt"
+        self.root = Path(self.folder.name)
+        self.mine = self.root / f"run-{os.getpid()}"
+        self.mine.mkdir()
+        self.path = self.mine / "claimed.txt"
         self.space = load("remember_claim", "forget_claim", CLAIMS_PATH=self.path)
 
     def tearDown(self):
@@ -233,23 +241,73 @@ class WhatItWasHolding(unittest.TestCase):
             return []
         return [line for line in self.path.read_text(encoding="utf-8").splitlines() if line]
 
-    def test_what_is_claimed_is_written_down(self):
-        self.space["remember_claim"]("aaa")
-        self.space["remember_claim"]("bbb")
-        self.assertEqual(self.held(), ["aaa", "bbb"])
+    def test_what_is_claimed_is_written_down_with_when(self):
+        self.space["remember_claim"]("aaa", 1700)
+        self.space["remember_claim"]("bbb", 1800)
+        self.assertEqual(self.held(), ["aaa 1700", "bbb 1800"])
 
     def test_and_forgotten_once_it_has_an_ending_of_its_own(self):
-        self.space["remember_claim"]("aaa")
-        self.space["remember_claim"]("bbb")
+        self.space["remember_claim"]("aaa", 1700)
+        self.space["remember_claim"]("bbb", 1800)
         self.space["forget_claim"]("aaa")
-        self.assertEqual(self.held(), ["bbb"])
+        self.assertEqual(self.held(), ["bbb 1800"])
 
     def test_forgetting_something_it_never_held_is_harmless(self):
         self.space["forget_claim"]("never-seen")
         self.assertEqual(self.held(), [])
 
-    def test_it_hands_back_what_the_last_run_was_holding(self):
-        self.path.write_text("aaa\nbbb\n", encoding="utf-8")
+    def dead_run_holding(self, lines):
+        """A folder belonging to a run that has stopped, with a list in it."""
+        dead = self.root / "run-999999"
+        dead.mkdir()
+        (dead / "claimed.txt").write_text(lines, encoding="utf-8")
+        return dead
+
+    def releasing(self, requests_stub):
+        return load(
+            "release_stale_claims",
+            "drop_line",
+            "pid_of",
+            "still_running",
+            CLAIMS_PATH=self.path,
+            MEDIA_ROOT=self.root,
+            MEDIA_DIR=self.mine,
+            API_BASE="https://api.test",
+            HEADERS={},
+            requests=requests_stub,
+            say=lambda message: None,
+        )
+
+    def test_it_hands_back_what_a_stopped_run_was_holding(self):
+        dead = self.dead_run_holding("aaa 1700\nbbb 1800\n")
+        posted = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                posted.append((url, json))
+                return type("R", (), {"raise_for_status": lambda self: None})()
+
+        self.releasing(Requests)["release_stale_claims"]()
+        self.assertEqual(
+            posted,
+            [
+                ("https://api.test/v1/sources/aaa/release", {"claimed_at": 1700}),
+                ("https://api.test/v1/sources/bbb/release", {"claimed_at": 1800}),
+            ],
+        )
+        self.assertEqual(
+            (dead / "claimed.txt").read_text(encoding="utf-8").strip(),
+            "",
+            "what was handed back is still listed, so it will be handed back again",
+        )
+
+    def test_it_never_touches_what_a_LIVE_run_is_holding(self):
+        # Including its own. This is the one that threw away three hours of transcription.
+        live = self.root / f"run-{os.getpid() + 0}"
+        self.path.write_text("mine 1700\n", encoding="utf-8")
         posted = []
 
         class Requests:
@@ -260,43 +318,28 @@ class WhatItWasHolding(unittest.TestCase):
                 posted.append(url)
                 return type("R", (), {"raise_for_status": lambda self: None})()
 
-        space = load(
-            "release_stale_claims",
-            CLAIMS_PATH=self.path,
-            API_BASE="https://api.test",
-            HEADERS={},
-            requests=Requests,
-            say=lambda message: None,
-        )
-        space["release_stale_claims"]()
-        self.assertEqual(
-            posted,
-            ["https://api.test/v1/sources/aaa/release", "https://api.test/v1/sources/bbb/release"],
-        )
-        self.assertFalse(self.path.exists(), "the list was not cleared once it was handed back")
+        self.releasing(Requests)["release_stale_claims"]()
+        self.assertEqual(posted, [], "it handed back work a running copy was doing")
+        self.assertTrue(live.exists())
 
-    def test_and_keeps_the_list_if_it_cannot_reach_the_api(self):
-        # Otherwise one bad moment at startup loses the record for good and the videos stay
-        # locked for the rest of their lease.
-        self.path.write_text("aaa\n", encoding="utf-8")
+    def test_one_that_cannot_be_handed_back_does_not_undo_the_others(self):
+        # Clearing the whole list only at the end meant one id that kept failing had the
+        # others handed back again at every single start.
+        dead = self.dead_run_holding("good 1700\nbad 1800\n")
 
         class Requests:
             RequestException = RuntimeError
 
             @staticmethod
-            def post(*args, **kwargs):
-                raise RuntimeError("no network yet")
+            def post(url, json=None, headers=None, timeout=None):
+                if "bad" in url:
+                    raise RuntimeError("no")
+                return type("R", (), {"raise_for_status": lambda self: None})()
 
-        space = load(
-            "release_stale_claims",
-            CLAIMS_PATH=self.path,
-            API_BASE="https://api.test",
-            HEADERS={},
-            requests=Requests,
-            say=lambda message: None,
-        )
-        space["release_stale_claims"]()
-        self.assertEqual(self.held(), ["aaa"], "it forgot what it was still holding")
+        self.releasing(Requests)["release_stale_claims"]()
+        left = (dead / "claimed.txt").read_text(encoding="utf-8").split()
+        self.assertNotIn("good", left, "one it handed back is still on the list")
+        self.assertIn("bad", left, "one it could not hand back was forgotten")
 
 
 class TwoCopiesAtOnce(unittest.TestCase):
@@ -325,8 +368,10 @@ class TwoCopiesAtOnce(unittest.TestCase):
             space = load(
                 "sweep_old_runs",
                 "still_running",
+                "pid_of",
                 MEDIA_ROOT=root,
                 MEDIA_DIR=mine,
+                STALE_RUN_SEC=24 * 60 * 60,
                 shutil=real_shutil,
                 say=lambda message: None,
             )
@@ -343,3 +388,180 @@ class TwoCopiesAtOnce(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheQuestionBeforeALongVideo(unittest.TestCase):
+    """The one requirement he was most emphatic about, executed rather than read.
+
+    The tests that already guarded this compared string positions in the source -- they
+    pass with the condition inverted, with `long_ok` read from the wrong place, or with the
+    branch unreachable. An acceptance review found the gate open for a video whose platform
+    reports no duration at all, which Instagram routinely does: `int(None or 0)` is zero,
+    zero is under every threshold, and a video he was never asked about held the machine
+    for as long as it liked.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.media = Path(self.folder.name)
+        self.downloaded = []
+        self.limits = {
+            "warn_above_sec": 1800,
+            "max_video_sec": 21600,
+            "max_transcript_chars": 400000,
+            "long_video_sec": 600,
+        }
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def run_it(self, reported_duration, real_seconds=60, long_ok=0, live=False):
+        """Runs the real download_audio with yt-dlp and the network stood in for."""
+        media = self.media
+        downloaded = self.downloaded
+        bytes_per_sec = 16000 * 2
+
+        class FakeDownloader:
+            def __init__(self, options):
+                self.options = options
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                info = {"title": "A talk", "uploader": "Somebody"}
+                if reported_duration is not None:
+                    info["duration"] = reported_duration
+                if live:
+                    info["is_live"] = True
+                return info
+
+            def download(self, urls):
+                downloaded.append(urls)
+                # ffmpeg would leave exactly this: 16kHz, mono, 16-bit.
+                target = media / source["id"]
+                # Sparse rather than written out: six hours of audio is 690MB and
+                # only its size matters here.
+                with io.open(target.with_suffix(".wav"), "wb") as handle:
+                    handle.truncate(real_seconds * bytes_per_sec)
+
+        source = {
+            "id": "11111111-2222-3333-4444-555555555555",
+            "url_original": "https://instagram.com/reel/ABC/",
+            "url_canonical": "https://instagram.com/reel/ABC",
+            "platform": "Instagram",
+            "long_ok": long_ok,
+        }
+
+        space = load(
+            "download_audio",
+            "creator_from",
+            "Refused",
+            "NeedsPermission",
+            "CouldNotReach",
+            UUID_PATTERN=__import__("re").compile(r"\A[0-9a-fA-F-]{36}\Z"),
+            MEDIA_DIR=media,
+            WAV_BYTES_PER_SEC=bytes_per_sec,
+            YoutubeDL=FakeDownloader,
+            assert_public_host=lambda url: None,
+        )
+        return space, source, space["download_audio"](source, self.limits)
+
+    def test_the_videos_he_saves_all_the_time_are_never_asked_about(self):
+        for minutes in (1, 11, 18, 29):
+            self.downloaded.clear()
+            _, _, (path, title, duration, creator) = self.run_it(minutes * 60)
+            self.assertEqual(duration, minutes * 60)
+            self.assertTrue(self.downloaded, f"{minutes} minutes was not even downloaded")
+
+    def test_a_long_one_asks_first_and_downloads_nothing(self):
+        space = load("NeedsPermission")
+        with self.assertRaises(Exception) as caught:
+            self.run_it(69 * 60)
+        self.assertEqual(type(caught.exception).__name__, "NeedsPermission")
+        self.assertEqual(self.downloaded, [], "it started downloading before he answered")
+
+    def test_and_goes_ahead_once_he_has_said_yes(self):
+        _, _, (path, title, duration, creator) = self.run_it(69 * 60, long_ok=1)
+        self.assertEqual(duration, 69 * 60)
+        self.assertTrue(self.downloaded)
+
+    def test_past_the_ceiling_it_is_refused_even_when_approved(self):
+        with self.assertRaises(Exception) as caught:
+            self.run_it(7 * 3600, long_ok=1)
+        self.assertEqual(type(caught.exception).__name__, "Refused")
+        self.assertEqual(self.downloaded, [])
+
+    def test_a_video_whose_platform_reports_no_length_is_still_asked_about(self):
+        # Instagram routinely reports nothing. `int(None or 0)` is zero, zero is under
+        # every threshold, and the question was never asked. The audio is measured now --
+        # 16kHz mono 16-bit is exactly 32,000 bytes a second, so it is arithmetic.
+        with self.assertRaises(Exception) as caught:
+            self.run_it(None, real_seconds=69 * 60)
+        self.assertEqual(type(caught.exception).__name__, "NeedsPermission")
+        self.assertEqual(
+            caught.exception.duration,
+            69 * 60,
+            "it asked, but about a length it had not actually measured",
+        )
+        left = list(self.media.glob("*.wav"))
+        self.assertEqual(left, [], "it left the audio on the disk while it waited")
+
+    def test_a_short_one_with_no_reported_length_is_not_nagged_about(self):
+        _, _, (path, title, duration, creator) = self.run_it(None, real_seconds=40)
+        self.assertEqual(duration, 40)
+        self.assertTrue(path.exists())
+
+    def test_and_one_past_the_ceiling_with_no_reported_length_is_refused(self):
+        with self.assertRaises(Exception) as caught:
+            self.run_it(None, real_seconds=7 * 3600, long_ok=1)
+        self.assertEqual(type(caught.exception).__name__, "Refused")
+        self.assertEqual(list(self.media.glob("*.wav")), [])
+
+    def test_a_live_broadcast_never_starts(self):
+        with self.assertRaises(Exception) as caught:
+            self.run_it(None, live=True)
+        self.assertEqual(type(caught.exception).__name__, "Refused")
+        self.assertEqual(self.downloaded, [])
+
+
+class AFolderWhoseNumberCameRoundAgain(unittest.TestCase):
+    """Windows hands the same process number out again.
+
+    So a folder left behind by a dead run whose number now belongs to some unrelated live
+    program was kept for good -- about 700MB of wav for a long video, which is exactly the
+    disk filling the sweep was added to stop.
+    """
+
+    def test_a_day_old_folder_goes_whatever_the_number_says(self):
+        import shutil as real_shutil
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            mine = root / f"run-{os.getpid()}"
+            mine.mkdir()
+            # Named after a process that IS alive -- this one -- but a day untouched.
+            reused = root / f"run-{os.getpid() + 1}"
+            reused.mkdir()
+            (reused / "audio.wav").write_bytes(b"x" * 10)
+            old = time.time() - 2 * 24 * 60 * 60
+            os.utime(reused, (old, old))
+
+            space = load(
+                "sweep_old_runs",
+                "still_running",
+                "pid_of",
+                MEDIA_ROOT=root,
+                MEDIA_DIR=mine,
+                STALE_RUN_SEC=24 * 60 * 60,
+                shutil=real_shutil,
+                say=lambda message: None,
+            )
+            # Every number reads as alive, which is the worst case.
+            space["still_running"] = lambda pid: True
+            space["sweep_old_runs"]()
+            self.assertFalse(reused.exists(), "a day-old folder was kept because of PID reuse")
+            self.assertTrue(mine.exists())

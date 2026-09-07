@@ -109,6 +109,13 @@ MAX_TRANSCRIPT_CHARS = whole_number("MAX_TRANSCRIPT_CHARS", 400000)
 # gets times written into the transcript so there is a way back into the video.
 LONG_VIDEO_SEC = whole_number("LONG_VIDEO_SEC", 600)
 MARK_EVERY_SEC = 30
+# What the downloaded audio weighs per second: 16,000 samples a second, one channel, two
+# bytes a sample -- the settings this file passes to ffmpeg. It is here so a video whose
+# platform reported no length can still be measured before the transcription starts.
+WAV_BYTES_PER_SEC = 16000 * 1 * 2
+# When a run folder counts as abandoned whatever its process id says. Nothing this machine
+# does takes a day, and Windows reuses process numbers.
+STALE_RUN_SEC = 24 * 60 * 60
 # Filling in who made the videos already saved (D40). Deliberately slow: this reads
 # metadata for videos that are already finished, so it may never compete with a reel
 # somebody is waiting on, and Facebook and Instagram will rate-limit a machine that asks
@@ -130,9 +137,13 @@ CREATOR_BACKOFF_SEC = whole_number("CREATOR_BACKOFF_SEC", 1800)
 # something that had worked. A run now owns its own folder and removes only that.
 MEDIA_ROOT = Path(__file__).parent / "media"
 MEDIA_DIR = MEDIA_ROOT / f"run-{os.getpid()}"
-# What this run has claimed and not finished, so a crash or a reboot can hand it back
+# What THIS run has claimed and not finished, so a crash or a reboot can hand it back
 # rather than leaving it locked (see release_stale_claims).
-CLAIMS_PATH = MEDIA_ROOT / "claimed.txt"
+#
+# Inside the run's own folder, like the audio. It was in the shared one, which undid the
+# reason the folder was made per-run in the first place: a second copy started by hand read
+# the scheduled copy's list at startup and handed back work that was in progress.
+CLAIMS_PATH = MEDIA_DIR / "claimed.txt"
 
 if not API_BASE or not SERVICE_TOKEN:
     sys.exit("Missing API_BASE or SERVICE_TOKEN. Copy .env.example to .env and fill it in.")
@@ -382,6 +393,35 @@ def download_audio(source, limits):
     audio_path = target.with_suffix(".wav")
     if not audio_path.exists():
         raise FileNotFoundError("Audio extraction produced no file.")
+
+    # Now measure what actually arrived, because the metadata may have said nothing.
+    #
+    # Instagram routinely reports no duration at all (Facebook reports it), and
+    # `int(None or 0)` is zero -- which is under every threshold, so the question was never
+    # asked and the ceiling never applied. A video he was never asked about could then hold
+    # the machine for hours with everything he shares queued behind it, and if its words
+    # ran past what the notebook holds it would be refused AFTER the work: the exact
+    # failure D45 closed for videos whose length is known.
+    #
+    # The audio is the honest answer. It is 16kHz, mono, 16-bit by the settings above, so
+    # the file is exactly 32,000 bytes a second and the length is arithmetic rather than
+    # another guess. Asking here costs the download -- minutes -- instead of the hours of
+    # transcription that follow it, and the audio is removed before the question is asked
+    # so nothing is left on the disk while it waits.
+    if not duration:
+        duration = int(audio_path.stat().st_size / WAV_BYTES_PER_SEC)
+
+        ask_above = limits["warn_above_sec"]
+        if ask_above is not None and duration > ask_above and not source.get("long_ok"):
+            audio_path.unlink(missing_ok=True)
+            raise NeedsPermission(duration, info.get("title"), creator_from(info))
+
+        if duration > limits["max_video_sec"]:
+            audio_path.unlink(missing_ok=True)
+            raise Refused(
+                f"This video is {duration // 60} minutes long, which is more than can be "
+                "processed in one go."
+            )
 
     return audio_path, info.get("title"), duration, creator_from(info)
 
@@ -633,11 +673,16 @@ def ask_about_length(source_id, waiting):
         say(f"  !! could not ask about {source_id}: {error}")
 
 
-def remember_claim(source_id):
-    """Writes down what this run is holding, so a crash does not lock it away."""
+def remember_claim(source_id, claimed_at):
+    """Writes down what this run is holding, so a crash does not lock it away.
+
+    The claim TIME goes down with the id. A hand-back names the claim it means, not just
+    the video — otherwise it cancels whoever is holding it now, which on a machine running
+    two copies is the one that is actually working.
+    """
     try:
         with io.open(CLAIMS_PATH, "a", encoding="utf-8") as handle:
-            handle.write(f"{source_id}\n")
+            handle.write(f"{source_id} {int(claimed_at or 0)}\n")
     except OSError:
         pass
 
@@ -647,20 +692,20 @@ def forget_claim(source_id):
     try:
         if not CLAIMS_PATH.exists():
             return
-        kept = [
-            line
-            for line in io.open(CLAIMS_PATH, encoding="utf-8").read().splitlines()
-            if line.strip() and line.strip() != source_id
-        ]
-        io.open(CLAIMS_PATH, "w", encoding="utf-8").write(
-            "\n".join(kept) + ("\n" if kept else "")
-        )
+        with io.open(CLAIMS_PATH, encoding="utf-8") as handle:
+            kept = [
+                line
+                for line in handle.read().splitlines()
+                if line.strip() and line.split(" ")[0] != source_id
+            ]
+        with io.open(CLAIMS_PATH, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(kept) + ("\n" if kept else ""))
     except OSError:
         pass
 
 
 def release_stale_claims():
-    """Hands back anything a previous run was holding when it stopped.
+    """Hands back anything a run that is no longer going was still holding.
 
     A claim is a lease, and the lease for a video somebody approved is eight hours -- the
     length of the job it has to cover. So a reboot five minutes into a six-hour video left
@@ -668,33 +713,68 @@ def release_stale_claims():
     watched now" the whole time. Three of those -- one Windows update night is enough --
     and it was retired as "gave up after 3 attempts" having done nothing at all.
 
-    Nothing here reports a failure: no work was attempted, so the attempt is given back
-    with it.
-    """
-    try:
-        if not CLAIMS_PATH.exists():
-            return
-        ids = [line.strip() for line in io.open(CLAIMS_PATH, encoding="utf-8").read().splitlines()]
-    except OSError:
-        return
+    It reads the lists of runs that have STOPPED, never this run's own and never a live
+    one's: those belong to a machine that is working, and handing back work in progress is
+    how three hours of transcription disappears with no error anywhere.
 
-    for source_id in [one for one in ids if one]:
+    Nothing here reports a failure. No work was attempted, so the attempt is given back
+    with it -- but only a few times per video (see MAX_FREE_RELEASES in the Worker), or a
+    video that kills this process on sight would loop for ever without ever being retired.
+
+    Each id is forgotten as it is handed back, one at a time. Clearing the whole list only
+    at the end meant one id that kept failing had the others handed back again at every
+    single start.
+    """
+    for folder in sorted(MEDIA_ROOT.glob("run-*")):
+        if folder == MEDIA_DIR or not folder.is_dir():
+            continue
+        if still_running(pid_of(folder)):
+            continue
+        held = folder / "claimed.txt"
+        if not held.exists():
+            continue
         try:
-            response = requests.post(
-                f"{API_BASE}/v1/sources/{source_id}/release",
-                json={},
-                headers=HEADERS,
-                timeout=30,
-            )
-            response.raise_for_status()
-            say(f"- handed back {source_id}, which the last run was still holding")
-        except requests.RequestException as error:
-            say(f"!! could not hand back {source_id}: {error}")
-            return
+            with io.open(held, encoding="utf-8") as handle:
+                lines = [line.strip() for line in handle.read().splitlines() if line.strip()]
+        except OSError:
+            continue
+
+        for line in lines:
+            parts = line.split(" ")
+            source_id = parts[0]
+            claimed_at = parts[1] if len(parts) > 1 else "0"
+            try:
+                response = requests.post(
+                    f"{API_BASE}/v1/sources/{source_id}/release",
+                    json={"claimed_at": int(claimed_at)},
+                    headers=HEADERS,
+                    timeout=30,
+                )
+                response.raise_for_status()
+                say(f"- handed back {source_id}, which an earlier run was still holding")
+            except (requests.RequestException, ValueError) as error:
+                say(f"!! could not hand back {source_id}: {error}")
+                continue
+            drop_line(held, line)
+
+
+def drop_line(path, wanted):
+    """Removes one line from a file, so a hand-back is never made twice."""
     try:
-        CLAIMS_PATH.unlink()
+        with io.open(path, encoding="utf-8") as handle:
+            kept = [line for line in handle.read().splitlines() if line.strip() != wanted]
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(kept) + ("\n" if kept else ""))
     except OSError:
         pass
+
+
+def pid_of(folder):
+    """The process id a run folder is named after, or 0 when it is not one of ours."""
+    try:
+        return int(folder.name.split("-", 1)[1])
+    except (IndexError, ValueError):
+        return 0
 
 
 def sweep_old_runs():
@@ -707,11 +787,14 @@ def sweep_old_runs():
     for folder in MEDIA_ROOT.glob("run-*"):
         if folder == MEDIA_DIR or not folder.is_dir():
             continue
-        try:
-            pid = int(folder.name.split("-", 1)[1])
-        except (IndexError, ValueError):
+        if not pid_of(folder):
             continue
-        if still_running(pid):
+        # A day old counts as finished whatever the process id says. Windows hands the same
+        # number out again, so a folder whose number now belongs to some unrelated live
+        # program would otherwise be kept for good -- about 700MB of wav for a long video,
+        # which is the disk filling that this exists to stop.
+        stale = time.time() - folder.stat().st_mtime > STALE_RUN_SEC
+        if still_running(pid_of(folder)) and not stale:
             continue
         shutil.rmtree(folder, ignore_errors=True)
         say(f"- cleared {folder.name}, left behind by a run that is no longer going")
@@ -731,7 +814,6 @@ def still_running(pid):
 
 def process(source, limits):
     say(f"- {source['platform']}: {source['url_canonical']}")
-    remember_claim(source["id"])
     try:
         audio_path, title, duration, creator = download_audio(source, limits)
         text, lang = transcribe(
@@ -762,8 +844,9 @@ def process(source, limits):
 def main():
     MEDIA_ROOT.mkdir(exist_ok=True)
     MEDIA_DIR.mkdir(exist_ok=True)
-    sweep_old_runs()
+    # Read what the stopped runs were holding BEFORE their folders are removed.
     release_stale_claims()
+    sweep_old_runs()
     say(f"Polling {API_BASE} every {POLL_SECONDS}s. Ctrl+C to stop.")
 
     while True:
@@ -773,6 +856,12 @@ def main():
             say(f"Queue unreachable: {error}")
             time.sleep(POLL_SECONDS)
             continue
+
+        # Written down BEFORE any of them is worked on. It used to be recorded inside
+        # process(), one at a time -- so of the three a batch claims, two were held and
+        # unrecorded, and a reboot handed back a third of what it was holding.
+        for source in batch:
+            remember_claim(source["id"], source.get("claimed_at"))
 
         for source in batch:
             process(source, limits)

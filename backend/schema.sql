@@ -82,7 +82,9 @@ CREATE TABLE IF NOT EXISTS sources (
   -- what makes a failure diagnosable instead of guessable (D34).
   error_detail  TEXT,
   attempts      INTEGER NOT NULL DEFAULT 0,
-  claimed_at    INTEGER,                   -- lease: a claim older than the timeout is retryable
+  claimed_at    INTEGER,
+  -- How many times a machine has handed this back without trying it (D58).
+  releases      INTEGER NOT NULL DEFAULT 0,                   -- lease: a claim older than the timeout is retryable
   -- D42. When somebody said yes to this video's length, and who. WHO is not bookkeeping:
   -- a long video can spend most of a free daily allowance, and D10 would otherwise make
   -- the first saver with a key pay for a video somebody else approved. The approver pays.

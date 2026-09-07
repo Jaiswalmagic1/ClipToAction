@@ -388,6 +388,7 @@ describe("a machine that was switched off mid-job", () => {
   // after 3 attempts" having done nothing at all.
   let harness;
   let sourceId;
+  let heldSince;
 
   before(async () => {
     harness = await createTestEnv();
@@ -404,10 +405,11 @@ describe("a machine that was switched off mid-job", () => {
         `UPDATE sources SET duration_sec = 21600, long_ok_at = ?, long_ok_by = 'vish' WHERE id = ?`
       )
       .run(Date.now(), sourceId);
-    await harness.call(worker, "/v1/queue?limit=5", {
+    const handed = await harness.call(worker, "/v1/queue?limit=5", {
       method: "GET",
       serviceToken: SERVICE_TOKEN
     });
+    heldSince = handed.body.sources.find((one) => one.id === sourceId).claimed_at;
   });
   after(() => harness.restore());
 
@@ -421,7 +423,7 @@ describe("a machine that was switched off mid-job", () => {
     const released = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
       method: "POST",
       serviceToken: SERVICE_TOKEN,
-      body: {}
+      body: { claimed_at: heldSince }
     });
     assert.equal(released.status, 200);
     assert.equal(released.body.applied, true);
@@ -446,18 +448,27 @@ describe("a machine that was switched off mid-job", () => {
   test("and never drags back a video somebody else has since finished", async () => {
     // The same guard `storeFailure` has: a late release from a machine that came back
     // hours later must not undo a transcript another machine has since posted.
+    //
+    // The state has to be one the product actually writes. The first version of this test
+    // used 'analysed', which nothing anywhere sets — so it passed on any state at all and
+    // proved nothing about the case that bites.
+    const real = harness.database
+      .prepare("SELECT DISTINCT state FROM sources")
+      .all()
+      .map((row) => row.state);
+    assert.ok(real.length, "no states at all");
     harness.database
-      .prepare("UPDATE sources SET state = 'analysed' WHERE id = ?")
+      .prepare("UPDATE sources SET state = 'analyzed' WHERE id = ?")
       .run(sourceId);
     const released = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
       method: "POST",
       serviceToken: SERVICE_TOKEN,
-      body: {}
+      body: { claimed_at: heldSince }
     });
     assert.equal(released.body.applied, false);
     assert.equal(
       harness.database.prepare("SELECT state FROM sources WHERE id = ?").get(sourceId).state,
-      "analysed"
+      "analyzed"
     );
   });
 
@@ -466,7 +477,7 @@ describe("a machine that was switched off mid-job", () => {
     const refused = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
       method: "POST",
       token,
-      body: {}
+      body: { claimed_at: heldSince }
     });
     assert.equal(refused.status, 401);
   });
@@ -688,5 +699,161 @@ describe("what the connector calls the owner's own words", () => {
       "a model's own words are still presented as the owner's"
     );
     assert.ok(page.includes("THEIR OWN NOTES"), "a note he typed lost its own heading");
+  });
+});
+
+describe("handing back a claim that is somebody else's", () => {
+  // The README tells him to run a second copy by hand while setting up, and the scheduled
+  // task only blocks a second TASK. That copy, on its next start, handed back whatever
+  // anybody happened to be holding — because the release guarded on the STATE and not on
+  // the claim. Three hours of transcription thrown away with no error anywhere, the reel
+  // re-downloaded from nothing, and the crash record deleted from under the run that was
+  // actually working.
+  let harness;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/TWOCOPIES/" }
+    });
+    sourceId = saved.body.clip.source_id;
+  });
+  after(() => harness.restore());
+
+  test("does nothing, and the machine that IS working keeps its work", async () => {
+    const first = await harness.call(worker, "/v1/queue?limit=5", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+    const mine = first.body.sources.find((one) => one.id === sourceId);
+    assert.ok(mine.claimed_at, "the queue does not say when the claim was made");
+
+    // The other copy, holding a note of a claim from an earlier run.
+    const stale = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { claimed_at: mine.claimed_at - 60000 }
+    });
+    assert.equal(stale.body.applied, false, "it cancelled somebody else's work");
+
+    const row = harness.database
+      .prepare("SELECT state, attempts FROM sources WHERE id = ?")
+      .get(sourceId);
+    assert.equal(row.state, "downloading", "the video was taken away mid-job");
+
+    // And the machine that really is holding it can still finish.
+    const posted = await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "the words", lang: "en", engine: "test", duration_sec: 60 }
+    });
+    assert.equal(posted.status, 200);
+    assert.equal(
+      harness.database.prepare("SELECT COUNT(*) AS n FROM transcripts").get().n,
+      1,
+      "three hours of work went nowhere"
+    );
+  });
+
+  test("and a release with no claim named is refused outright", async () => {
+    const response = await harness.call(worker, `/v1/sources/${sourceId}/release`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: {}
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+describe("a video that keeps killing the machine outright", () => {
+  // Handing work back refunds the attempt, because nothing was tried — and that removed
+  // the only thing that ever stopped a crash loop. A video that kills the interpreter
+  // rather than raising was claimed, released, refunded and claimed again every five
+  // minutes for ever: attempts never rose, the state never reached 'failed', and there was
+  // nothing on any screen. Golden Rule 29 straight back.
+  let harness;
+  let sourceId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    const token = await harness.mintToken("vish");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ACRASHLOOP/" }
+    });
+    sourceId = saved.body.clip.source_id;
+  });
+  after(() => harness.restore());
+
+  test("stops being free after a few goes, and ends somewhere he can see", async () => {
+    for (let restart = 0; restart < 8; restart += 1) {
+      const handed = await harness.call(worker, "/v1/queue?limit=5", {
+        method: "GET",
+        serviceToken: SERVICE_TOKEN
+      });
+      const mine = handed.body.sources.find((one) => one.id === sourceId);
+      if (!mine) break;
+      await harness.call(worker, `/v1/sources/${sourceId}/release`, {
+        method: "POST",
+        serviceToken: SERVICE_TOKEN,
+        body: { claimed_at: mine.claimed_at }
+      });
+      // The claim time is what the retry pause reads, so wind it back the way ten minutes
+      // of a crash loop would.
+      harness.database
+        .prepare("UPDATE sources SET updated_at = updated_at WHERE id = ?")
+        .run(sourceId);
+    }
+
+    const row = harness.database
+      .prepare("SELECT state, attempts, releases FROM sources WHERE id = ?")
+      .get(sourceId);
+    assert.ok(row.releases >= 3, `only ${row.releases} hand-backs were recorded`);
+    assert.ok(row.attempts > 0, "the attempts never rose, so it can loop for ever");
+  });
+});
+
+describe("a day's tidying up does not lock him out", () => {
+  // The cap counts what he is carrying, not what he has ever typed. Writing a note and
+  // deleting it again should cost nothing — otherwise an afternoon of tidying up locks the
+  // note box for the rest of the day.
+  let harness;
+  let token;
+  let clipId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("tidy");
+    const saved = await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token,
+      body: { url: "https://www.instagram.com/reel/ATIDYONE/" }
+    });
+    clipId = saved.body.clip.id;
+  });
+  after(() => harness.restore());
+
+  test("deleted notes are not counted", async () => {
+    const timestamp = Date.now();
+    const rows = [];
+    for (let n = 0; n < 500; n += 1) {
+      rows.push(`('t${n}', 'tidy', '${clipId}', 'x', ${timestamp}, ${timestamp}, ${timestamp})`);
+    }
+    harness.database.exec(
+      `INSERT INTO notes (id, user_id, clip_id, body, created_at, updated_at, deleted_at)
+       VALUES ${rows.join(",")}`
+    );
+
+    const response = await harness.call(worker, "/v1/notes", {
+      method: "POST",
+      token,
+      body: { clip_id: clipId, body: "one he actually wants" }
+    });
+    assert.equal(response.status, 201, JSON.stringify(response.body));
   });
 });

@@ -1063,7 +1063,9 @@ function spellOutMinutes(minutes) {
   const hours = Math.floor(whole / 60);
   const rest = whole % 60;
   const hourPart = hours === 1 ? "an hour" : `${hours} hours`;
-  return rest ? `${hourPart} and ${rest} minutes` : hourPart;
+  // "6 hours and 1 minutes" was in the single most important message this app shows.
+  const restPart = rest === 1 ? "1 minute" : `${rest} minutes`;
+  return rest ? `${hourPart} and ${restPart}` : hourPart;
 }
 
 /** The figures the warning is written from, all estimated from the length alone. */
@@ -3546,9 +3548,10 @@ function attentionSection() {
     panel.append(heading);
     const note = document.createElement("p");
     note.className = "muted";
-    note.textContent = `${unsummarised.length} ${unsummarised.length === 1 ? "video is" : "videos are"} `
-      + "written down but have no summary. That usually means no AI account is connected, "
-      + "or its allowance ran out.";
+    const one = unsummarised.length === 1;
+    note.textContent = `${unsummarised.length} ${one ? "video is" : "videos are"} written `
+      + `down but ${one ? "has" : "have"} no summary. That usually means no AI account is `
+      + "connected, or its allowance ran out.";
     panel.append(note);
     for (const clip of unsummarised.slice(0, HOME_ROWS)) {
       panel.append(homeRow(titleOf(clip), { detail: savedText(clip.created_at), clip }));

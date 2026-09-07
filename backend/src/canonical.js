@@ -129,7 +129,28 @@ export function platformFromUrl(url) {
  * user point the PC worker at their own server, or at an address inside the operator's LAN.
  */
 export function isSupportedUrl(url) {
-  return parsesTheSameEverywhere(url) && platformFromUrl(url) !== "Unknown";
+  return (
+    parsesTheSameEverywhere(url)
+    && isWebAddress(url)
+    && platformFromUrl(url) !== "Unknown"
+  );
+}
+
+/**
+ * A web address, not something else wearing a platform's name.
+ *
+ * `file://youtube.com/x` and `javascript://youtube.com/x` both name an allowed host, so
+ * both were saved — and then sat in the queue failing, because there is nothing at the
+ * other end of either. No danger in it (both parsers agree on the host, and yt-dlp simply
+ * fails), but a save that can never work should be refused where he can see it rather than
+ * accepted and left to time out.
+ */
+function isWebAddress(url) {
+  try {
+    return ["http:", "https:"].includes(new URL(String(url)).protocol);
+  } catch {
+    return false;
+  }
 }
 
 /** Query string with tracking removed and the rest sorted, so parameter order cannot fork the key. */

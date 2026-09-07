@@ -30,7 +30,15 @@ export const VERDICTS = ["true", "false", "unsure"];
 const LIMITS = {
   items: 50,
   item: 2000,
-  learnedWith: 200
+  learnedWith: 200,
+  // The whole thing, all six lists together.
+  //
+  // Each list was capped on its own, which allowed six hundred thousand characters in one
+  // learning — so the day's allowance of two hundred came to about twenty-five megabytes
+  // into a database every notebook shares. Forty thousand is a very long conversation's
+  // conclusions and about eight times the longest real one; the point is that there is a
+  // ceiling at all.
+  whole: 40000
 };
 
 /**
@@ -123,6 +131,10 @@ export function validateLearning(payload) {
     else if (value.some((item) => JSON.stringify(item ?? "").length > LIMITS.item)) {
       problems.push(`${field} has an item that is too long`);
     }
+  }
+
+  if (JSON.stringify(payload || {}).length > LIMITS.whole) {
+    problems.push("it is far longer than a conversation's conclusions");
   }
 
   // Array.isArray, not a truthiness check. `verdicts` as an object, a number or a string

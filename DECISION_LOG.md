@@ -2997,3 +2997,116 @@ code has ever minted. `UNTRUSTED_WARNING` costs about 76 tokens on a 1,100-token
 **A hundred and ten.** Every one of round eleven's regression findings was made by round
 ten — the highest proportion yet, and it kept its shape: the smaller and more load-bearing
 the change, the more of its own faults it carries.
+
+---
+
+### D58 — Round twelve: the eight jobs, and what round eleven broke
+**Date:** 2026-09-07
+**Amends:** D42, D44, D55, D56, D57. **Supersedes the migration list in D47: it is 0009–0015 now.**
+
+Two reviewers again. One re-read round eleven's diff. The other did something no round had
+done: it went back to **his own brief** in memory and checked, job by job, that what was
+built is what he asked for.
+
+#### The acceptance answer: seven of eight delivered, one incomplete
+
+Every job driven rather than read — the root page and every route, the two new tables, the
+fortnightly look-back end to end on a real provider call, the ask-before-backfill queue, the
+creator queue and its pacing, all four sections of the new home screen (and Home costs
+exactly **one** request on opening), and the long-video consent both sides.
+
+**The consent gate was checked line by line against his own sentence**, executing the real
+`download_audio`: 1, 11, 18 and 29 minutes run straight through and download; 30 minutes and
+one second, 69 minutes and six hours all stop with **nothing downloaded**; approved, they
+run; past the ceiling, refused before a byte is fetched. The screen names the length, the
+time his PC will be busy, that everything else waits behind it, and that it can spend a
+whole day of one key's allowance. A "no" parks the video with **no error on it**, and it can
+be approved months later. His 11–18 minute videos never see any of it.
+
+Job seven is **incomplete on one point** and that is fixed here; job eight has three items
+that are not code and are recorded below.
+
+#### A video whose platform reports no length walked through the gate entirely
+
+`int(info.get("duration") or 0)` is zero when a platform says nothing, and **Instagram
+routinely says nothing** — this project's own notes list it as a known gap. Zero is under
+every threshold, so no question was asked, the download started, and the machine was held
+for however long the video really was. Round eleven closed this for live streams by name; it
+did not close it for an ordinary video with missing metadata.
+
+**Fixed by measuring what actually arrived.** The audio is 16kHz, mono, 16-bit by this
+file's own ffmpeg settings, so it is exactly 32,000 bytes a second and the length is
+arithmetic rather than another guess. The question is asked after the download — minutes —
+instead of after the transcription — hours — and the audio is deleted before it waits. The
+suite now RUNS that gate rather than comparing string positions in the source, which was
+what pinned the most emphatic requirement in the whole brief until today.
+
+#### And what round eleven broke
+
+- **The hand-back cancelled whoever was holding the video, not the caller's own claim.** It
+  guarded on the state alone, and the claim record sat in the shared media folder — undoing
+  the reason that folder was made per-run in the same commit. The copy he starts by hand
+  while setting up, on its next start, cancelled the scheduled copy's work in progress:
+  three hours of transcription gone with no error anywhere, the reel re-downloaded from
+  nothing. The queue now hands out the claim time with the work, a release names the claim it
+  means, and the record lives in the run's own folder.
+- **Refunding the attempt removed the only thing that ever stopped a crash loop.** A video
+  that kills the interpreter rather than raising — memory during transcription, a native
+  crash in ffmpeg, the power going — was claimed, released, refunded and claimed again every
+  five minutes for ever, with attempts never rising and nothing on any screen. Golden Rule 29
+  straight back. Migration **0015** adds `sources.releases`; the first three hand-backs are
+  free and after that attempts climb, so it retires with an error he can see and press.
+- **The record covered one of the three videos a batch claims.** The other two were held and
+  unrecorded, so a reboot handed back a third of what it was holding. Written down when the
+  batch is claimed now, not when each one starts.
+- **`release_stale_claims` cleared its list only if every id succeeded**, so one id that kept
+  failing had the others handed back again at every start — which, in the two-copies case
+  above, is the theft repeated daily. Each is forgotten as it goes.
+- **A folder whose process number came round again was kept for ever.** Windows reuses them.
+  A day untouched now counts as abandoned whatever the number says.
+- **The connector's cap did not stop what it was added to stop.** 200 learnings of up to
+  600,000 characters each is still 25MB, and once an AI in a loop had spent them, his own
+  button answered 429 for the rest of the day. A learning is capped at 40,000 characters —
+  about eight times the longest real one — and the connector gets 150 of the 200, so
+  whatever happens out there the button in front of him still works.
+- **`deleted_at IS NULL` had no test**, and the test guarding a release against a finished
+  video used the state `'analysed'`, which nothing in this product writes. Both fixed; the
+  second passed on any state at all, so it proved nothing about the case that bites.
+
+#### Corrections to earlier entries
+
+- **D44 says the merged branches were deleted. They were not** — eight are still here, seven
+  on `origin` — and one of them (`claude/nervous-lalande-9efa55`) has a commit not in `main`,
+  so the check D44 records does not give the answer it claims. Its content is superseded, but
+  the log said a thing that is not so. **Nothing has been deleted: branches are his to
+  remove, and deleting one is not something to do quietly in a review round.**
+- **D42's table says a 90-minute video costs "around 90 times" a reel. The code says 120**,
+  and 120 is what the screen shows. Erring high in a warning is the right direction; the log
+  misstated the behaviour it exists to pin.
+- **`DECISIONS.md` said production has "nothing created".** A production database does exist
+  — created on `main` by `2846eca`, empty, never deployed to. That row is the sentence a
+  future session reads while deciding what "do not touch production" means, so it now says
+  what is actually there. Production is still not raised (D36).
+- The test-count row was stale again, three rounds after D44 rewrote it. 522 and 66.
+
+#### Left for him, not decided here
+
+- **The three stuck long videos are still failed.** Requeuing them is a change to staging
+  data and belongs after the deploy — it is step 6 of the release order in
+  `backend/README.md`. The job he asked for is not finished until that runs.
+- **Two new table types, where he said "expect 3 to 5".** D38 logs the deviation openly and
+  names what it rejected with counts (`setting` ~12 videos, `fee` 12, `place` 9). He may look
+  at that list and decide one of them earns a table. It is his call, and it is a small build,
+  not a rewrite.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Eleven | 110 | 32 |
+| Twelve (acceptance) | 7 | 1 |
+| Twelve (regression) | 8 | 8 |
+
+**A hundred and twenty-five.** Twelve rounds. The regression half has now found only its
+predecessor's faults three rounds running, which is what a build looks like when the
+original defects are gone and what remains is the cost of fixing them.

@@ -203,6 +203,20 @@ function limitsFor(durationSec) {
 // pressing "Try again" clears the attempts and goes at once.
 const RETRY_PAUSE_MS = 10 * 60 * 1000;
 
+// How many times a video may be handed back WITHOUT it costing an attempt.
+//
+// Handing work back refunds the attempt, because nothing was tried — and that removed the
+// only thing that ever stopped a crash loop. A video that kills the interpreter rather than
+// raising (memory during transcription, a native crash in ffmpeg, the power going) was
+// claimed, released, refunded and claimed again every five minutes for ever, with attempts
+// never rising, the state never reaching 'failed' and nothing on any screen. Golden Rule
+// 29 straight back.
+//
+// Three is more than a bad night of restarts needs and far fewer than a loop takes to
+// become invisible. Past it the refund stops, attempts climb, and it retires with an error
+// he can see and press "Try again" on.
+const MAX_FREE_RELEASES = 3;
+
 // Whether a pending source has waited out that pause. `claimed_at` is when it was last
 // handed to a machine, which is exactly the clock this needs — no new column, and it reads
 // the same way in the database. The argument is which bound parameter holds "now" in the
@@ -792,7 +806,9 @@ async function removeKey(env, userId, keyId) {
 // ---------------------------------------------------------------- service routes
 
 async function claimQueue(request, env) {
-  const requested = Number(new URL(request.url).searchParams.get("limit"));
+  // See creatorQueue: `Number(null)` is 0, so a missing parameter never reached the default.
+  const asked = new URL(request.url).searchParams.get("limit");
+  const requested = asked === null ? 3 : Number(asked);
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 3, 1), 10);
   const timestamp = now();
 
@@ -856,7 +872,10 @@ async function claimQueue(request, env) {
       .bind(timestamp, row.id)
       .run();
 
-    if (result.meta.changes) claimed.push(row);
+    // The claim time goes back with the work: it is how a machine names the claim it is
+    // handing back, and how a release that arrives after somebody else has taken the video
+    // on matches nothing.
+    if (result.meta.changes) claimed.push({ ...row, claimed_at: timestamp });
   }
 
   // The rules travel with the work (D45). The threshold and the ceiling used to live only
@@ -1271,21 +1290,35 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
  * those, which is one night of Windows updates, and it was retired as "gave up after 3
  * attempts" having done nothing at all.
  */
-async function releaseClaim(env, sourceId) {
+async function releaseClaim(request, env, sourceId) {
+  const body = await readJson(request);
+  const heldSince = Number(body.claimed_at || 0);
+  if (!heldSince) return fail(env, "Say which claim is being handed back.");
+
+  // THE CLAIM, not the video. The first version guarded only on the state, so it handed
+  // back whatever anybody happened to be holding — and the README tells him to run a
+  // second copy by hand while setting up. That copy, on its next start, cancelled the
+  // scheduled one's in-flight work: three hours of transcription thrown away with no error
+  // anywhere, the reel re-downloaded from nothing, and the crash record deleted from under
+  // the run that was actually working.
+  //
+  // A claim is identified by when it was made, which the queue hands out with the work.
+  // A release for a claim that has since been re-issued to somebody else matches nothing.
   const result = await env.DB.prepare(
     `UPDATE sources
      SET state = 'pending',
          claimed_at = NULL,
-         attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+         releases = releases + 1,
+         attempts = CASE WHEN attempts > 0 AND releases < ?3 THEN attempts - 1 ELSE attempts END,
          updated_at = ?2
-     WHERE id = ?1 AND state = 'downloading'`
+     WHERE id = ?1 AND state = 'downloading' AND claimed_at = ?4`
   )
-    .bind(sourceId, now())
+    .bind(sourceId, now(), MAX_FREE_RELEASES, heldSince)
     .run();
 
-  // Not an error when it changes nothing: another machine may have finished the video
-  // while this one was away, and dragging it back would be the very thing storeFailure's
-  // own state guard exists to prevent.
+  // Not an error when it changes nothing: another machine may have finished the video or
+  // taken the claim on while this one was away, and dragging it back would be the very
+  // thing storeFailure's own state guard exists to prevent.
   return json(env, { ok: true, applied: Boolean(result.meta.changes) });
 }
 
@@ -1520,7 +1553,11 @@ export function cleanCreator(raw) {
  * who made it must leave the queue, or the worker asks about it for ever.
  */
 async function creatorQueue(request, env) {
-  const requested = Number(new URL(request.url).searchParams.get("limit"));
+  // `Number(null)` is 0, not NaN, so a missing parameter passed `Number.isFinite` and the
+  // default below was never reached — a caller that named no limit got ONE video a pass
+  // rather than two. Harmless while the PC worker always names one; wrong all the same.
+  const asked = new URL(request.url).searchParams.get("limit");
+  const requested = asked === null ? 2 : Number(asked);
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 2, 1), 10);
 
   const rows = await env.DB.prepare(
@@ -2412,7 +2449,7 @@ export default {
           return await storeCreator(request, env, segments[2]);
         }
         if (segments[3] === "release" && request.method === "POST") {
-          return await releaseClaim(env, segments[2]);
+          return await releaseClaim(request, env, segments[2]);
         }
         if (segments[3] === "too-long" && request.method === "POST") {
           return await reportTooLong(request, env, segments[2]);

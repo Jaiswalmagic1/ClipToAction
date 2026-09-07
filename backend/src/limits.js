@@ -16,6 +16,16 @@
 export const MAX_NOTES_PER_DAY = 500;
 export const MAX_LEARNINGS_PER_DAY = 200;
 
+/**
+ * And the connector's own share of that, which is deliberately smaller.
+ *
+ * One number for both meant an AI in a loop could spend the whole day's allowance and then
+ * his own "save what you learned" button answered 429 for the rest of it — the cap
+ * protecting nobody and blaming him. With headroom reserved, whatever happens out there,
+ * the button in front of him still works.
+ */
+export const MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR = 150;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
