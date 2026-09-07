@@ -99,6 +99,19 @@ class FakeNode {
     return this._text + this.children.map((child) => child.textContent).join("");
   }
 
+  /**
+   * What somebody can actually READ — `textContent` minus anything hidden.
+   *
+   * `textContent` in a browser returns hidden text too, so a test asserting on it cannot
+   * tell a sentence that is on screen from one that is not. A paragraph left permanently
+   * `hidden` passed every test that claimed the app says something. It is the fifth time a
+   * test has passed because of what it could not see.
+   */
+  get visibleText() {
+    if (this.hidden) return "";
+    return this._text + this.children.map((child) => child.visibleText).join("");
+  }
+
   set textContent(value) {
     this.children = [];
     this._text = value === null || value === undefined ? "" : String(value);
@@ -586,7 +599,10 @@ export async function loadApp(
       for (const [listening, handler] of listeners) if (listening === name) handler();
     },
     $: (id) => document.getElementById(id),
-    text: (id) => document.getElementById(id).textContent,
+    /** What is on the screen. Anything hidden is not on the screen. */
+    text: (id) => document.getElementById(id).visibleText,
+    /** Including what is hidden — for a test that is specifically about that. */
+    allText: (id) => document.getElementById(id).textContent,
     restore() {
       for (const [name, value] of Object.entries(previous)) globalThis[name] = value;
       if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);

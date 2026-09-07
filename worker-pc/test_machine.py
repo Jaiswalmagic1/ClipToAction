@@ -20,6 +20,19 @@ SOURCE_TEXT = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
 SOURCE = ast.parse(SOURCE_TEXT)
 
 
+def _value_of(node):
+    """The value of a constant expression, including plain arithmetic.
+
+    Several of these are written as `24 * 60 * 60` or `16000 * 1 * 2` so the units are
+    readable, and `literal_eval` refuses arithmetic. Evaluated with no builtins and no
+    names in scope, so nothing but numbers can come out of it.
+    """
+    try:
+        return ast.literal_eval(node)
+    except ValueError:
+        return eval(compile(ast.Expression(node), "worker.py", "eval"), {"__builtins__": {}}, {})
+
+
 def constant(name):
     """The value of a module-level constant, read out of worker.py itself.
 
@@ -32,8 +45,21 @@ def constant(name):
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == name:
-                return ast.literal_eval(node.value)
+            if not (isinstance(target, ast.Name) and target.id == name):
+                continue
+            value = node.value
+            # Most of these read an override out of the .env first, so the shipped value is
+            # the DEFAULT inside `whole_number("NAME", <default>)`. Without this the seven
+            # settings written that way could be changed to anything at all with the whole
+            # suite green -- MAX_TRANSCRIPT_CHARS could be set to ten characters.
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "whole_number"
+                and len(value.args) == 2
+            ):
+                return _value_of(value.args[1])
+            return _value_of(value)
     raise AssertionError(f"worker.py no longer has {name}")
 
 
@@ -948,3 +974,56 @@ class HandingBackAFinishedTranscript(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             space["post_transcript"]("s1", "words", "hi", "A reel", 30, None)
         self.assertEqual(len(tries), 4, f"it tried {len(tries)} times")
+
+
+class TheNumbersThisMachineIsSHIPPEDWith(unittest.TestCase):
+    """The values in worker.py, read from worker.py.
+
+    `load` lifts only function and class definitions, so every test that needed a module
+    constant injected its own -- and an injected constant is a value the test made up. Seven
+    shipped settings were therefore read by nothing at all: `MAX_TRANSCRIPT_CHARS` could be
+    set to ten characters, `BATCH_SIZE` to 999, and the ceiling D42 is built on to one
+    second, with all 78 tests green.
+
+    These are not style. Each one is a promise made to him somewhere on screen or in
+    `DECISION_LOG.md`, and this is where the promise is checked against the file.
+    """
+
+    def test_the_ceiling_on_a_single_video(self):
+        # D42: six hours, and the warning at half an hour. Both are quoted to him on the
+        # screen that asks whether to start.
+        self.assertEqual(constant("MAX_DURATION_SEC"), 6 * 60 * 60)
+        self.assertEqual(constant("WARN_ABOVE_SEC"), 30 * 60)
+
+    def test_how_much_speech_one_video_may_hold(self):
+        # D42 again, and the connector's cut-off is written against this number.
+        self.assertEqual(constant("MAX_TRANSCRIPT_CHARS"), 400000)
+
+    def test_what_counts_as_a_long_video_to_the_rest_of_the_machine(self):
+        # The lease the API grants, the "still working" heartbeat, and the run folder sweep
+        # are all sized against these.
+        self.assertEqual(constant("LONG_VIDEO_SEC"), 10 * 60)
+        self.assertEqual(constant("MARK_EVERY_SEC"), 30)
+        self.assertEqual(constant("STALE_RUN_SEC"), 24 * 60 * 60)
+        self.assertEqual(constant("GIVE_UP_ON_HANDBACK_SEC"), 7 * 24 * 60 * 60)
+
+    def test_how_many_it_takes_at_once(self):
+        # Three. A bigger batch holds more claims than one machine can finish inside a
+        # lease; a smaller one wastes the round trip.
+        self.assertEqual(constant("BATCH_SIZE"), 3)
+
+    def test_the_audio_it_measures_length_from(self):
+        # 16kHz, one channel, two bytes a sample -- the shape ffmpeg is asked for. A wrong
+        # number here misreports every video's length to the API.
+        self.assertEqual(constant("WAV_BYTES_PER_SEC"), 16000 * 1 * 2)
+
+    def test_the_creator_backfill_paces_itself(self):
+        # D40: two at a time, twenty seconds apart, and half an hour of quiet after a
+        # refusal -- which is what stopped 196 failures in a row on his own machine.
+        self.assertEqual(constant("CREATOR_BATCH"), 2)
+        self.assertEqual(constant("CREATOR_PAUSE_SEC"), 20)
+        self.assertEqual(constant("CREATOR_BACKOFF_SEC"), 30 * 60)
+
+    def test_and_a_finished_transcript_is_offered_more_than_once(self):
+        self.assertEqual(constant("POST_TRIES"), 4)
+        self.assertEqual(constant("POST_PAUSE_SEC"), 5)

@@ -4869,3 +4869,107 @@ failed it. The four worked examples are written out there.
 A **real phone**. Eight rounds have now reasoned about the referrer, the storage quota and
 the cached-old-page upgrade; not one has run one. That, and this round's mutation rule, are
 the two things the reviewer named as what would actually move this — rather than another lap.
+
+---
+
+### D77 — Round twenty-five: the rule was written and then broken in the same commit
+**Date:** 2026-09-08
+**Amends:** D27, D53, D75, D76.
+
+Forty mutations against D76, run mechanically rather than by reading. **Five of that commit's
+own behaviours survived**, including two of the six splits it claimed to have added — so the
+rule it wrote into `CLAUDE.md` ("no claim goes in until a mutation of it has gone red") was
+broken by the commit that wrote it. Eleven rounds running.
+
+#### Signing out destroyed the OTHER person's unfinished notes
+
+`clearDrafts` walked a bare prefix with no account filter, while every other key sign-out
+removes carries the uid. Alice signs in and out on the phone; Bob's half-written note is
+gone. The docstring three lines above says *"per account, like every other key on the device:
+his half-written note is his"*, and D76's whole argument for clearing them is that they exist
+**nowhere else**. The fix destroyed, for the other person, exactly the thing it was written to
+protect.
+
+#### And four of the new catches said "Saved" to the wrong person
+
+All four were bare `catch {}`, so `accountChanged` — wordless on purpose, so a reply that is
+not yours makes no sound — was never consulted. Sign straight into another account while a
+note is in the air and the next person is shown a green *"Note added."* about somebody else's
+notebook. That is the mirror image of the failure D72 fixed, reintroduced by the fix for it.
+
+#### The page's own advice, followed literally, unfiled the clip for ever
+
+The new sentence read *"Press Save to use it, or **clear the boxes to leave the filing as it
+is**."* Clearing them and pressing Save sends two empty strings, which unfiles the clip **and
+marks it as set by hand**, so nothing automatic ever files it again. One sentence, two
+readings, and the likelier reading destroys the same D27 decision the section exists to
+protect. There is a **button** now that does what that sentence promised.
+
+#### The sentence never appeared while he was typing, and its test could not fail
+
+`unsaved.hidden` was worked out once when the page was built, so it only surfaced at the next
+full redraw — never at the one moment it is any use. It was also inside a `<details>` fold
+with no `open`, behind a triangle.
+
+**And the harness read hidden text as though it were on screen.** A paragraph left
+permanently `hidden` passed the test that claimed the app says something. `text()` now returns
+what is actually visible; `allText()` is there for a test that is specifically about the rest.
+**The fifth time a test has passed because of what it could not see.**
+
+#### The tidy was inoperative in the one condition it was built for
+
+It sat after `setItem` and inside its `try`, so when the box was full the write threw and the
+tidy that would have freed the room never ran. It also ran on **every keystroke**, re-parsing
+every held draft — measured at 8ms of the main thread per character with forty drafts, on the
+box holding an hour of pasted conversation. It runs once per box per draw now, reads only the
+timestamp, and uses a set rather than an O(n²) membership test.
+
+#### Removing the holder key on sign-out reopened the cross-account drain
+
+An unstamped share belongs to whoever signs in next, so removing the marker meant a reel
+shared during the signed-out window was silently drained into a stranger's notebook — the
+exact thing the stamp exists to stop, on the one window where nobody can say whose it is. It
+is set to `nobody` now, which matches no account, so those are asked about. And sign-out takes
+**his own queued shares** with him, by the same argument as the drafts; anything stamped for
+somebody else is left exactly where it is.
+
+#### Eight catches were swallowing drawing faults
+
+Every new inner `catch` covered `render()` as well as `sync()`, so a reply of a shape the app
+cannot draw had no visible home at all — Golden Rule 29's exact failure, in eight places, added
+by the fix for a different one. The refresh and the redraw are separate now, and a failed draw
+says so **while still saying the thing was saved**, because it was.
+
+#### Seven shipped numbers on his machine were read by nothing
+
+`constant()` was written last round to close exactly this hole and was used in one place.
+`MAX_TRANSCRIPT_CHARS` could be set to **ten characters** with all 78 tests green; so could
+`BATCH_SIZE = 999`, `LONG_VIDEO_SEC = 1`, and the run-folder and hand-back timeouts. Each of
+those numbers is a promise made to him on screen or in this log. They are all read out of
+`worker.py` and checked now, including the ones written as arithmetic for readability.
+
+#### What round twenty-five established as sound
+
+The `doomed`/`extra` arithmetic in the tidy is exactly right — it cannot delete the draft
+being typed into. `POST_TRIES` genuinely holds. The account stamp cannot be written from
+outside the origin. The eight harness fixes across the last three rounds all hold.
+
+#### On whether looping is still the right instrument
+
+The reviewer's answer, and it is recorded because it is the honest one: **a lap will still
+find things, but only when it is run mechanically.** Ten rounds of reading did not notice that
+`retryClip` and `answerLongVideo` were untested; one scripted rejoin found it in seconds.
+Every finding this round came from a mutation or a failing test, not from an opinion.
+
+But there is a ceiling this loop cannot cross, and finding six is the proof: the stand-in
+cannot see `hidden`, a collapsed fold, layout, or a real storage quota. **Nine rounds have now
+said "a real phone" and none has used one.**
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Twenty-four | 287 | 125 |
+| Twenty-five (regression) | 11 | 10 |
+
+**Two hundred and ninety-eight.** 685 backend tests and 85 PC-worker tests.

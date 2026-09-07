@@ -328,11 +328,13 @@ describe("signing out on a borrowed machine", () => {
     await app.$("signOut").onclick();
     await settle(2);
 
-    assert.equal(
-      app.localStore.get("cliptoaction-last-account"),
-      undefined,
-      "the device still says it belongs to the account that just signed out"
-    );
+    // Set to nobody, not removed. Removing it is worse: an unstamped share is treated as
+    // belonging to whoever signs in next, so a reel shared during the signed-out window
+    // would be drained into a stranger's notebook — the very thing the stamp exists to
+    // stop, on the one window where nobody can say whose it is.
+    const holder = app.localStore.get("cliptoaction-last-account");
+    assert.notEqual(holder, "vish", "the device still says it belongs to the account that left");
+    assert.ok(holder, "and an unstamped share is saved by whoever signs in next");
     app.restore();
   });
 });
@@ -597,6 +599,190 @@ describe("the box the headline was about", () => {
       /offline|went wrong|could not/i,
       `a filing the server took was reported as failed: "${app.text("clipMsg")}"`
     );
+    app.restore();
+  });
+});
+
+describe("what round twenty-five found, one at a time", () => {
+  test("signing out does not delete the other person's unfinished note", async () => {
+    // Every other key sign-out removes carries the uid. Drafts did not, so signing in and
+    // out on a shared phone deleted somebody else's half-written note — the one thing on
+    // the device that exists nowhere else, destroyed by the code written to protect it.
+    const app = await loadApp(payload(), {
+      hash: "#/clip/c1",
+      seed: [["cliptoaction-draft-bob-c9-note",
+        JSON.stringify({ text: "bob's unfinished thought", was: null, at: now })]]
+    });
+    boxSaying(app, "what you want to remember").type("mine");
+
+    await app.$("signOut").onclick();
+    await settle(2);
+
+    assert.ok(
+      app.localStore.get("cliptoaction-draft-bob-c9-note"),
+      "somebody else's unfinished note was deleted by his sign-out"
+    );
+    assert.deepEqual(
+      [...app.localStore.keys()].filter((key) => key.startsWith("cliptoaction-draft-vish-")),
+      [],
+      "and his own was left behind"
+    );
+    app.restore();
+  });
+
+  test("a note saved just as somebody else signs in says nothing to them", async () => {
+    // The four new catches were bare `catch {}`, so `accountChanged` — which is wordless on
+    // purpose — was never consulted. The next person to sign in was shown a green
+    // "Note added" about somebody else's notebook: the mirror image of the failure this
+    // was fixing, reintroduced by the fix for it.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    boxSaying(app, "what you want to remember").type("a note of his");
+
+    // The refresh AFTER the note is held open, and the account changes underneath it —
+    // which is exactly the window `accountChanged` exists for. The POST is let through.
+    const release = app.hold(1, 1);
+    const pressed = app.press("Add note");
+    await settle(2);
+    await app.signInAs("someoneelse");
+    release();
+    await pressed;
+    await settle();
+
+    assert.doesNotMatch(
+      app.text("clipMsg"),
+      /Note added|Saved|Filed/i,
+      `the next person was told about somebody else's note: "${app.text("clipMsg")}"`
+    );
+    app.restore();
+  });
+
+  test("the unsaved sentence appears while he is typing, not at the next redraw", async () => {
+    // It was worked out once when the page was built, so it never showed at the only moment
+    // it is any use — and the test that claimed otherwise could not fail, because the
+    // stand-in read hidden text as though it were on screen.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    assert.doesNotMatch(app.text("clipView"), /not saved it/i, "it is showing already");
+
+    boxSaying(app, "Topic — the broad subject").type("Selling");
+    assert.match(
+      app.text("clipView"),
+      /not saved it/i,
+      "nothing on screen says the filing shown is not the filing saved"
+    );
+    app.restore();
+  });
+
+  test("and there is a button that really does leave the filing alone", async () => {
+    // The sentence used to say "clear the boxes to leave the filing as it is". Clearing them
+    // and pressing Save sends two empty strings, which UNFILES the clip and marks it as set
+    // by hand — so nothing automatic ever files it again. Following the advice destroyed the
+    // decision the advice was protecting.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    boxSaying(app, "Topic — the broad subject").type("Selling");
+    assert.doesNotMatch(
+      app.text("clipView"),
+      /clear the boxes/i,
+      "the page still tells him to do the destructive thing"
+    );
+
+    await app.press("Leave it as it is");
+    await settle(2);
+    assert.equal(boxSaying(app, "Topic — the broad subject").value, "");
+    assert.deepEqual(
+      [...app.localStore.keys()].filter((key) => key.includes("-c1-topic")),
+      [],
+      "the half-written change is still held"
+    );
+    assert.deepEqual(app.bodiesTo("/topic"), [], "and it sent something to the server");
+    app.restore();
+  });
+
+  test("a note that saved but could not be redrawn does not fail silently", async () => {
+    // Every one of the new inner catches covered `render()` as well as `sync()`, so a reply
+    // of the wrong shape had no visible home at all — Golden Rule 29's exact failure, in
+    // eight places at once, added by the fix for a different one.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    boxSaying(app, "what you want to remember").type("a note");
+
+    // The next draw cannot finish. In a browser this is a data shape the app cannot draw.
+    const view = app.$("clipView");
+    const realAppend = view.append.bind(view);
+    view.append = () => { throw new Error("could not draw the page"); };
+
+    await app.press("Add note");
+    await settle();
+    view.append = realAppend;
+
+    const said = `${app.text("clipMsg")} ${app.text("syncMsg")}`;
+    // Two things at once, and both matter. The fault must be VISIBLE — swallowed, a
+    // drawing bug has no home at all. And it must not read as the note having failed: the
+    // server took it, and telling him otherwise is how he ends up with two.
+    assert.match(said, /could not be redrawn/i, `a drawing fault was swallowed: "${said}"`);
+    assert.match(said, /Saved/i, `a note the server took was reported as failed: "${said}"`);
+    app.restore();
+  });
+
+  test("a storage box that is already full is still tidied", async () => {
+    // The tidy sat after `setItem` and inside its try, so when the box was full the write
+    // threw and the tidy that would have freed the room never ran — inoperative in the one
+    // condition it was built for.
+    const many = [];
+    for (let n = 0; n < 60; n += 1) {
+      many.push([`cliptoaction-draft-vish-c${n}-note`,
+        JSON.stringify({ text: `draft ${n}`, was: null, at: now - n })]);
+    }
+    const app = await loadApp(payload(), { hash: "#/clip/c1", quotaChars: 4000, seed: many });
+    await settle(2);
+
+    const left = [...app.localStore.keys()].filter((key) => key.startsWith("cliptoaction-draft-"));
+    assert.ok(left.length <= 41, `${left.length} half-written things on a full device`);
+    app.restore();
+  });
+
+  test("signing out takes his own queued shares with him", async () => {
+    // A queued reel is his, by the same argument as a half-written note: it is on the
+    // device and nowhere else, and it must not be sitting in a borrowed machine's storage
+    // for the next person. Anything stamped for somebody else is left exactly where it is.
+    const app = await loadApp(payload(), {
+      hash: "#/clip/c1",
+      failAfter: 1,
+      seed: [["cliptoaction-pending-shares", JSON.stringify([
+        { title: "", text: "", url: "https://www.instagram.com/reel/MINE/", at: 1, by: "vish" },
+        { title: "", text: "", url: "https://www.instagram.com/reel/THEIRS/", at: 2, by: "bob" }
+      ])]]
+    });
+    await settle(6);
+
+    await app.$("signOut").onclick();
+    await settle(2);
+
+    const left = app.localStore.get("cliptoaction-pending-shares") || "";
+    assert.ok(!left.includes("MINE"), `his own share was left on the machine: ${left}`);
+    assert.match(left, /THEIRS/, "and somebody else's was taken away with it");
+    app.restore();
+  });
+
+  test("a reel shared while nobody was signed in is asked about, not taken", async () => {
+    // Sign-out used to REMOVE the marker saying whose device it is, and an unstamped share
+    // belongs to whoever signs in next — so a reel shared during the signed-out window was
+    // silently drained into a stranger's notebook.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    await app.$("signOut").onclick();
+    await settle(2);
+    const holder = app.localStore.get("cliptoaction-last-account");
+
+    // The share page stamps whatever it finds; the next person signs in.
+    const next = await loadApp(payload(), {
+      who: "someoneelse",
+      seed: [["cliptoaction-pending-shares", JSON.stringify([
+        { title: "", text: "", url: "https://www.instagram.com/reel/BETWEEN/", at: 1, by: holder }
+      ])]]
+    });
+    await settle(6);
+
+    const saved = next.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 0, `it was taken by the next person: ${saved.join(", ")}`);
+    next.restore();
     app.restore();
   });
 });

@@ -771,6 +771,10 @@ const DRAFT_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
 function keepDraft(box, what, clipId, saved = null) {
   const key = draftKey(what, clipId);
+  // Once per box, when the page is drawn — off the typing path entirely. Running it on
+  // every keystroke re-parsed every held draft, which on forty of them measured 8ms of the
+  // main thread per character, on the box holding an hour of pasted conversation.
+  tidyDrafts();
   try {
     const held = JSON.parse(localStorage.getItem(key) || "null");
     if (held && typeof held === "object" && String(held.text || "").trim()) {
@@ -797,17 +801,33 @@ function keepDraft(box, what, clipId, saved = null) {
     // survive a redraw.
   }
   box.addEventListener("input", () => {
+    const unsaved = Boolean(box.value.trim()) && box.value !== saved;
+    if (unsaved) box.dataset.unsaved = "yes";
+    else delete box.dataset.unsaved;
+    // The sentence that says so, redrawn now rather than at the next full draw. It was
+    // computed once when the page was built, so it never appeared while he was typing —
+    // which is the only moment it is any use.
+    if (typeof box.onDraftChange === "function") box.onDraftChange(unsaved);
+
+    // The tidy comes FIRST, and outside the write's own try.
+    //
+    // It used to sit after `setItem` and inside it, so when the box was full the write
+    // threw and the tidy that would have freed the room never ran — inoperative in the one
+    // condition it was built for. And it only walks storage when a key is being CREATED:
+    // it was running on every keystroke, re-parsing every held draft, which on forty of
+    // them measured 8ms of the main thread per character typed.
+    let known = true;
+    try { known = localStorage.getItem(key) !== null; } catch { known = true; }
+    if (unsaved && !known) tidyDrafts();
+
     try {
-      if (box.value.trim() && box.value !== saved) {
+      if (unsaved) {
         localStorage.setItem(key, JSON.stringify({
           text: box.value, was: saved, at: Date.now()
         }));
-        box.dataset.unsaved = "yes";
       } else {
         localStorage.removeItem(key);
-        delete box.dataset.unsaved;
       }
-      tidyDrafts();
     } catch {
       // A full or blocked box. Nothing to do, and nothing worth saying: the text is still
       // on screen, and this is a convenience over the top of it.
@@ -825,16 +845,28 @@ function forgetDraft(what, clipId) {
   }
 }
 
-/** Every draft on this device, oldest first. */
-function allDrafts() {
+/**
+ * Drafts on this device, oldest first — HIS by default, everybody's only when asked.
+ *
+ * A bare prefix scan is what every other key here is careful not to be. Sign-out used one,
+ * so signing in and out on a shared phone deleted the OTHER person's unfinished notes: the
+ * one thing on the device that exists nowhere else, destroyed by the code written to
+ * protect it.
+ */
+function allDrafts(everybody = false) {
+  const mine = `${DRAFT_PREFIX}${user ? user.uid : "none"}-`;
   const found = [];
   try {
     for (let n = 0; n < localStorage.length; n += 1) {
       const key = localStorage.key(n);
       if (!key || !key.startsWith(DRAFT_PREFIX)) continue;
-      let at = 0;
-      try { at = Number(JSON.parse(localStorage.getItem(key) || "{}").at) || 0; } catch { at = 0; }
-      found.push({ key, at });
+      if (!everybody && !key.startsWith(mine)) continue;
+      // Only the timestamp, and without parsing a whole pasted hour to get it. A draft
+      // whose value cannot be read at all gets `Date.now()` rather than 0, so that the age
+      // rule can still reach it later instead of it living for ever.
+      const raw = localStorage.getItem(key) || "";
+      const stamped = /"at"\s*:\s*(\d+)/.exec(raw);
+      found.push({ key, at: stamped ? Number(stamped[1]) : Date.now() });
     }
   } catch {
     return [];
@@ -851,14 +883,20 @@ function allDrafts() {
 function tidyDrafts() {
   const drafts = allDrafts();
   const old = Date.now() - DRAFT_LIFE_MS;
-  const doomed = drafts.filter((one) => one.at && one.at < old);
-  const extra = Math.max(0, drafts.length - doomed.length - MAX_DRAFTS);
-  for (const one of [...doomed, ...drafts.filter((d) => !doomed.includes(d)).slice(0, extra)]) {
-    try { localStorage.removeItem(one.key); } catch { /* gone */ }
+  const doomed = new Set(drafts.filter((one) => one.at && one.at < old).map((one) => one.key));
+  const rest = drafts.filter((one) => !doomed.has(one.key));
+  const extra = Math.max(0, rest.length - MAX_DRAFTS);
+  for (const one of [...doomed, ...rest.slice(0, extra).map((d) => d.key)]) {
+    try { localStorage.removeItem(one); } catch { /* gone */ }
   }
 }
 
-/** Everything half-written on this device, gone. Signing out has to take it with you. */
+/**
+ * What HE half-wrote, gone. Signing out has to take it with you.
+ *
+ * His, and nobody else's — see allDrafts. Somebody else's unfinished note on the same
+ * phone is theirs, and it is the one thing here that exists nowhere else at all.
+ */
 function clearDrafts() {
   for (const one of allDrafts()) {
     try { localStorage.removeItem(one.key); } catch { /* gone */ }
@@ -1415,8 +1453,8 @@ async function retryClip(clip, button) {
       + "a long video is being read.", "ok");
     try {
       await sync();
-      render();
     } catch { /* the refresh, not the request. The next pass picks it up. */ }
+    render();
   } catch (error) {
     say("clipMsg", error.message);
     button.disabled = false;
@@ -1437,8 +1475,8 @@ async function answerLongVideo(clip, action, button) {
       "ok");
     try {
       await sync();
-      render();
     } catch { /* the refresh, not the answer. The next pass picks it up. */ }
+    render();
   } catch (error) {
     say("clipMsg", error.message);
     button.disabled = false;
@@ -2441,10 +2479,11 @@ async function setItemDecision(row, select) {
     // already holding. He would set it again, and see it snap back again.
     try {
       await sync();
-      // render(), not renderList(): the same dropdown appears on a clip's own page, and
-      // that page must not be replaced by the notebook when somebody uses it.
-      render();
     } catch { /* the refresh, not the decision. The next pass picks it up. */ }
+    // render(), not renderList(): the same dropdown appears on a clip's own page, and that
+    // page must not be replaced by the notebook when somebody uses it. Outside the catch,
+    // so a drawing fault is not swallowed with the network one.
+    render();
   } catch (error) {
     // The two pages this can be used from have different places to put a message. A
     // failure with nowhere to appear is a silent failure (Golden Rule 29).
@@ -2803,12 +2842,48 @@ function topicSection(clip) {
 
   // And it SAYS so, rather than the screen quietly disagreeing with the notebook. A topic
   // he started retyping and walked away from used to read as the folder it was in.
+  //
+  // The words matter here. "Clear the boxes to leave the filing as it is" was untrue and
+  // destructive: clearing them and pressing Save sends two empty strings, which UNFILES the
+  // clip and marks it as set by hand — so nothing automatic ever files it again. That is the
+  // same D27 decision this whole section exists to protect, destroyed by following the
+  // sentence above it. There is a button that actually does what that sentence promised.
   const unsaved = document.createElement("p");
   unsaved.className = "muted";
-  unsaved.hidden = !(topicBox.dataset.unsaved || subBox.dataset.unsaved);
-  unsaved.textContent =
-    "You have started changing this and not saved it. Press Save to use it, or clear the"
-    + " boxes to leave the filing as it is.";
+  unsaved.textContent = path
+    ? `You have started changing this and not saved it. It is still filed under `
+      + `${path.subTopic ? `${path.topic} › ${path.subTopic}` : path.topic}.`
+    : "You have started filing this and not saved it.";
+
+  const discard = document.createElement("button");
+  discard.textContent = "Leave it as it is";
+  discard.style.marginTop = "8px";
+  discard.onclick = () => {
+    // Back to what is really filed, and the half-written change let go of. NOT an empty
+    // box: empty means "unfile this", which is a different and permanent thing.
+    topicBox.value = path ? path.topic : "";
+    subBox.value = path ? path.subTopic : "";
+    forgetDraft("topic", clip.id);
+    forgetDraft("subtopic", clip.id);
+    delete topicBox.dataset.unsaved;
+    delete subBox.dataset.unsaved;
+    showUnsaved();
+  };
+
+  // Drawn again the moment either box changes. It was worked out once when the page was
+  // built, so it never appeared while he was typing — which is the only moment it is any
+  // use — and only surfaced on the next full redraw.
+  const showUnsaved = () => {
+    const changed = Boolean(topicBox.dataset.unsaved || subBox.dataset.unsaved);
+    unsaved.hidden = !changed;
+    discard.hidden = !changed;
+    // The fold this lives in is opened, or the sentence is behind a triangle he has no
+    // reason to press.
+    if (changed) details.open = true;
+  };
+  topicBox.onDraftChange = showUnsaved;
+  subBox.onDraftChange = showUnsaved;
+  showUnsaved();
   subBox.style.marginTop = "8px";
 
   const save = document.createElement("button");
@@ -2832,11 +2907,25 @@ function topicSection(clip) {
       // still live in every other place that saves something he typed.
       forgetDraft("topic", clip.id);
       forgetDraft("subtopic", clip.id);
+      // The refresh only. Two things this must NOT do.
+      //
+      // It must not speak to the wrong person: signing straight into another account fires
+      // a refresh, and `accountChanged` is deliberately wordless so a reply that is not
+      // yours makes no sound. Four of these were bare `catch {}`, so the next person to
+      // sign in was shown a green "Saved" about somebody else's notebook — the mirror
+      // image of the failure D72 fixed, reintroduced by the fix for it.
+      //
+      // And it must not swallow a DRAWING fault. `render()` is inside this too, so a
+      // reply of the wrong shape had no visible home at all (Golden Rule 29).
       try {
         await sync();
+      } catch (later) {
+        if (!later.accountChanged) say("clipMsg", "Filed. The screen may be a moment behind.", "ok");
+      }
+      try {
         render();
-      } catch {
-        say("clipMsg", "Filed. The screen may be a moment behind.", "ok");
+      } catch (drawing) {
+        say("clipMsg", `Saved, but the screen could not be redrawn: ${drawing.message}`);
       }
     } catch (error) {
       say("clipMsg", error.message);
@@ -2848,7 +2937,7 @@ function topicSection(clip) {
   promise.className = "muted";
   promise.textContent = "Once you set this yourself it stays put — nothing automatic will move it again.";
 
-  details.append(topicBox, subBox, unsaved, save, promise);
+  details.append(topicBox, subBox, unsaved, save, discard, promise);
   section.append(details);
   return section;
 }
@@ -2982,11 +3071,25 @@ function byHandSection(clip) {
       // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
       // still live in every other place that saves something he typed.
       forgetDraft("reading", clip.id);
+      // The refresh only. Two things this must NOT do.
+      //
+      // It must not speak to the wrong person: signing straight into another account fires
+      // a refresh, and `accountChanged` is deliberately wordless so a reply that is not
+      // yours makes no sound. Four of these were bare `catch {}`, so the next person to
+      // sign in was shown a green "Saved" about somebody else's notebook — the mirror
+      // image of the failure D72 fixed, reintroduced by the fix for it.
+      //
+      // And it must not swallow a DRAWING fault. `render()` is inside this too, so a
+      // reply of the wrong shape had no visible home at all (Golden Rule 29).
       try {
         await sync();
+      } catch (later) {
+        if (!later.accountChanged) say("byHandMsg", "Saved. The screen may be a moment behind.", "ok");
+      }
+      try {
         render();
-      } catch {
-        say("byHandMsg", "Saved. The screen may be a moment behind.", "ok");
+      } catch (drawing) {
+        say("byHandMsg", `Saved, but the screen could not be redrawn: ${drawing.message}`);
       }
     } catch (error) {
       say("byHandMsg", error.message);
@@ -3148,11 +3251,25 @@ function learnSection(clip) {
       // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
       // still live in every other place that saves something he typed.
       forgetDraft("learning", clip.id);
+      // The refresh only. Two things this must NOT do.
+      //
+      // It must not speak to the wrong person: signing straight into another account fires
+      // a refresh, and `accountChanged` is deliberately wordless so a reply that is not
+      // yours makes no sound. Four of these were bare `catch {}`, so the next person to
+      // sign in was shown a green "Saved" about somebody else's notebook — the mirror
+      // image of the failure D72 fixed, reintroduced by the fix for it.
+      //
+      // And it must not swallow a DRAWING fault. `render()` is inside this too, so a
+      // reply of the wrong shape had no visible home at all (Golden Rule 29).
       try {
         await sync();
+      } catch (later) {
+        if (!later.accountChanged) say("learnMsg", "Saved. The screen may be a moment behind.", "ok");
+      }
+      try {
         render();
-      } catch {
-        say("learnMsg", "Saved. The screen may be a moment behind.", "ok");
+      } catch (drawing) {
+        say("learnMsg", `Saved, but the screen could not be redrawn: ${drawing.message}`);
       }
     } catch (error) {
       say("learnMsg", error.message);
@@ -3521,11 +3638,25 @@ function renderClip(clipId) {
       // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
       // still live in every other place that saves something he typed.
       forgetDraft("note", clip.id);
+      // The refresh only. Two things this must NOT do.
+      //
+      // It must not speak to the wrong person: signing straight into another account fires
+      // a refresh, and `accountChanged` is deliberately wordless so a reply that is not
+      // yours makes no sound. Four of these were bare `catch {}`, so the next person to
+      // sign in was shown a green "Saved" about somebody else's notebook — the mirror
+      // image of the failure D72 fixed, reintroduced by the fix for it.
+      //
+      // And it must not swallow a DRAWING fault. `render()` is inside this too, so a
+      // reply of the wrong shape had no visible home at all (Golden Rule 29).
       try {
         await sync();
+      } catch (later) {
+        if (!later.accountChanged) say("clipMsg", "Note added. The screen may be a moment behind.", "ok");
+      }
+      try {
         render();
-      } catch {
-        say("clipMsg", "Note added. The screen may be a moment behind.", "ok");
+      } catch (drawing) {
+        say("clipMsg", `Saved, but the screen could not be redrawn: ${drawing.message}`);
       }
     } catch (error) {
       say("clipMsg", error.message);
@@ -4342,6 +4473,14 @@ $("saveForm").onsubmit = async (event) => {
 const forSomebodyElse = (share) =>
   Boolean(share.by) && Boolean(whoIsSignedIn()) && share.by !== whoIsSignedIn();
 
+/** Everything in the queue that belongs to the person signing out. */
+function dropMyQueuedShares() {
+  const me = whoIsSignedIn();
+  for (const one of readQueue()) {
+    if (!one.by || one.by === me) dropShare(one);
+  }
+}
+
 /** Whether a queued share is the link now in the box. */
 const sameLink = (share, url) =>
   `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/)?.[0] === url;
@@ -5124,10 +5263,20 @@ $("signOut").onclick = () => {
     // else at all — the notebook can be fetched again, an unfinished note cannot — and it
     // was the one thing left behind on a borrowed machine.
     clearDrafts();
-    // And whose device this is. Left set, the share page went on stamping shares for the
-    // account that has just gone: the next person's own reels were then marked as somebody
-    // else's, never saved, and offered again on every open.
-    localStorage.removeItem(HOLDER_KEY);
+    // And whose device this is — set to NOBODY, not removed.
+    //
+    // Left as his, the share page went on stamping shares for the account that had just
+    // gone, so the next person's own reels were marked as somebody else's and never saved.
+    // But REMOVING it is worse: an unstamped share is treated as belonging to whoever
+    // signs in next, so a reel shared during the signed-out window was silently drained
+    // into a stranger's notebook — the very thing the stamp exists to stop, on the one
+    // window where nobody can say whose it is. `nobody` matches no account, so those are
+    // asked about instead. One press, in a window that is usually seconds long.
+    localStorage.setItem(HOLDER_KEY, "nobody");
+    // And the shares themselves. A queued reel is his, and the same "exists nowhere else"
+    // argument applies to it as to a half-written note: what is HIS goes with him, and
+    // anything stamped for somebody else is left exactly where it is.
+    dropMyQueuedShares();
   } catch { /* nothing to remove */ }
   // The device copy has already gone by this point, so a sign-out that fails silently
   // would leave him signed in and looking at an empty notebook.
