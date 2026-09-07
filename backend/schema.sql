@@ -82,9 +82,9 @@ CREATE TABLE IF NOT EXISTS sources (
   -- what makes a failure diagnosable instead of guessable (D34).
   error_detail  TEXT,
   attempts      INTEGER NOT NULL DEFAULT 0,
-  claimed_at    INTEGER,
+  claimed_at    INTEGER,                                      -- lease: a claim older than the timeout is retryable
   -- How many times a machine has handed this back without trying it (D58).
-  releases      INTEGER NOT NULL DEFAULT 0,                   -- lease: a claim older than the timeout is retryable
+  releases      INTEGER NOT NULL DEFAULT 0,
   -- D42. When somebody said yes to this video's length, and who. WHO is not bookkeeping:
   -- a long video can spend most of a free daily allowance, and D10 would otherwise make
   -- the first saver with a key pay for a video somebody else approved. The approver pays.
@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sources_state ON sources (state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_sources_updated ON sources (updated_at);
 
 -- The creator backfill's queue (D40). Partial, so it holds only the rows still waiting and
 -- empties itself as the backfill finishes. Without it the worker's every-thirty-seconds
@@ -181,6 +182,8 @@ CREATE TABLE IF NOT EXISTS clips (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clips_sync ON clips (user_id, updated_at);
+-- What a background refresh reads: everything saved since it last asked (D59).
+CREATE INDEX IF NOT EXISTS idx_clips_new ON clips (user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_clips_topic ON clips (user_id, topic_id);
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -193,6 +196,8 @@ CREATE TABLE IF NOT EXISTS notes (
   deleted_at INTEGER
 );
 
+CREATE INDEX IF NOT EXISTS idx_transcripts_new ON transcripts (created_at);
+CREATE INDEX IF NOT EXISTS idx_analyses_new ON analyses (created_at);
 CREATE INDEX IF NOT EXISTS idx_notes_sync ON notes (user_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS questions (

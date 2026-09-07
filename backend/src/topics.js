@@ -281,6 +281,19 @@ export async function fileSourceForAllSavers(env, sourceId, proposed, timestamp,
  *
  * Returns { merged, moved }: how many topics were folded away, and how many clips moved.
  */
+// How many folders one press may put together.
+//
+// Not a preference — a hard limit of the platform. A Worker on the free plan may make 50
+// calls to the database in ONE request, and every binding call counts. Tidying his real 34
+// folders down to 20 took a hundred, so the fifty-first threw with half the merges already
+// committed: some folders joined, some not, and nothing anywhere recording which. That is
+// the one operation that moves his clips between folders.
+//
+// Five doomed folders a press is about thirty calls at the worst. It costs no AI and the
+// app presses again while anything is left, so the whole tidy still happens — in bites that
+// each finish.
+const MAX_MERGES_PER_REQUEST = 5;
+
 export async function tidyTopics(env, userId, timestamp) {
   const tops = await env.DB.prepare(
     `SELECT id, name_key FROM topics
@@ -300,12 +313,20 @@ export async function tidyTopics(env, userId, timestamp) {
 
   let merged = 0;
   let moved = 0;
+  // What is left for the next press. The app keeps pressing while this is above zero.
+  let remaining = 0;
+  let done = 0;
 
   for (const group of groups.values()) {
     if (group.length < 2) continue;
     const [keeper, ...rest] = group;
 
     for (const doomed of rest) {
+      if (done >= MAX_MERGES_PER_REQUEST) {
+        remaining += 1;
+        continue;
+      }
+      done += 1;
       const children = await env.DB.prepare(
         `SELECT id, name_key FROM topics
          WHERE user_id = ?1 AND parent_id = ?2 AND deleted_at IS NULL`
@@ -349,7 +370,7 @@ export async function tidyTopics(env, userId, timestamp) {
     }
   }
 
-  return { merged, moved };
+  return { merged, moved, remaining };
 }
 
 /** Points every clip filed under `fromId` at `toId`. Returns how many moved. */

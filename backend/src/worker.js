@@ -130,7 +130,17 @@ const MAX_ATTEMPTS = 3;
 // to a provider, and a Worker request has a hard ceiling on how many of those it may
 // make. The app presses again while `remaining` is above zero, so the cap costs nothing
 // but keeps a notebook of any size inside one request's budget.
-const MAX_SORT_PER_REQUEST = 10;
+// How many clips one press may read again.
+//
+// It was ten, and ten was over a hard limit of the platform: a Worker on the free plan may
+// make 50 calls to the database in ONE request, and every binding call counts one. Sorting
+// ten clips took 62 and filling in ten trackers took 75, so the fifty-first threw — with
+// the writes before it already committed and, worse, six or seven calls to his AI account
+// already SPENT. Every press, for ever, and the money gone with nothing to show.
+//
+// Four is about thirty calls at the worst of it. The app presses again while anything is
+// left, so the whole job still happens; it happens in bites that each finish.
+const MAX_SORT_PER_REQUEST = 4;
 // How many live connector addresses one notebook may hold. Enough for Claude and ChatGPT
 // and a spare; low enough that a leaked one is noticed rather than lost in a list.
 const MAX_CONNECTORS = 5;
@@ -440,10 +450,23 @@ async function deltaSync(request, env, userId) {
   // Shared rows are pivoted on the joining clip, not on their own timestamp. A reel
   // transcribed last week and saved today has an old transcript and a new clip — filtering
   // on the transcript alone would hand the user a permanently blank clip.
+  //
+  // Written as two halves rather than one OR, and that is the difference between reading
+  // four rows and reading two thousand. An OR across two tables cannot use an index for
+  // either side, so every one of these ran down the WHOLE clip list on every background
+  // refresh — three times over — to return, almost always, nothing at all. At his notebook
+  // that is a quarter of a million rows a day for four rows of answer; it is also what put
+  // the ceiling on how many people this can carry at all (D5).
+  //
+  // Each half now stands on an index: what he saved since `since`, and what changed since
+  // `since`. UNION removes the overlap.
   const sources = await env.DB.prepare(
-    `SELECT s.* FROM sources s
-     JOIN clips c ON c.source_id = s.id
-     WHERE c.user_id = ?1 AND (s.updated_at > ?2 OR c.created_at > ?2)`
+    `SELECT * FROM sources
+     WHERE id IN (SELECT source_id FROM clips WHERE user_id = ?1 AND created_at > ?2)
+     UNION
+     SELECT s.* FROM sources s
+     WHERE s.updated_at > ?2
+       AND EXISTS (SELECT 1 FROM clips c WHERE c.source_id = s.id AND c.user_id = ?1)`
   )
     .bind(userId, since)
     .all();
@@ -459,20 +482,26 @@ async function deltaSync(request, env, userId) {
   }));
 
   const transcripts = await env.DB.prepare(
-    `SELECT t.* FROM transcripts t
-     JOIN clips c ON c.source_id = t.source_id
-     WHERE c.user_id = ?1 AND (t.created_at > ?2 OR c.created_at > ?2)`
+    `SELECT * FROM transcripts
+     WHERE source_id IN (SELECT source_id FROM clips WHERE user_id = ?1 AND created_at > ?2)
+     UNION
+     SELECT t.* FROM transcripts t
+     WHERE t.created_at > ?2
+       AND EXISTS (SELECT 1 FROM clips c WHERE c.source_id = t.source_id AND c.user_id = ?1)`
   )
     .bind(userId, since)
     .all();
 
   // Shared analyses plus this user's own pasted ones. Never another user's paste.
   const analyses = await env.DB.prepare(
-    `SELECT a.* FROM analyses a
-     JOIN clips c ON c.source_id = a.source_id
-     WHERE c.user_id = ?1
-       AND (a.user_id = ?3 OR a.user_id = ?4)
-       AND (a.created_at > ?2 OR c.created_at > ?2)`
+    `SELECT * FROM analyses
+     WHERE (user_id = ?3 OR user_id = ?4)
+       AND source_id IN (SELECT source_id FROM clips WHERE user_id = ?1 AND created_at > ?2)
+     UNION
+     SELECT a.* FROM analyses a
+     WHERE (a.user_id = ?3 OR a.user_id = ?4)
+       AND a.created_at > ?2
+       AND EXISTS (SELECT 1 FROM clips c WHERE c.source_id = a.source_id AND c.user_id = ?1)`
   )
     .bind(userId, since, SHARED, userId)
     .all();
@@ -939,6 +968,10 @@ async function storeTranscript(request, env, sourceId) {
        SET state = 'transcribed', title = COALESCE(?1, title),
            duration_sec = COALESCE(?2, duration_sec), error = NULL, error_detail = NULL,
            claimed_at = NULL,
+           -- The video got there. Whatever it took to get there is no longer counted
+           -- against it: the release count is about a machine walking away, and one that
+           -- did not must leave no mark on an attempt years later.
+           releases = 0,
            creator = COALESCE(?5, creator),
            -- Only when the worker actually LOOKED. A machine still running the code from
            -- before D40 sends no creator field at all, and marking those as settled
@@ -1304,16 +1337,28 @@ async function releaseClaim(request, env, sourceId) {
   //
   // A claim is identified by when it was made, which the queue hands out with the work.
   // A release for a claim that has since been re-issued to somebody else matches nothing.
+  const timestamp = now();
   const result = await env.DB.prepare(
     `UPDATE sources
-     SET state = 'pending',
+     SET state = CASE
+           -- Out of free hand-backs AND out of attempts. It has to END somewhere he can
+           -- see, and 'pending' is not an ending: the retirement sweep only looks at rows
+           -- that are 'downloading', and "Try again" only accepts rows that are 'failed'.
+           -- So a video that reached this state sat in the queue nothing would ever hand
+           -- out, with no error on it, saying "waiting for your PC" for ever. Golden Rule
+           -- 29 undone by the code written to enforce it.
+           WHEN releases >= ?3 AND attempts >= ?5 THEN 'failed' ELSE 'pending' END,
+         error = CASE
+           WHEN releases >= ?3 AND attempts >= ?5
+             THEN 'Your PC kept stopping partway through this one. Press try again when it is on.'
+           ELSE error END,
          claimed_at = NULL,
          releases = releases + 1,
          attempts = CASE WHEN attempts > 0 AND releases < ?3 THEN attempts - 1 ELSE attempts END,
          updated_at = ?2
      WHERE id = ?1 AND state = 'downloading' AND claimed_at = ?4`
   )
-    .bind(sourceId, now(), MAX_FREE_RELEASES, heldSince)
+    .bind(sourceId, timestamp, MAX_FREE_RELEASES, heldSince, MAX_ATTEMPTS)
     .run();
 
   // Not an error when it changes nothing: another machine may have finished the video or
@@ -1881,7 +1926,9 @@ async function saveLearning(request, env, userId, clipId) {
 
   const problems = validateLearning(payload);
   if (problems.length) {
-    return fail(env, `That learning is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);
+    // "Missing or malformed" is one complaint and "too long" is another; saying both in
+    // one sentence reads as neither.
+    return fail(env, `That learning cannot be saved: ${problems.join(", ")}. Nothing was saved.`);
   }
 
   if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY)) {
@@ -2206,13 +2253,34 @@ async function relookDue(env, userId) {
   return { due: Number(row?.due || 0), oldest: row?.oldest || null };
 }
 
-/** How often this person wants to be offered one, and whether one is offered now. */
+/**
+ * How often this person wants to be offered one, and whether one is offered now.
+ *
+ * The COUNT is the expensive half — a walk of the clip list with two correlated lookups
+ * per clip — and it ran on every background refresh, every forty-five seconds, to decide
+ * whether to draw a banner about something that happens once a fortnight. That one query
+ * family was about four in every ten rows this product reads.
+ *
+ * It is asked now only when the answer could be different: never when he has turned the
+ * offer off, and never inside the period he has just been offered one. Both are answered
+ * by the single row above, which is read anyway.
+ */
 async function relookFor(env, userId, timestamp) {
   const user = await env.DB.prepare(
     `SELECT relook_days, relooked_at FROM users WHERE id = ?1`
   )
     .bind(userId)
     .first();
+
+  const everyDays = user?.relook_days ?? null;
+  const lastAt = user?.relooked_at ?? null;
+  const tooSoon =
+    everyDays === 0
+    || (everyDays && lastAt && timestamp - lastAt < everyDays * 24 * 60 * 60 * 1000);
+  if (tooSoon) {
+    return relookState({ everyDays, lastAt, dueCount: 0, oldestDueAt: null, at: timestamp });
+  }
+
   const { due, oldest } = await relookDue(env, userId);
   return relookState({
     everyDays: user?.relook_days ?? null,
@@ -2359,6 +2427,10 @@ async function retryClip(env, userId, clipId) {
     `UPDATE sources
      SET state = 'pending', attempts = 0, error = NULL, error_detail = NULL,
          claimed_at = NULL,
+         -- A fresh start is a fresh start. The release count is a lifetime tally of how
+         -- many times a machine walked away from this video, and leaving it standing
+         -- meant the next interrupted start went straight past the free ones.
+         releases = 0,
          long_ok_by = CASE WHEN long_ok_at IS NULL THEN long_ok_by ELSE ?3 END,
          updated_at = ?1
      WHERE id = ?2 AND state = 'failed'`

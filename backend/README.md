@@ -167,7 +167,7 @@ order, one at a time.
 
 ```bash
 wrangler d1 execute cliptoaction-staging --remote --env staging --file=./migrations/0009_row_shapes_version.sql
-# ... and so on, in order, up to 0015_claim_releases.sql
+# ... and so on, in order, up to 0016_sync_indexes.sql
 ```
 
 Each is additive — `ALTER TABLE ADD COLUMN`, `CREATE TABLE IF NOT EXISTS` and one index — so they are
@@ -204,6 +204,7 @@ What to look for, file by file:
 | `0013` | `sources.creator_tries` |
 | `0014` | the index `idx_sources_creator_todo` |
 | `0015` | `sources.releases` |
+| `0016` | the indexes `idx_clips_new`, `idx_sources_updated`, `idx_transcripts_new`, `idx_analyses_new` |
 
 ### The release order, in full
 

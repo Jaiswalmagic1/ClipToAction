@@ -725,12 +725,12 @@ def release_stale_claims():
     at the end meant one id that kept failing had the others handed back again at every
     single start.
     """
-    for folder in sorted(MEDIA_ROOT.glob("run-*")):
-        if folder == MEDIA_DIR or not folder.is_dir():
-            continue
-        if still_running(pid_of(folder)):
-            continue
-        held = folder / "claimed.txt"
+    # What a version before this one was holding. It kept its list outside the run
+    # folders, so on the upgrade itself there would have been nothing to find and the work
+    # would have sat locked for its whole lease.
+    for held in [MEDIA_ROOT / "claimed.txt"] + [
+        folder / "claimed.txt" for folder in sorted(MEDIA_ROOT.glob("run-*")) if has_stopped(folder)
+    ]:
         if not held.exists():
             continue
         try:
@@ -743,6 +743,18 @@ def release_stale_claims():
             parts = line.split(" ")
             source_id = parts[0]
             claimed_at = parts[1] if len(parts) > 1 else "0"
+
+            # No claim time, nothing to hand back with. A hand-back names the claim it
+            # means, so that it cannot cancel work a different machine is doing now -- and
+            # a line with no time can never satisfy that. Asking anyway got a 400 every
+            # start, kept the line for ever, and then the sweep deleted the folder under
+            # it. The lease expiring is the answer for these, which costs time and loses
+            # nothing.
+            if claimed_at == "0":
+                say(f"  . {source_id} was noted without a claim time; leaving it to time out")
+                drop_line(held, line)
+                continue
+
             try:
                 response = requests.post(
                     f"{API_BASE}/v1/sources/{source_id}/release",
@@ -756,6 +768,12 @@ def release_stale_claims():
                 say(f"!! could not hand back {source_id}: {error}")
                 continue
             drop_line(held, line)
+
+    # Only now, and only what is finished with. A folder whose list still has something in
+    # it is one whose hand-backs did not get through -- the network not being up yet is the
+    # ordinary case on a machine that has just booted, which is exactly the restart this
+    # feature is for. Deleting it there took the record away for good.
+    sweep_finished_runs()
 
 
 def drop_line(path, wanted):
@@ -777,24 +795,41 @@ def pid_of(folder):
         return 0
 
 
-def sweep_old_runs():
+def has_stopped(folder):
+    """Whether the run that owns this folder is over.
+
+    ONE rule, used by the reader and by the sweep. They had a rule each, and the sweep's
+    was the more generous -- so a folder whose process number Windows had handed to some
+    unrelated live program was DELETED after a day without its list ever being read, which
+    is the loss the reader exists to prevent.
+    """
+    if folder == MEDIA_DIR or not folder.is_dir() or not pid_of(folder):
+        return False
+    try:
+        stale = time.time() - folder.stat().st_mtime > STALE_RUN_SEC
+    except OSError:
+        # Somebody else removed it between the listing and now -- two copies, which the
+        # setup instructions encourage. Nothing to do and nothing to report.
+        return False
+    return stale or not still_running(pid_of(folder))
+
+
+def sweep_finished_runs():
     """Removes the folders of runs that are no longer going.
 
     The per-run folder is deleted on the way out, and a hard kill -- End Task, a power cut,
     a reboot -- skips that. Nothing swept at startup, so a six-hour video's audio (about
     700MB of wav) sat there until somebody noticed.
     """
-    for folder in MEDIA_ROOT.glob("run-*"):
-        if folder == MEDIA_DIR or not folder.is_dir():
+    for folder in list(MEDIA_ROOT.glob("run-*")):
+        if not has_stopped(folder):
             continue
-        if not pid_of(folder):
-            continue
-        # A day old counts as finished whatever the process id says. Windows hands the same
-        # number out again, so a folder whose number now belongs to some unrelated live
-        # program would otherwise be kept for good -- about 700MB of wav for a long video,
-        # which is the disk filling that this exists to stop.
-        stale = time.time() - folder.stat().st_mtime > STALE_RUN_SEC
-        if still_running(pid_of(folder)) and not stale:
+        held = folder / "claimed.txt"
+        try:
+            if held.exists() and held.read_text(encoding="utf-8").strip():
+                say(f"- keeping {folder.name}: it is still holding work nobody has taken back")
+                continue
+        except OSError:
             continue
         shutil.rmtree(folder, ignore_errors=True)
         say(f"- cleared {folder.name}, left behind by a run that is no longer going")
@@ -844,9 +879,9 @@ def process(source, limits):
 def main():
     MEDIA_ROOT.mkdir(exist_ok=True)
     MEDIA_DIR.mkdir(exist_ok=True)
-    # Read what the stopped runs were holding BEFORE their folders are removed.
+    # Reads what the stopped runs were holding, hands it back, and only then removes the
+    # folders it has finished with.
     release_stale_claims()
-    sweep_old_runs()
     say(f"Polling {API_BASE} every {POLL_SECONDS}s. Ctrl+C to stop.")
 
     while True:

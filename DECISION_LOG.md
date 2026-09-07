@@ -3065,7 +3065,10 @@ what pinned the most emphatic requirement in the whole brief until today.
 - **A folder whose process number came round again was kept for ever.** Windows reuses them.
   A day untouched now counts as abandoned whatever the number says.
 - **The connector's cap did not stop what it was added to stop.** 200 learnings of up to
-  600,000 characters each is still 25MB, and once an AI in a loop had spent them, his own
+  600,000 characters each is a great deal of a shared database — the figure of 25MB written
+  here first was wrong, because `readJson` already caps any body at 256KB, so one learning
+  was bounded at about a quarter of that. The shape of it stands and so does the fix. Once
+  an AI in a loop had spent the day's two hundred, his own
   button answered 429 for the rest of the day. A learning is capped at 40,000 characters —
   about eight times the longest real one — and the connector gets 150 of the 200, so
   whatever happens out there the button in front of him still works.
@@ -3110,3 +3113,129 @@ what pinned the most emphatic requirement in the whole brief until today.
 **A hundred and twenty-five.** Twelve rounds. The regression half has now found only its
 predecessor's faults three rounds running, which is what a build looks like when the
 original defects are gone and what remains is the cost of fixing them.
+
+---
+
+### D59 — Round thirteen: can it afford to run, and what round twelve broke
+**Date:** 2026-09-07
+**Amends:** D5, D6, D34, D39, D56, D58. **Migrations are 0009–0016.**
+
+Two reviewers. One measured whether this product can afford to exist — a question twelve
+rounds had never asked. The other re-read round twelve's diff.
+
+#### It is free at his scale, and four of its buttons were already broken at one user
+
+The measured answer to D5: at his own notebook he uses about **5% of a day's database
+allowance**. That is the good news, and it is real.
+
+The bad news is a hard limit nobody had noticed. **A Worker on Cloudflare's free plan may
+make 50 calls to the database in ONE request**, and every binding call counts one. Measured
+on his own data:
+
+| Button | calls per press | limit |
+|---|---|---|
+| Tidy my folders | **100** | 50 |
+| Fill in my trackers | **75** | 50 |
+| Sort my old clips | **62** | 50 |
+
+The fifty-first throws with everything before it already committed. For tidying, that means
+**some folders merged and some not, with nothing anywhere recording which** — and merging is
+the operation that moves his clips between folders. For the other two, the AI is called
+per clip BEFORE the writes, so **six or seven calls to his own account are spent and then
+the request fails**, every press, for ever.
+
+Those are the two buttons he has been waiting to press.
+
+**Fixed by doing less per press and pressing again.** Four clips a request instead of ten,
+five folder merges instead of all of them, `remaining` reported, and the app loops as it
+already did for the others. The whole job still happens; it happens in bites that finish.
+`/v1/relook` was already written this way — 62 statements in 8 calls, using `DB.batch` — so
+the shape was in the codebase, just not in these three.
+
+#### The background refresh read two thousand rows to return four
+
+Every forty-five seconds. Three of the sync queries joined clips to a shared table with an
+`OR` across the two, which no index can serve, so each walked the whole clip list; and the
+fortnightly look-back's COUNT — a walk of the clips with two correlated lookups each — ran
+on every single refresh to decide whether to draw a banner about something that happens once
+a fortnight.
+
+That one query family was **about four in every ten rows this product reads**, and it is
+what set the ceiling on how many people it could carry: roughly twenty, against the estimate
+of a thousand that D6 was chosen on. One person with the notebook open all day spent 81% of
+the free daily allowance by himself.
+
+Each query is two halves joined by `UNION` now, each standing on an index (migration
+**0016**), and the look-back count is asked only when the answer could be different — never
+when he has turned the offer off, never inside the period he has just been offered one.
+
+#### And what round twelve broke — the worst of the thirteen rounds
+
+**A video could be stranded for ever, with no error and no button that recovers it.** The
+release counter added in D58 is a lifetime count and was reset nowhere, so after the third
+hand-back *ever*, every later one burned an attempt. At three attempts the row is below the
+queue's floor, is not matched by the retirement sweep (which only looks at rows that are
+`downloading`), and is refused by "Try again" (which only accepts rows that are `failed`).
+Six interrupted starts spread over months — six Windows-update nights on an eight-hour
+lease — and the reel is gone, with the app saying "waiting for your PC" for ever.
+
+D58's own comment claimed the opposite: "past it the refund stops, attempts climb, and it
+retires with an error he can see". Neither half was true. **And the test written to guard it
+checked the two numbers and not the ending**, so it passed on exactly that invisible row
+while being named for the opposite. It now ends `failed`, with words, and "Try again" starts
+it over — including the counter, which a fresh start and a finished transcript both reset.
+
+Three more, all from the same commit:
+
+- **The sweep deleted a run folder whose hand-backs had failed**, list and all. The ordinary
+  case is a machine that has just booted with the network not yet up — precisely the restart
+  the feature exists for. A folder is only removed once its list is empty.
+- **The day-old staleness rule was added to the sweep and not to the reader**, so a folder
+  whose process number Windows had handed to something else was deleted after a day without
+  ever being read. One rule now, used by both.
+- **A claim noted without a time could never be handed back** — the hand-back names the
+  claim it means — so it was asked about at every start, refused, kept, and then swept. It is
+  let go now and the lease covers it. And what a version BEFORE this one was holding is read
+  too, so the upgrade itself loses nothing.
+
+#### Seven changes that shipped with no test
+
+The reviewer reverted each and ran the suite: the scheme check, the learning size cap, the
+connector's share, the plural in the warning, the grammar on Home, and both queue-limit
+fixes were all silently revertible. `CLAUDE.md` requires a test with any change to
+canonicalisation; that one shipped without.
+
+Worse, **`worker-pc/test_machine.py` had its entry point in the middle of the file**, so nine
+tests — every one of the long-video consent tests, the most emphatic requirement in the whole
+brief — did not run when the file was run directly. And its live-run guard test built its
+"other run" as this process's own folder, which an earlier branch skips, so the guard the
+whole feature rests on was untested. Both fixed; every one of the seven now fails when its
+fix is taken out.
+
+#### Written down, not fixed
+
+- **Deploying before migrating gives a 500 on the hand-back route.** The release order says
+  migrate first, in bold, twice.
+- **Nothing anywhere knows a limit exists.** No counter, no headroom, no warning. On the day
+  a limit is hit the Worker returns a bare 500; a device with a cache shows its notebook and
+  says so, a fresh device shows an empty notebook, which reads exactly like data loss. The
+  D1 response carries `meta.rows_read` and the Worker throws it away — that is where a
+  warning would come from, and it is not this build.
+- **Nothing is ever deleted.** No retention anywhere; `relooks`, `learnings` and
+  `item_status` grow for ever. Storage is not the constraint at any scale measured (100MB at
+  20,000 reels against 500MB per database), but 1,200 six-hour videos would fill it alone.
+- **`context.md` recorded D1 storage as 5GB per database.** It is 500MB per database and 5GB
+  per account — out by ten.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Twelve | 125 | 41 |
+| Thirteen (the money) | 6 | 0 |
+| Thirteen (regression) | 8 | 8 |
+
+**A hundred and thirty-nine.** The money round found six things no code review would ever
+find, because they are not defects in the code — they are the code being right about the
+wrong size of world. And the regression half found eight of round twelve's, which is now
+four rounds in a row where every regression finding belonged to its predecessor.

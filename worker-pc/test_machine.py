@@ -264,11 +264,17 @@ class WhatItWasHolding(unittest.TestCase):
         return dead
 
     def releasing(self, requests_stub):
+        import shutil as real_shutil
+
         return load(
             "release_stale_claims",
+            "sweep_finished_runs",
+            "has_stopped",
             "drop_line",
             "pid_of",
             "still_running",
+            STALE_RUN_SEC=24 * 60 * 60,
+            shutil=real_shutil,
             CLAIMS_PATH=self.path,
             MEDIA_ROOT=self.root,
             MEDIA_DIR=self.mine,
@@ -298,15 +304,20 @@ class WhatItWasHolding(unittest.TestCase):
                 ("https://api.test/v1/sources/bbb/release", {"claimed_at": 1800}),
             ],
         )
-        self.assertEqual(
-            (dead / "claimed.txt").read_text(encoding="utf-8").strip(),
-            "",
-            "what was handed back is still listed, so it will be handed back again",
+        # Everything it was holding is back, so the folder itself is finished with.
+        self.assertFalse(
+            dead.exists(),
+            "the folder was kept after everything in it had been handed back",
         )
 
     def test_it_never_touches_what_a_LIVE_run_is_holding(self):
-        # Including its own. This is the one that threw away three hours of transcription.
-        live = self.root / f"run-{os.getpid() + 0}"
+        # A DIFFERENT run, still going. The first version of this test used this process's
+        # own folder, which an earlier branch skips before the liveness check is ever
+        # reached — so it passed with that check deleted, and the guard the whole feature
+        # rests on was untested.
+        live = self.root / f"run-{os.getpid() + 1}"
+        live.mkdir()
+        (live / "claimed.txt").write_text("theirs 1700\n", encoding="utf-8")
         self.path.write_text("mine 1700\n", encoding="utf-8")
         posted = []
 
@@ -318,7 +329,10 @@ class WhatItWasHolding(unittest.TestCase):
                 posted.append(url)
                 return type("R", (), {"raise_for_status": lambda self: None})()
 
-        self.releasing(Requests)["release_stale_claims"]()
+        space = self.releasing(Requests)
+        # Every number reads as alive, which is the case this is about.
+        space["still_running"] = lambda pid: True
+        space["release_stale_claims"]()
         self.assertEqual(posted, [], "it handed back work a running copy was doing")
         self.assertTrue(live.exists())
 
@@ -366,7 +380,8 @@ class TwoCopiesAtOnce(unittest.TestCase):
             import shutil as real_shutil
 
             space = load(
-                "sweep_old_runs",
+                "sweep_finished_runs",
+                "has_stopped",
                 "still_running",
                 "pid_of",
                 MEDIA_ROOT=root,
@@ -375,7 +390,7 @@ class TwoCopiesAtOnce(unittest.TestCase):
                 shutil=real_shutil,
                 say=lambda message: None,
             )
-            space["sweep_old_runs"]()
+            space["sweep_finished_runs"]()
 
             self.assertTrue(mine.exists(), "it cleared its own folder out from under itself")
             self.assertFalse(dead.exists(), "a dead run's audio was left on the disk")
@@ -386,8 +401,6 @@ class TwoCopiesAtOnce(unittest.TestCase):
         self.assertTrue(space["still_running"](os.getpid()))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TheQuestionBeforeALongVideo(unittest.TestCase):
@@ -551,7 +564,8 @@ class AFolderWhoseNumberCameRoundAgain(unittest.TestCase):
             os.utime(reused, (old, old))
 
             space = load(
-                "sweep_old_runs",
+                "sweep_finished_runs",
+                "has_stopped",
                 "still_running",
                 "pid_of",
                 MEDIA_ROOT=root,
@@ -562,6 +576,138 @@ class AFolderWhoseNumberCameRoundAgain(unittest.TestCase):
             )
             # Every number reads as alive, which is the worst case.
             space["still_running"] = lambda pid: True
-            space["sweep_old_runs"]()
+            space["sweep_finished_runs"]()
             self.assertFalse(reused.exists(), "a day-old folder was kept because of PID reuse")
             self.assertTrue(mine.exists())
+
+
+class NothingIsSweptWhileItStillHoldsWork(unittest.TestCase):
+    """A folder is only removed once its list is empty.
+
+    The order used to be: hand back what you can, then delete the folder — including the
+    list of what could NOT be handed back. The ordinary case for that is a machine that has
+    just booted and whose network is not up yet, which is exactly the restart this whole
+    feature exists for. The record went, and the video sat locked for its full lease.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        self.mine = self.root / f"run-{os.getpid()}"
+        self.mine.mkdir()
+        self.dead = self.root / "run-999999"
+        self.dead.mkdir()
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def running(self, requests_stub):
+        import shutil as real_shutil
+
+        return load(
+            "release_stale_claims",
+            "sweep_finished_runs",
+            "has_stopped",
+            "drop_line",
+            "pid_of",
+            "still_running",
+            CLAIMS_PATH=self.mine / "claimed.txt",
+            MEDIA_ROOT=self.root,
+            MEDIA_DIR=self.mine,
+            STALE_RUN_SEC=24 * 60 * 60,
+            API_BASE="https://api.test",
+            HEADERS={},
+            requests=requests_stub,
+            shutil=real_shutil,
+            say=lambda message: None,
+        )
+
+    def test_a_folder_whose_work_could_not_be_handed_back_is_kept(self):
+        (self.dead / "claimed.txt").write_text("aaa 1700\n", encoding="utf-8")
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(*args, **kwargs):
+                raise RuntimeError("the network is not up yet")
+
+        self.running(Requests)["release_stale_claims"]()
+        self.assertTrue(self.dead.exists(), "the record was deleted before it was acted on")
+        self.assertIn("aaa", (self.dead / "claimed.txt").read_text(encoding="utf-8"))
+
+    def test_and_is_cleared_once_it_has_been(self):
+        (self.dead / "claimed.txt").write_text("aaa 1700\n", encoding="utf-8")
+        (self.dead / "audio.wav").write_bytes(b"x" * 10)
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(*args, **kwargs):
+                return type("R", (), {"raise_for_status": lambda self: None})()
+
+        self.running(Requests)["release_stale_claims"]()
+        self.assertFalse(self.dead.exists(), "the audio was left on the disk for good")
+
+    def test_a_folder_left_by_a_reused_process_number_is_read_before_it_is_cleared(self):
+        # Windows hands the same number out again. The sweep already knew that; the reader
+        # did not, so a day-old folder was deleted without its list ever being looked at.
+        reused = self.root / f"run-{os.getpid() + 1}"
+        reused.mkdir()
+        (reused / "claimed.txt").write_text("bbb 1800\n", encoding="utf-8")
+        old = time.time() - 2 * 24 * 60 * 60
+        os.utime(reused, (old, old))
+        posted = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                posted.append(url)
+                return type("R", (), {"raise_for_status": lambda self: None})()
+
+        space = self.running(Requests)
+        space["still_running"] = lambda pid: True
+        space["release_stale_claims"]()
+        self.assertEqual(posted, ["https://api.test/v1/sources/bbb/release"])
+
+    def test_what_the_PREVIOUS_version_was_holding_is_still_handed_back(self):
+        # It kept its list outside the run folders. On the upgrade itself there would have
+        # been nothing to find, and the work would have sat locked for its whole lease.
+        (self.root / "claimed.txt").write_text("ccc 1900\n", encoding="utf-8")
+        posted = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                posted.append(url)
+                return type("R", (), {"raise_for_status": lambda self: None})()
+
+        self.running(Requests)["release_stale_claims"]()
+        self.assertEqual(posted, ["https://api.test/v1/sources/ccc/release"])
+
+    def test_a_claim_noted_without_a_time_is_let_go_rather_than_asked_about_for_ever(self):
+        # A hand-back names the claim it means, so a line with no time can never satisfy
+        # it. Asking anyway got a 400 at every start and the line stayed for ever.
+        (self.dead / "claimed.txt").write_text("ddd 0\n", encoding="utf-8")
+        posted = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                posted.append(url)
+                return type("R", (), {"raise_for_status": lambda self: None})()
+
+        self.running(Requests)["release_stale_claims"]()
+        self.assertEqual(posted, [], "it asked about a claim it could not name")
+        self.assertFalse(self.dead.exists(), "the line was kept and asked about for ever")
+
+
+if __name__ == "__main__":
+    unittest.main()

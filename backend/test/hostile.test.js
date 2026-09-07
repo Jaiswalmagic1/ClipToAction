@@ -22,6 +22,11 @@ import {
 } from "../src/canonical.js";
 import { ANALYSIS_PROMPT, LONG_ANALYSIS_PROMPT, UNTRUSTED_WARNING } from "../src/analyze.js";
 import { buildLearningPrompt } from "../src/learnings.js";
+import { validateLearning } from "../src/learnings.js";
+import {
+  MAX_LEARNINGS_PER_DAY,
+  MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR
+} from "../src/limits.js";
 import { createTestEnv } from "./helpers/testenv.js";
 
 const SERVICE_TOKEN = "service-token-for-tests";
@@ -803,18 +808,53 @@ describe("a video that keeps killing the machine outright", () => {
         serviceToken: SERVICE_TOKEN,
         body: { claimed_at: mine.claimed_at }
       });
-      // The claim time is what the retry pause reads, so wind it back the way ten minutes
-      // of a crash loop would.
-      harness.database
-        .prepare("UPDATE sources SET updated_at = updated_at WHERE id = ?")
-        .run(sourceId);
     }
 
     const row = harness.database
-      .prepare("SELECT state, attempts, releases FROM sources WHERE id = ?")
+      .prepare("SELECT state, attempts, releases, error FROM sources WHERE id = ?")
       .get(sourceId);
     assert.ok(row.releases >= 3, `only ${row.releases} hand-backs were recorded`);
     assert.ok(row.attempts > 0, "the attempts never rose, so it can loop for ever");
+
+    // And it has to END somewhere he can see. 'pending' is not an ending: the retirement
+    // sweep only looks at rows that are downloading, and "Try again" only accepts rows
+    // that are failed — so a video that ran out of attempts while pending sat in a queue
+    // nothing would ever hand out, with no error on it, saying "waiting for your PC" for
+    // ever. The first version of this test checked the two numbers above and nothing else,
+    // so it passed on exactly that row while being named for the opposite.
+    assert.equal(row.state, "failed", "it stopped in a state nothing can move it out of");
+    assert.ok(row.error, "and with no error, so nothing on any screen says what happened");
+  });
+
+  test("and pressing Try again really does start it over", async () => {
+    const clip = harness.database
+      .prepare("SELECT id FROM clips WHERE source_id = ?")
+      .get(sourceId);
+    const token = await harness.mintToken("vish");
+    const pressed = await harness.call(worker, `/v1/clips/${clip.id}/retry`, {
+      method: "POST",
+      token
+    });
+    assert.equal(pressed.status, 200, JSON.stringify(pressed.body));
+
+    const row = harness.database
+      .prepare("SELECT state, attempts, releases, error FROM sources WHERE id = ?")
+      .get(sourceId);
+    assert.equal(row.state, "pending");
+    assert.equal(row.attempts, 0);
+    assert.equal(row.error, null);
+    // The lifetime count starts again too, or the next interrupted start goes straight
+    // past the free hand-backs and it is stranded again immediately.
+    assert.equal(row.releases, 0, "a fresh start was not a fresh start");
+
+    const handed = await harness.call(worker, "/v1/queue?limit=5", {
+      method: "GET",
+      serviceToken: SERVICE_TOKEN
+    });
+    assert.ok(
+      handed.body.sources.some((one) => one.id === sourceId),
+      "he pressed the button and his PC was never offered the video"
+    );
   });
 });
 
@@ -857,3 +897,58 @@ describe("a day's tidying up does not lock him out", () => {
     assert.equal(response.status, 201, JSON.stringify(response.body));
   });
 });
+
+// ---------------------------------------------------------------- the small ones, pinned
+
+describe("the changes nobody would notice breaking", () => {
+  // Seven changes went out in one commit with no test between them. Each of these fails
+  // when its fix is taken out; that is the only reason they exist.
+
+  test("only web addresses are saved, whatever host they name", () => {
+    // `file://youtube.com/x` names an allowed host. Nothing is at the other end of it.
+    for (const url of [
+      "file://youtube.com/x",
+      "javascript://youtube.com/x",
+      "ftp://youtube.com/x",
+      "data:text/html,youtube.com"
+    ]) {
+      assert.equal(isSupportedUrl(url), false, `${url} was accepted`);
+    }
+    assert.equal(isSupportedUrl("HTTPS://www.instagram.com/reel/ABC/"), true);
+  });
+
+  test("a conversation far longer than any conversation is refused", () => {
+    const huge = { learned: Array.from({ length: 40 }, () => "x".repeat(1500)) };
+    assert.ok(
+      validateLearning(huge).some((problem) => /longer than/.test(problem)),
+      "a learning of any size at all could be stored"
+    );
+    assert.deepEqual(validateLearning({ learned: ["a real conclusion"] }), []);
+  });
+
+  test("the connector's share of the day is smaller than his own", () => {
+    // So that whatever an AI does in a loop out there, the button in front of him works.
+    assert.ok(
+      MAX_LEARNINGS_PER_DAY_VIA_CONNECTOR < MAX_LEARNINGS_PER_DAY,
+      "one number for both, which is what let an AI lock him out of his own notebook"
+    );
+  });
+
+  test("a queue asked for no particular number gets the batch it was designed for", () => {
+    // `Number(null)` is 0, not NaN, so a missing parameter sailed past `Number.isFinite`
+    // and the default was never reached: the creator queue handed out ONE video a pass
+    // where it was meant to hand out two.
+    assert.equal(batchOf(null, 3), 3);
+    assert.equal(batchOf(null, 2), 2);
+    assert.equal(batchOf("", 3), 1);
+    assert.equal(batchOf("abc", 3), 3);
+    assert.equal(batchOf("7", 3), 7);
+    assert.equal(batchOf("99", 3), 10);
+  });
+});
+
+/** The same arithmetic both queues use, so the test can name it. */
+function batchOf(asked, fallback) {
+  const requested = asked === null ? fallback : Number(asked);
+  return Math.min(Math.max(Number.isFinite(requested) ? requested : fallback, 1), 10);
+}

@@ -315,6 +315,26 @@ describe("what needs attention", () => {
     assert.ok(home.includes("nothing has been downloaded yet"));
   });
 
+  test("and one of anything is never plural", async () => {
+    // The single most important message this product shows read "6 hours and 1 minutes".
+    // Small, and in the one place where being careless costs trust.
+    const odd = await loadApp(
+      payloadFrom([
+        reel({
+          id: "L",
+          title: "A very long one",
+          state: "needs_ok",
+          duration_sec: 361 * 60,
+          analysis: null
+        })
+      ])
+    );
+    const home = odd.text("homeView");
+    assert.ok(home.includes("6 hours and 1 minute"), home.slice(0, 400));
+    assert.ok(!home.includes("1 minutes"), "one minute was written as a plural");
+    odd.restore();
+  });
+
   test("a parked video is shown as parked, and never as failed", () => {
     const home = app.text("homeView");
     assert.ok(home.includes("Parked"));

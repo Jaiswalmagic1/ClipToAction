@@ -2303,11 +2303,25 @@ async function tidyFolders(button) {
   button.disabled = true;
   button.textContent = "Tidying…";
   try {
-    const result = await api("/v1/topics/tidy", { method: "POST" });
+    // A few folders a press, and press again while any are left.
+    //
+    // A Worker on the free plan may make fifty calls to the database in ONE request, and
+    // his own thirty-four folders took a hundred — so it threw halfway with some folders
+    // joined and some not, and nothing anywhere recording which. This costs no AI, so
+    // going round again is free.
+    let merged = 0;
+    let moved = 0;
+    for (let pass = 0; pass < 40; pass += 1) {
+      const result = await api("/v1/topics/tidy", { method: "POST" });
+      merged += result.merged || 0;
+      moved += result.moved || 0;
+      if (!result.remaining) break;
+      button.textContent = `Tidying… ${merged} put together`;
+    }
     await sync();
-    say("syncMsg", result.merged
-      ? `Put ${result.merged} ${result.merged === 1 ? "folder" : "folders"} together, and `
-        + `moved ${result.moved} ${result.moved === 1 ? "clip" : "clips"} across.`
+    say("syncMsg", merged
+      ? `Put ${merged} ${merged === 1 ? "folder" : "folders"} together, and `
+        + `moved ${moved} ${moved === 1 ? "clip" : "clips"} across.`
       : "Nothing to tidy — your folders are already as tight as this can make them.", "ok");
     renderList();
   } catch (error) {
@@ -2330,7 +2344,11 @@ async function fillInTrackers(button) {
   let filled = 0;
 
   try {
-    for (let pass = 0; pass < 40; pass += 1) {
+    // Sixty passes of four, because a pass is smaller than it was: the API may make
+    // only fifty calls to the database in one request, and ten clips took seventy-five.
+    // Nothing here starts a pass that has nothing to do — the loop stops the moment a pass
+    // reports nothing left.
+    for (let pass = 0; pass < 60; pass += 1) {
       button.textContent = `Reading them again… ${filled} done`;
       const result = await api("/v1/kinds", { method: "POST" });
       filled += result.done || 0;
@@ -2365,7 +2383,8 @@ async function sortOldClips(button) {
   let sorted = 0;
 
   try {
-    for (let pass = 0; pass < 40; pass += 1) {
+    // Sixty passes, because a pass is four clips rather than ten — see fillInTrackers.
+    for (let pass = 0; pass < 60; pass += 1) {
       const result = await api("/v1/topics/sort", { method: "POST" });
       sorted += result.sorted || 0;
       if (result.error) {
