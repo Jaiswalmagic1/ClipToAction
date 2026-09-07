@@ -670,6 +670,30 @@ describe("a reel shared from the share sheet", () => {
     app.restore();
   });
 
+  test("a share he saves by hand leaves the queue, whatever kind it was", async () => {
+    // Only `ask` entries were dequeued. A share stamped for another account has no `ask`,
+    // so pressing Save saved it into THIS notebook and left it in the queue — offered again
+    // under the same sentence on every open, for ever.
+    const app = await loadApp(syncPayload({}), {
+      who: "someoneelse",
+      seed: [[QUEUE, JSON.stringify([
+        { title: "", text: "", url: "https://www.instagram.com/reel/HERS/", at: 1, by: "vish" }
+      ])]]
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+    assert.match(app.$("saveUrl").value, /HERS/, "it was not even offered");
+
+    app.$("saveForm").onsubmit({ preventDefault() {} });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    assert.equal(
+      app.localStore.get(QUEUE),
+      undefined,
+      "a share he has already saved by hand is still queued, and comes back every open"
+    );
+    app.restore();
+  });
+
   test("a queue that is not a list does not take the app down with it", async () => {
     const app = await loadApp(syncPayload({}), { seed: [[QUEUE, "{ not json"]] });
     await new Promise((done) => setTimeout(done, 0));

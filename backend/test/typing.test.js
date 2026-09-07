@@ -232,3 +232,371 @@ describe("the paste boxes, which only exist for somebody with no AI account", ()
     app.restore();
   });
 });
+
+describe("a draft against something that is already filed", () => {
+  // The new way to lose his own work, made by the fix for the old one. `topicBox.value` is
+  // filled in from his real filing and then overwritten by whatever draft is held — so a
+  // topic he started retyping and walked away from became what the page SAID the clip was
+  // filed under, on every open and on every device, for ever, while the notebook's own
+  // folder headers said something else. Pressing Save then sent the abandoned topic
+  // together with a sub-topic he had never touched, and D27 marks that as set by him so
+  // nothing ever moves it back.
+  const filedPayload = () => {
+    const one = payload();
+    one.clips[0].topic_id = "t2";
+    one.clips[0].topic_set_by = "user";
+    one.topics = [
+      { id: "t1", user_id: "vish", name: "Business", parent_id: "", summary: null,
+        created_at: now, updated_at: now, deleted_at: null },
+      { id: "t2", user_id: "vish", name: "Suppliers", parent_id: "t1", summary: null,
+        created_at: now, updated_at: now, deleted_at: null }
+    ];
+    return one;
+  };
+
+  test("an abandoned draft never speaks for the filing he actually chose", async () => {
+    const first = await loadApp(filedPayload(), { hash: "#/clip/c1" });
+    const topic = boxSaying(first, "Topic — the broad subject");
+    assert.equal(topic.value, "Business", `it is not showing his filing: "${topic.value}"`);
+    topic.type("Jaipur wholesal");
+    const carried = [...first.localStore.entries()];
+    first.restore();
+
+    // Same clip, still filed the same way, opened again.
+    const again = await loadApp(filedPayload(), { hash: "#/clip/c1", seed: carried });
+    await settle(2);
+    const back = boxSaying(again, "Topic — the broad subject");
+    assert.match(
+      again.text("clipView"),
+      /not saved it/i,
+      "the page shows something other than his filing and does not say so"
+    );
+    assert.match(back.value, /Jaipur wholesal/, "what he was typing was thrown away instead");
+    again.restore();
+  });
+
+  test("and a draft is dropped once the filing has changed underneath it", async () => {
+    const first = await loadApp(filedPayload(), { hash: "#/clip/c1" });
+    boxSaying(first, "Topic — the broad subject").type("Jaipur wholesal");
+    const carried = [...first.localStore.entries()];
+    first.restore();
+
+    // He filed it differently on another device, and that answer arrives here.
+    const moved = filedPayload();
+    moved.topics[0].name = "Buying";
+    const later = await loadApp(moved, { hash: "#/clip/c1", seed: carried });
+    await settle(2);
+
+    const box = boxSaying(later, "Topic — the broad subject");
+    assert.equal(
+      box.value,
+      "Buying",
+      `a stale draft overrode a filing decision made somewhere else: "${box.value}"`
+    );
+    later.restore();
+  });
+});
+
+describe("signing out on a borrowed machine", () => {
+  test("takes what he half-wrote with it", async () => {
+    // The one thing in browser storage that exists NOWHERE else — the notebook can be
+    // fetched again, an unfinished note cannot — and it was the one thing left behind.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    boxSaying(app, "what you want to remember").type("something I had not finished");
+    assert.ok(
+      [...app.localStore.keys()].some((key) => key.startsWith("cliptoaction-draft-")),
+      "nothing was written down to begin with"
+    );
+
+    await app.$("signOut").onclick();
+    await settle(2);
+
+    assert.deepEqual(
+      [...app.localStore.keys()].filter((key) => key.startsWith("cliptoaction-draft-")),
+      [],
+      "what he half-wrote was left on the machine"
+    );
+    app.restore();
+  });
+
+  test("and stops the device claiming to belong to him", async () => {
+    // Left set, the share page went on stamping shares for the account that had just gone,
+    // so the next person's own reels were marked as somebody else's and never saved.
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    assert.equal(app.localStore.get("cliptoaction-last-account"), "vish");
+
+    await app.$("signOut").onclick();
+    await settle(2);
+
+    assert.equal(
+      app.localStore.get("cliptoaction-last-account"),
+      undefined,
+      "the device still says it belongs to the account that just signed out"
+    );
+    app.restore();
+  });
+});
+
+describe("the pile of half-written things", () => {
+  test("does not grow without end", async () => {
+    // Nothing removes a draft except the save it was written towards, so one he started and
+    // walked away from lived for ever — in the same storage box the notebook copy needs.
+    const many = [];
+    for (let n = 0; n < 60; n += 1) {
+      many.push([`cliptoaction-draft-vish-c${n}-note`,
+        JSON.stringify({ text: `draft ${n}`, was: null, at: now - n })]);
+    }
+    const app = await loadApp(payload(), { hash: "#/clip/c1", seed: many });
+    boxSaying(app, "what you want to remember").type("one more");
+    await settle(2);
+
+    const left = [...app.localStore.keys()].filter((key) => key.startsWith("cliptoaction-draft-"));
+    assert.ok(left.length <= 41, `${left.length} half-written things are being kept`);
+    app.restore();
+  });
+
+  test("and one from months ago is let go of", async () => {
+    const ancient = [["cliptoaction-draft-vish-cOLD-note",
+      JSON.stringify({ text: "from last year", was: null, at: now - 400 * 24 * 60 * 60 * 1000 })]];
+    const app = await loadApp(payload(), { hash: "#/clip/c1", seed: ancient });
+    boxSaying(app, "what you want to remember").type("something now");
+    await settle(2);
+
+    assert.equal(
+      app.localStore.get("cliptoaction-draft-vish-cOLD-note"),
+      undefined,
+      "a draft from a year ago is still taking up room"
+    );
+    app.restore();
+  });
+});
+
+describe("every box on a clip's page, one at a time", () => {
+  // Round twenty-four deleted `keepDraft` from the sub-topic box and from "Paste the AI's
+  // last reply" — the box in the previous entry's own headline sentence — and the whole
+  // suite stayed green. And the draft key could lose the clip id entirely with nothing
+  // going red, which would put one clip's half-written note into every other clip's box.
+  // The note box is not in this list: it is the box being SAVED by the press below, so its
+  // own draft is correctly cleared. It has its own test above.
+  const each = [
+    ["Topic — the broad subject", "topic"],
+    ["Sub-topic — optional", "subtopic"]
+  ];
+
+  for (const [placeholder, what] of each) {
+    test(`${what}: what is typed comes back after the page is rebuilt`, async () => {
+      const app = await loadApp(payload(), { hash: "#/clip/c1" });
+      boxSaying(app, placeholder).type(`half a ${what}`);
+
+      // Any successful press on this page rebuilds it from nothing.
+      boxSaying(app, "what you want to remember").type("and a note, which is what saves");
+      await app.press("Add note");
+      await settle();
+
+      const back = boxSaying(app, placeholder);
+      assert.match(back.value, new RegExp(`half a ${what}`), `${what} was erased: "${back.value}"`);
+      app.restore();
+    });
+  }
+
+  test("and the paste box for somebody with no AI account", async () => {
+    const app = await loadApp(
+      payload({
+        settings: { ai_provider: "manual", has_key: false },
+        analyses: [],
+        transcripts: [{ source_id: "s1", text: "the words spoken", created_at: now }]
+      }),
+      { hash: "#/clip/c1" }
+    );
+    const paste = boxSaying(app, "Paste the AI's whole reply");
+    assert.ok(paste, "no paste box on the page");
+    paste.type("an hour of conversation");
+    boxSaying(app, "what you want to remember").type("a note");
+    await app.press("Add note");
+    await settle();
+    assert.match(boxSaying(app, "Paste the AI's whole reply").value, /an hour of conversation/);
+    app.restore();
+  });
+
+  test("one clip's half-written note does not appear in another clip's box", async () => {
+    // The draft key could lose the clip id with the whole suite green.
+    const two = payload();
+    two.clips.push({
+      id: "c2", user_id: "vish", source_id: "s2", status: "inbox",
+      topic_id: null, topic_set_by: null, relooked_at: null,
+      created_at: now - 86400000, updated_at: now, deleted_at: null
+    });
+    two.sources.push({
+      id: "s2", url_canonical: "https://x/2", url_original: "https://x/2",
+      platform: "Facebook", title: "Another reel", creator: null,
+      duration_sec: 45, state: "analyzed", error: null, error_detail: null,
+      attempts: 0, created_at: now - 86400000, updated_at: now
+    });
+
+    const app = await loadApp(two, { hash: "#/clip/c1" });
+    boxSaying(app, "what you want to remember").type("about the first one");
+
+    globalThis.location.hash = "#/clip/c2";
+    app.fire("hashchange");
+    await settle(2);
+
+    const other = boxSaying(app, "what you want to remember");
+    assert.equal(
+      other.value,
+      "",
+      `one clip's half-written note appeared on another clip: "${other.value}"`
+    );
+    app.restore();
+  });
+
+  test("and the filing's draft is let go of once the filing is saved", async () => {
+    const app = await loadApp(payload(), { hash: "#/clip/c1" });
+    boxSaying(app, "Topic — the broad subject").type("Selling");
+    boxSaying(app, "Sub-topic — optional").type("Pricing");
+    await app.press("Save");
+    await settle();
+
+    const left = [...app.localStore.keys()].filter((key) => key.includes("-c1-"));
+    assert.deepEqual(left, [], `the filing's drafts came back: ${left.join(", ")}`);
+    app.restore();
+  });
+});
+
+describe("everything else that saves something, when the refresh after it fails", () => {
+  // D75 said six places were split from their refresh. Four were. The tracker status was
+  // the worst of the four left: a failed refresh reported the save as failed AND snapped
+  // the dropdown back to the old answer, on a row the server was already holding.
+  const refreshFails = (after) => {
+    let requests = 0;
+    return () => {
+      requests += 1;
+      if (requests > after) throw new TypeError("Failed to fetch");
+      return payload();
+    };
+  };
+
+  test("a tracker row the server took does not snap back on screen", async () => {
+    const withItems = payload();
+    withItems.analyses[0].kind = "product";
+    withItems.analyses[0].items = JSON.stringify([{ name: "a stand", does: "holds it" }]);
+
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        if (requests > 2) throw new TypeError("Failed to fetch");
+        return withItems;
+      },
+      { hash: "#/clip/c1" }
+    );
+
+    const select = app.$("clipView").walk().find((one) => one.tag === "select");
+    assert.ok(select, "no tracker row on the page");
+    const before = select.value;
+    select.value = "doing";
+    await select.onchange();
+    await settle();
+
+    assert.doesNotMatch(
+      app.text("clipMsg"),
+      /Could not save/i,
+      `a decision the server took was reported as failed: "${app.text("clipMsg")}"`
+    );
+    assert.notEqual(select.value, before, "and the dropdown snapped back to the old answer");
+    app.restore();
+  });
+});
+
+describe("the box the headline was about", () => {
+  // "Paste the AI's last reply" — the box D75's own first sentence names — had no test at
+  // all: `keepDraft` could be deleted from it with the whole suite green. It is only on the
+  // page once a reel has been written down, which the default fixture does not do.
+  const withWords = (over = {}) => payload({
+    transcripts: [{ source_id: "s1", text: "the words spoken", created_at: now }],
+    ...over
+  });
+
+  test("what is pasted into it survives saving a note", async () => {
+    const app = await loadApp(withWords(), { hash: "#/clip/c1" });
+    const paste = boxSaying(app, "Paste the AI's last reply");
+    assert.ok(paste, `no learn box: ${boxes(app).map((one) => one.placeholder).join(" | ")}`);
+    paste.type("An hour of conversation with my AI, not saved yet.");
+
+    boxSaying(app, "what you want to remember").type("a note");
+    await app.press("Add note");
+    await settle();
+
+    assert.match(
+      boxSaying(app, "Paste the AI's last reply").value,
+      /An hour of conversation/,
+      "the box the whole fix was named after still loses what is in it"
+    );
+    app.restore();
+  });
+
+  test("and a learning the server took is not reported as failed", async () => {
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        if (requests > 2) throw new TypeError("Failed to fetch");
+        return withWords();
+      },
+      { hash: "#/clip/c1" }
+    );
+    boxSaying(app, "Paste the AI's last reply").type("{\"learned\":[\"a thing\"]}");
+    await app.press("Save what you learned");
+    await settle();
+
+    assert.doesNotMatch(
+      app.text("learnMsg"),
+      /offline|went wrong|could not/i,
+      `a learning the server took was reported as failed: "${app.text("learnMsg")}"`
+    );
+    app.restore();
+  });
+
+  test("and a reading the server took is not reported as failed either", async () => {
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        if (requests > 2) throw new TypeError("Failed to fetch");
+        return withWords({ settings: { ai_provider: "manual", has_key: false }, analyses: [] });
+      },
+      { hash: "#/clip/c1" }
+    );
+    boxSaying(app, "Paste the AI's whole reply").type("{\"summary\":\"it said things\"}");
+    await app.press("Save the answer");
+    await settle();
+
+    assert.doesNotMatch(
+      app.text("byHandMsg"),
+      /offline|went wrong|could not/i,
+      `a reading the server took was reported as failed: "${app.text("byHandMsg")}"`
+    );
+    app.restore();
+  });
+
+  test("and a filing the server took is not reported as failed either", async () => {
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        if (requests > 2) throw new TypeError("Failed to fetch");
+        return payload();
+      },
+      { hash: "#/clip/c1" }
+    );
+    boxSaying(app, "Topic — the broad subject").type("Selling");
+    await app.press("Save");
+    await settle();
+
+    assert.doesNotMatch(
+      app.text("clipMsg"),
+      /offline|went wrong|could not/i,
+      `a filing the server took was reported as failed: "${app.text("clipMsg")}"`
+    );
+    app.restore();
+  });
+});

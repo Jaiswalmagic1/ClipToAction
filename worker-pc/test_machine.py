@@ -20,6 +20,23 @@ SOURCE_TEXT = (Path(__file__).parent / "worker.py").read_text(encoding="utf-8")
 SOURCE = ast.parse(SOURCE_TEXT)
 
 
+def constant(name):
+    """The value of a module-level constant, read out of worker.py itself.
+
+    `load` lifts only function and class definitions, so anything a test needs from module
+    scope has to be injected — and an injected constant is a value the test made up. The
+    shipped one is then read by nothing, which is how `POST_TRIES = 1` passed all 75 tests
+    with the retry it names reverted.
+    """
+    for node in SOURCE.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                return ast.literal_eval(node.value)
+    raise AssertionError(f"worker.py no longer has {name}")
+
+
 def load(*names, **extras):
     """Compiles just these definitions out of worker.py and runs them for real.
 
@@ -788,14 +805,20 @@ class HandingBackAFinishedTranscript(unittest.TestCase):
     """
 
     def space(self, requests_stub, clock, said=None):
+        # POST_TRIES and POST_PAUSE_SEC are read out of worker.py, NOT injected.
+        #
+        # Injecting them meant the shipped values were never read by anything: setting
+        # POST_TRIES back to 1 — reverting the whole fix — left all 75 tests green. The same
+        # shape as three earlier rounds' test-side faults, where a fixture could not contain
+        # the thing that would have failed it.
         return load(
             "post_transcript",
             "_post_transcript_once",
             API_BASE="https://api.test",
             HEADERS={},
             WHISPER_MODEL="small",
-            POST_TRIES=4,
-            POST_PAUSE_SEC=5,
+            POST_TRIES=constant("POST_TRIES"),
+            POST_PAUSE_SEC=constant("POST_PAUSE_SEC"),
             requests=requests_stub,
             time=clock,
             say=(said.append if said is not None else (lambda message: None)),
@@ -807,6 +830,11 @@ class HandingBackAFinishedTranscript(unittest.TestCase):
         @classmethod
         def sleep(cls, seconds):
             cls.slept += seconds
+
+    def test_it_is_shipped_willing_to_try_more_than_once(self):
+        # The number that matters, read from the file rather than from this test.
+        self.assertGreaterEqual(constant("POST_TRIES"), 2, "one go is not a retry")
+        self.assertGreaterEqual(constant("POST_PAUSE_SEC"), 1, "no pause is not a backoff")
 
     def test_a_blip_on_the_line_does_not_throw_the_transcript_away(self):
         tries = []
@@ -834,6 +862,47 @@ class HandingBackAFinishedTranscript(unittest.TestCase):
         space["post_transcript"]("s1", "an hour of speech", "hi", "A reel", 3600, None)
         self.assertEqual(len(tries), 3, "it gave up on the first failure")
         self.assertEqual(tries[-1], "an hour of speech", "it handed back something else")
+
+    def test_it_waits_between_goes_rather_than_hammering(self):
+        slept = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                raise RuntimeError("connection reset")
+
+        clock = type("C", (), {"sleep": staticmethod(slept.append)})
+        space = self.space(Requests, clock)
+        with self.assertRaises(RuntimeError):
+            space["post_transcript"]("s1", "words", "hi", "A reel", 30, None)
+        self.assertTrue(slept, "it tried again with no pause at all")
+        self.assertTrue(all(one > 0 for one in slept), f"it paused for {slept}")
+
+    def test_a_server_that_is_having_a_moment_IS_asked_again(self):
+        # 5xx is the server saying "not now", which is exactly what a retry is for. Only a
+        # 4xx — the API having looked at this and said no — is final.
+        tries = []
+
+        class Answer:
+            status_code = 502
+
+        class Requests:
+            RequestException = type("RequestException", (RuntimeError,), {})
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                tries.append(1)
+                error = Requests.RequestException("502 Bad Gateway")
+                error.response = Answer
+                raise error
+
+        clock = type("C", (), {"sleep": staticmethod(lambda seconds: None)})
+        space = self.space(Requests, clock)
+        with self.assertRaises(Requests.RequestException):
+            space["post_transcript"]("s1", "words", "hi", "A reel", 30, None)
+        self.assertGreater(len(tries), 1, "a server having a moment was treated as a refusal")
 
     def test_but_a_refusal_is_final_and_is_not_asked_again(self):
         # The API has looked at this and said no -- too long, wrong shape, unknown source.

@@ -54,6 +54,27 @@ cd backend && npm test
 proves it.** A PR that changes behaviour and adds no test has not passed this gate,
 whatever CI reports.
 
+### A green suite is not evidence. Mutate the fix.
+
+**No claim goes into `DECISION_LOG.md` until a mutation of it has gone red.** Delete or
+invert the thing you say you fixed, run the suite, and watch its own test fail. If nothing
+goes red, the fix is unproven — whatever the code looks like.
+
+This is not a nicety. Ten consecutive review rounds caught a fix the log had already
+recorded as done that fixed nothing at all, and in four of those the flaw was in the TEST
+rather than the code — a fixture that happened not to contain the thing that would have
+failed it. Some examples, all real:
+
+| The claim | Why the test could not fail |
+|---|---|
+| "Hindi is searchable" | one Hindi reel in the fixture, so the count was decided by the absence of other Hindi |
+| "the address is searchable" | the query matched a word in the summary instead |
+| "ranking is by where a word was found" | the shortcode in the URL decided it |
+| "the transcript is retried" | the test injected its own `POST_TRIES`, so the shipped value was read by nothing |
+
+So: mutate it, and if the test that goes red is not the one written for the claim, the
+claim is still unproven.
+
 ### Testing before release (D20)
 
 Green CI proves the logic under test. It does not prove the thing runs. Three levels, all

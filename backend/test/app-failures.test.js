@@ -267,6 +267,13 @@ describe("when the device will not hold the whole notebook", () => {
     );
     // And the app itself is working from the new data regardless.
     assert.ok(second.text("homeView").length > 100);
+    // And he is told, because the consequence here is identical to the tier above — the
+    // whole notebook re-read from the server on every open — and only that tier said so.
+    assert.match(
+      second.text("homeView"),
+      /short of space/i,
+      "a device that cannot save anything at all says nothing about it"
+    );
     second.restore();
   });
 });

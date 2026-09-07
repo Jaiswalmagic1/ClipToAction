@@ -4763,3 +4763,109 @@ new rather than looking harder, and the seventh to create nothing of its own.
 
 A **real phone**. Seven rounds have now reasoned about the referrer, the storage quota and
 the cached-old-page upgrade; not one has run one.
+
+---
+
+### D76 — Round twenty-four: the fix for losing what he typed lost his filing instead
+**Date:** 2026-09-08
+**Amends:** D27, D53, D75. **Adds a binding rule to `CLAUDE.md`.**
+
+Twenty-four mutations against D75. Eight survived, and one finding is a new way to destroy a
+decision of his own. **Ten rounds running, a regression round has caught a fix the log had
+already recorded as done.**
+
+#### A draft he abandoned rewrote how a clip was filed
+
+`topicBox.value` is filled in from his real filing, and `keepDraft` then overwrote it with
+whatever was held. So:
+
+1. A clip is filed **Business › Suppliers** — his own choice, which D27 says is final.
+2. He starts retyping the topic, gets as far as "Jaipur wholesal", changes his mind, walks
+   away. He never presses Save.
+3. From then on, **on every open and on every device**, the page says the clip is filed under
+   "Jaipur wholesal" while the notebook's own folder headers say Business. The screen and the
+   notebook disagree, permanently, and nothing ever clears it — `forgetDraft` only runs on a
+   save that never happened.
+4. Pressing Save then sends the abandoned topic **together with a sub-topic he never
+   touched**, and D27 marks the result as set by him, so nothing ever moves it back.
+
+The exact class D75 was written to close — a box that lies about what is saved — created by
+its own fix. A draft is now only put back over a box that already has a value when the thing
+it was typed against **has not changed underneath it**, and the page says plainly that there
+is an unsaved change rather than letting the screen quietly disagree with the notebook.
+
+#### D75 said six places were split from their refresh. Four were.
+
+The tracker status, the retry, and both long-video answers were untouched — and the tracker
+was the worst of the four: a failed refresh reported the save as failed **and snapped the
+dropdown back to the old answer**, on a row the server was already holding. He sets it again,
+and watches it snap back again. All six are split now, and each one fails its own test when
+rejoined.
+
+#### `POST_TRIES = 1` passed all 75 PC-worker tests
+
+The test helper lifts only function definitions out of `worker.py`, so module constants have
+to be injected — and an injected constant is a value the test made up. The three tests for
+the transcript retry passed their own `POST_TRIES=4`, so **the shipped value was read by
+nothing**: setting it back to `1`, reverting the whole fix, left the suite green. There is a
+`constant()` helper now that reads the real value out of the file, plus tests that a server
+having a moment (502) IS asked again and that it waits between goes — both of which also
+survived deletion.
+
+#### A share stamped for somebody else was saved and then stayed queued for ever
+
+Only `ask` entries were dequeued after a manual Save. A `by`-stamped share has no `ask`, so
+pressing Save saved it into this notebook **and left it in the queue** — re-offered under the
+same sentence on every open, until twenty-five more shares pushed it out. And since it sits at
+the front, it was the first thing the cap threw away.
+
+#### Signing out left two things behind
+
+- **What he half-wrote.** The sign-out block's own comment says the device copy has to go
+  with him on a borrowed machine. Drafts are the one thing in there that exists **nowhere
+  else at all** — a notebook can be fetched again, an unfinished note cannot — and they were
+  the one thing left.
+- **Whose device it is.** `cliptoaction-last-account` stayed set, so the share page went on
+  stamping shares for the account that had just gone. The next person's own reels were then
+  marked as somebody else's, never saved, and offered again on every open. His notebook moved
+  to a different Google account earlier this year, so this is his own case.
+
+#### Drafts grew without end, in the box the notebook needs
+
+Nothing removed a draft except the save it was written towards. One abandoned 400-character
+draft was enough to push the notebook into its reduced copy — which then re-reads the whole
+notebook from the server on every open, for ever (D75). They are capped at forty and let go
+of after a month. And the third cache tier, where nothing fits at all, was as silent as the
+second one used to be, with the identical consequence.
+
+#### Three more holes in the stand-in, each of which hid a finding
+
+- `signOut` returned `undefined` where the real one returns a promise, so pressing Sign out
+  **threw**. Sign-out could not be driven by any test at all — which is why the two things it
+  fails to clear went twenty-three rounds unnoticed.
+- `localStorage` had no `length` and no `key(n)`, so the app tidying up its own drafts walked
+  an empty list and did nothing, silently, in every test.
+- `press()` searched four screens out of six, so no test could press the Save button on the
+  capture form — the front door of the entire product (D17).
+
+#### The rule this round adds to `CLAUDE.md`
+
+**No claim goes into `DECISION_LOG.md` until a mutation of it has gone red.** Ten rounds of
+evidence say a green suite is not evidence, and four of those rounds found the fault in the
+TEST rather than the code — a fixture that happened not to contain the thing that would have
+failed it. The four worked examples are written out there.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Twenty-three | 278 | 116 |
+| Twenty-four (regression) | 9 | 9 |
+
+**Two hundred and eighty-seven.** 677 backend tests and 78 PC-worker tests.
+
+#### Still nobody has stood here
+
+A **real phone**. Eight rounds have now reasoned about the referrer, the storage quota and
+the cached-old-page upgrade; not one has run one. That, and this round's mutation rule, are
+the two things the reviewer named as what would actually move this — rather than another lap.

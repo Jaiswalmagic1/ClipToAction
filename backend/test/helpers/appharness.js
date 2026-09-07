@@ -276,7 +276,11 @@ export async function loadApp(
       `const getAuth = () => ({});
        const GoogleAuthProvider = class {};
        const signInWithPopup = async () => {};
-       const signOut = () => {};
+       // Returns a promise, like the real one — the app does \`signOut(auth).catch(…)\`, so
+       // a stub returning undefined made \`$("signOut").onclick()\` throw. Sign-out could not
+       // be driven by any test at all, which is why two things it fails to clear went
+       // twenty-three rounds without being noticed.
+       const signOut = async () => {};
        const onAuthStateChanged = (auth, handler) => { globalThis.__signIn = handler; };`
     );
 
@@ -371,12 +375,21 @@ export async function loadApp(
     }
     store.set(key, String(value));
   };
+  // `length` and `key(n)` are how a browser lets you walk everything stored for an origin,
+  // and this stand-in had neither — so the app tidying up its own half-written things
+  // walked an empty list and did nothing, in every test, silently.
   globalThis.localStorage = storageBlocked
-    ? { getItem: blocked, setItem: blocked, removeItem: blocked }
+    ? {
+        getItem: blocked, setItem: blocked, removeItem: blocked,
+        get length() { return blocked(); },
+        key: blocked
+      }
     : {
         getItem: (key) => (store.has(key) ? store.get(key) : null),
         setItem: quotaed,
-        removeItem: (key) => store.delete(key)
+        removeItem: (key) => store.delete(key),
+        get length() { return store.size; },
+        key: (index) => [...store.keys()][index] ?? null
       };
   // Node defines `navigator` as a getter-only global, so it has to be redefined rather
   // than assigned. The app only reads `navigator.clipboard` and `navigator.serviceWorker`.
@@ -527,7 +540,10 @@ export async function loadApp(
 
     /** Presses a button by the words on it, anywhere on the screen. */
     press(words) {
-      const found = ["homeView", "clipList", "clipView", "settingsView"]
+      // Every screen, not four of them. `capture` holds the Save button on the front door
+      // (D17) and `listView` its surroundings, so no test could press the one control this
+      // whole product is built around.
+      const found = ["homeView", "clipList", "clipView", "settingsView", "capture", "listView"]
         .map((id) => document.getElementById(id))
         .filter(Boolean)
         .flatMap((root) => root.walk())
