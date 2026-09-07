@@ -873,6 +873,13 @@ async function api(path, options = {}) {
   } catch {
     // fetch only throws when the request never got there. The browser's own words for
     // that are "Failed to fetch", which means nothing to anyone reading the screen.
+    //
+    // The account check belongs here too, and was missed the first time: a request that
+    // FAILS after the account has changed is somebody else's failure just as much as one
+    // that succeeds. Without this, Bob — online, notebook loaded fine — was told in red on
+    // the front door of the product that he appeared to be offline, because Alice's save
+    // had given up a moment after he signed in.
+    if (whoIsSignedIn() !== asked) throw accountChanged();
     throw new Error("you appear to be offline.");
   }
 
@@ -1387,8 +1394,12 @@ const canSpend = () => Boolean(store.settings && store.settings.has_key);
  * trying to avoid, just with no button on it. And sharing the re-look's key meant "not
  * now" on one notice silently hid the other for the day as well.
  */
-function needsAnAccount(what) {
-  if (relookSnoozed("no-account")) return null;
+function needsAnAccount(what, which) {
+  // Its OWN key, per notice. Sharing the re-look's key meant "not now" on one hid the
+  // other for the day; then sharing ONE key between both of these meant the same thing one
+  // level down, with two buttons on screen and either of them dismissing both.
+  const key = `no-account-${which}`;
+  if (relookSnoozed(key)) return null;
 
   const notice = document.createElement("div");
   notice.className = "notice";
@@ -1403,7 +1414,7 @@ function needsAnAccount(what) {
   later.className = "secondary";
   later.textContent = "Not now";
   later.style.marginTop = "8px";
-  later.onclick = () => { snoozeRelook("no-account"); render(); };
+  later.onclick = () => { snoozeRelook(key); render(); };
   notice.append(document.createElement("br"), later);
   return notice;
 }
@@ -1442,7 +1453,8 @@ function relookBanner() {
   if (!canSpend()) {
     return needsAnAccount(
       `${state.due} ${state.due === 1 ? "video has" : "videos have"} been sitting here `
-      + "unread. Looking back over them needs an AI account."
+      + "unread. Looking back over them needs an AI account.",
+      "relook"
     );
   }
 
@@ -1879,7 +1891,8 @@ function backfillOffer() {
   if (!canSpend()) {
     return needsAnAccount(
       `${older.length} ${older.length === 1 ? "video was" : "videos were"} read before `
-      + "these tables existed. Filling them in needs an AI account."
+      + "these tables existed. Filling them in needs an AI account.",
+      "backfill"
     );
   }
 
@@ -4363,7 +4376,9 @@ $("signOut").onclick = () => {
     localStorage.removeItem(cacheKey());
     localStorage.removeItem(seenKey());
     localStorage.removeItem(snoozeKey());
-    localStorage.removeItem(snoozeKey("no-account"));
+    for (const which of ["relook", "backfill"]) {
+      localStorage.removeItem(snoozeKey(`no-account-${which}`));
+    }
   } catch { /* nothing to remove */ }
   // The device copy has already gone by this point, so a sign-out that fails silently
   // would leave him signed in and looking at an empty notebook.

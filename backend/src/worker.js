@@ -12,7 +12,13 @@
 //     response body, because the shared row is visible to everyone who saved the reel.
 
 import { verifyFirebaseToken, encryptSecret, tokensMatch, AuthError } from "./auth.js";
-import { canonicalUrl, platformFromUrl, extractUrl, isSupportedUrl } from "./canonical.js";
+import {
+  canonicalUrl,
+  platformFromUrl,
+  extractUrl,
+  isSupportedUrl,
+  asItWasUnderstood
+} from "./canonical.js";
 import { forDisplay } from "./keys.js";
 import {
   promptFor,
@@ -102,6 +108,13 @@ const MAX_BODY_BYTES = 256 * 1024;
 // allow. A test pins the worst case — every character escaped — rather than English.
 export const MAX_TRANSCRIPT_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_SAVES_PER_DAY = 200;
+// The same idea for the two things a person can write as often as they like. Every
+// notebook shares ONE free database, so filling it or burning the day's write allowance
+// does not hurt the person doing it — it takes every other notebook down with it, and an
+// empty notebook reads exactly like lost data. Set far above any real day's work: he
+// writes a handful of notes a day, and a learning is the end of a whole conversation.
+const MAX_NOTES_PER_DAY = 500;
+const MAX_LEARNINGS_PER_DAY = 200;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
 // A long video is a different size of job (D42): six hours of video is around three and a
 // half hours of a machine's time, and the lease above would expire in the middle of it —
@@ -278,8 +291,13 @@ async function saveClip(request, env, userId) {
   }
 
   let canonical;
+  let asUnderstood;
   try {
     canonical = canonicalUrl(url);
+    // What gets stored and handed to the PC worker is this parser's own reading of the
+    // address, never the raw text. See asItWasUnderstood — the host that was approved has
+    // to be the host that is fetched.
+    asUnderstood = asItWasUnderstood(url);
   } catch {
     return fail(env, "That does not look like a valid link.");
   }
@@ -323,7 +341,7 @@ async function saveClip(request, env, userId) {
        VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?5)
        ON CONFLICT (url_canonical) DO NOTHING`
     )
-      .bind(newId(), canonical, url, platformFromUrl(url), timestamp)
+      .bind(newId(), canonical, asUnderstood, platformFromUrl(url), timestamp)
       .run();
 
     // Whoever won, this reads the row that is actually there.
@@ -506,11 +524,31 @@ async function deltaSync(request, env, userId) {
   });
 }
 
+/**
+ * Whether this person has already written their day's worth into one table.
+ *
+ * Not about them: D1 is ONE free database behind every notebook, so the cost of an
+ * unbounded writer falls on everybody else's. The caps are far above any real day's use —
+ * they exist so that one account cannot end the day for the rest.
+ */
+async function pastTheDayFor(env, table, userId, cap) {
+  const written = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?1 AND created_at > ?2`
+  )
+    .bind(userId, now() - DAY_MS)
+    .first();
+  return (written?.n || 0) >= cap;
+}
+
 async function addNote(request, env, userId) {
   const body = await readJson(request);
   const text = String(body.body || "").trim();
   if (!body.clip_id || !text) return fail(env, "A note needs a clip and some text.");
   if (text.length > LIMITS.note) return fail(env, "That note is too long.");
+
+  if (await pastTheDayFor(env, "notes", userId, MAX_NOTES_PER_DAY)) {
+    return fail(env, "You have written a lot of notes today. Try again tomorrow.", 429);
+  }
 
   const owned = await env.DB.prepare(`SELECT id FROM clips WHERE id = ?1 AND user_id = ?2`)
     .bind(body.clip_id, userId)
@@ -1111,25 +1149,41 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
          claims = ?8, kind = ?13, shapes_version = ?15, created_at = ?16,
-         -- COALESCE, and it is the difference between adding to a reel and robbing it.
+         -- What a second reading may take away, and what it may not.
          --
-         -- Everything below is OPTIONAL in a reply, on purpose: validateAnalysis lets a
+         -- Every field here is OPTIONAL in a reply on purpose: validateAnalysis lets a
          -- video come back with no chapters and no topic rather than throwing away a good
-         -- summary over a field the model skipped. That is right for a first reading and
-         -- ruinous for a second one, because "Read those again" writes over a row that
-         -- ALREADY HAS them — so one press of a button this build puts on his home screen
-         -- replaced the chapters of every long video it touched with nothing, stamped the
-         -- shapes version so the reel never comes round again, and left no error, no
-         -- message and no path that could ever derive them back. Hours of talk, and the
-         -- only way back into it, gone quietly.
+         -- summary over a field the model skipped. That is right for a FIRST reading. On a
+         -- second one — "Read those again", a button this build puts on his home screen —
+         -- the row already has them, and writing every column blindly replaced the
+         -- chapters of every long video it touched with nothing, stamped the shapes
+         -- version so the reel never comes round again, and left no error and no path that
+         -- could ever derive them back. Hours of talk, and the only way back into it.
          --
-         -- So a new value replaces the old one and an ABSENT one leaves it alone. Nothing
-         -- a reading found is ever destroyed by a reading that found less.
-         suggested_task = COALESCE(?9, suggested_task),
+         -- Blanket COALESCE was the wrong correction the other way: it kept a sub-topic
+         -- stapled to a topic it never belonged to, and kept product rows on a video the
+         -- new reading calls an opinion — which the app then hides and the connector still
+         -- reads out, so the two disagree about what the video contains.
+         --
+         -- So, field by field. A re-read asks the SAME full question, so an answer that
+         -- omits something is usually a real answer.
+         --
+         --   suggested_task — replaced. A complete reading that names no action is saying
+         --     there is none, and a stale one keeps telling him to do something about a
+         --     video that no longer suggests it.
+         suggested_task = ?9,
+         --   topic and sub_topic — a PAIR. A new topic brings its own sub-topic, null and
+         --     all; no new topic leaves both alone. They are never crossed.
          topic = COALESCE(?10, topic),
-         sub_topic = COALESCE(?11, sub_topic),
+         sub_topic = CASE WHEN ?10 IS NULL THEN sub_topic ELSE ?11 END,
+         --   sections — never destroyed. Only a LONG video is asked for chapters, they
+         --     cost hours of his PC, and nothing anywhere re-derives them.
          sections = COALESCE(?12, sections),
-         items = COALESCE(?14, items)`
+         --   items — belong to the kind. Same kind, keep what was there rather than lose
+         --     rows to one thin reading; different kind, the old rows are about something
+         --     the video is no longer said to be, and they go. The bare column name
+         --     here is the row as it stands, before this update.
+         items = CASE WHEN ?13 IS NOT NULL AND ?13 <> kind THEN ?14 ELSE COALESCE(?14, items) END`
     ).bind(
       sourceId,
       ownerId,
@@ -1760,6 +1814,10 @@ async function saveLearning(request, env, userId, clipId) {
     return fail(env, `That learning is missing or malformed: ${problems.join(", ")}. Nothing was saved.`);
   }
 
+  if (await pastTheDayFor(env, "learnings", userId, MAX_LEARNINGS_PER_DAY)) {
+    return fail(env, "You have saved a lot of conversations today. Try again tomorrow.", 429);
+  }
+
   const columns = learningColumns(payload);
   const timestamp = now();
   const id = newId();
@@ -2262,10 +2320,19 @@ async function setTopic(request, env, userId, clipId) {
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders(env) });
-
     const { pathname } = new URL(request.url);
     const segments = pathname.split("/").filter(Boolean);
+
+    // A preflight is a browser asking permission, and only our own app's routes are for
+    // browsers. Answering it for everything meant the connector — whose own front door
+    // refuses any request carrying an Origin, on the grounds that no browser has business
+    // there — was handing out the permission slip that lets one in. The secret still
+    // stands in the way; this stops the contradiction rather than a specific attack.
+    if (request.method === "OPTIONS") {
+      return segments[0] === "v1"
+        ? new Response(null, { headers: corsHeaders(env) })
+        : new Response(null, { status: 405 });
+    }
 
     // Staging serves the app from static assets alongside this API (D26). Assets are
     // matched by filename, and `html_handling = "none"` keeps /app.html literal — but that

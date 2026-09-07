@@ -169,19 +169,39 @@ order, one at a time.
 wrangler d1 execute cliptoaction-staging --remote --env staging --file=./migrations/0009_row_shapes_version.sql
 ```
 
-Each is additive — `ALTER TABLE ADD COLUMN` and `CREATE TABLE IF NOT EXISTS` — so they are
+Each is additive — `ALTER TABLE ADD COLUMN`, `CREATE TABLE IF NOT EXISTS` and one index — so they are
 safe on a database holding real reels, and none of them rewrites a single existing row.
 They are **not** safe to run twice: SQLite has no `ADD COLUMN IF NOT EXISTS`, so a repeat
-fails with "duplicate column name". That is a loud, harmless failure; it means it was
-already applied. (`0014` is the exception — it only creates an index, and opens with a
-`DROP INDEX IF EXISTS` so that re-running it actually corrects an earlier draft's version
-of the same index rather than silently doing nothing.)
+fails with "duplicate column name". (`0014` is the exception — it only creates an index,
+and opens with a `DROP INDEX IF EXISTS` so that re-running it actually corrects an earlier
+draft's version of the same index rather than silently doing nothing.)
 
-To see which have landed:
+**"Duplicate column name" does NOT mean "already applied."** Several of these files hold
+more than one statement — `0010` holds five. If one stops part of the way through, a re-run
+fails on its FIRST statement and everything after the interruption never runs. The error
+looks identical to a file that finished, and the half of `0010` that creates the `relooks`
+table is exactly the half whose absence takes `/v1/sync` down for everybody — which on
+screen is indistinguishable from a lost notebook.
+
+So on a repeated error, **check before believing it**, and if a file is half applied, run
+its remaining statements by hand rather than the file again.
+
+To see which have landed — every table and column these files touch, not just `sources`:
 
 ```bash
-wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT name FROM pragma_table_info('sources')"
+wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT 'analyses' AS t, name FROM pragma_table_info('analyses') UNION ALL SELECT 'sources', name FROM pragma_table_info('sources') UNION ALL SELECT 'clips', name FROM pragma_table_info('clips') UNION ALL SELECT 'users', name FROM pragma_table_info('users') UNION ALL SELECT 'table', name FROM sqlite_master WHERE type='table'"
 ```
+
+What to look for, file by file:
+
+| File | What it must have left behind |
+|---|---|
+| `0009` | `analyses.shapes_version` |
+| `0010` | `users.relook_days`, `users.relook_last_at`, `clips.relooked_at`, **and the `relooks` table** |
+| `0011` | `sources.creator`, `sources.creator_checked_at` |
+| `0012` | `sources.long_ok_at`, `sources.long_ok_by` |
+| `0013` | `sources.creator_tries` |
+| `0014` | the index `idx_sources_creator_todo` |
 
 ### The release order, in full
 

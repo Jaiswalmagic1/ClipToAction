@@ -45,7 +45,19 @@ describe("a sync that answers after the account has changed", () => {
   const notebookFor = (uid) =>
     syncPayload({
       clips: [clipOf(uid)],
-      sources: [sourceOf(uid, uid === "alice" ? "ALICE PRIVATE REEL" : "bob's own reel")]
+      sources: [sourceOf(uid, uid === "alice" ? "ALICE PRIVATE REEL" : "bob's own reel")],
+      // Different providers, because that is what the key list actually draws — the
+      // key itself is never sent to a device, which is the point of D11.
+      ai_keys: [
+        {
+          id: `key-${uid}`,
+          label: uid,
+          provider: uid === "alice" ? "groq" : "gemini",
+          position: 0,
+          created_at: 1,
+          updated_at: 1
+        }
+      ]
     });
 
   test("it is refused, and lands nowhere", async () => {
@@ -123,6 +135,37 @@ describe("a sync that answers after the account has changed", () => {
     assert.equal(app.$("saveUrl").value, "", "her link was left in his capture box");
     assert.equal(app.text("saveMsg").trim(), "", `he was shown: ${app.text("saveMsg")}`);
     assert.equal(app.$("saveBtn").disabled, false, "the save button was left dead");
+    app.restore();
+  });
+
+  test("the guard on the reply stands ON ITS OWN, not behind the one at the door", async () => {
+    // Two guards were added and each hid the other: with either one reverted the suite
+    // stayed green, so a later edit could put the leak back and CI would say nothing.
+    // Sync has both. This route has only the one in `api` — `refreshKeys` writes the
+    // reply straight into the store — so it pins that guard by itself.
+    const app = await loadApp(notebookFor, {
+      who: "alice",
+      holdInBody: true,
+      hash: "#/settings"
+    });
+    assert.ok(app.text("keyList").includes("groq"), "alice's list never drew");
+    app.$("newKeyValue").value = "a-key-alice-is-adding";
+    // Pressing Add sends the key and then re-reads the whole list. Let the send through
+    // and hold the RE-READ, which is the reply that writes a list straight into the store.
+    const release = app.hold(1, 1);
+    app.$("addKey").onclick();
+    await new Promise((done) => setTimeout(done, 0));
+
+    await app.signInAs("bob");
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+
+    const drawn = app.text("keyList");
+    assert.ok(
+      !drawn.includes("groq"),
+      "one account's list of AI keys was drawn under another account's name"
+    );
+    assert.ok(drawn.includes("gemini"), "bob lost his own list");
     app.restore();
   });
 

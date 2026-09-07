@@ -2670,3 +2670,130 @@ branch touches production (D36).
 guard that could not fire, and a cleaner that had started throwing away good answers. The
 rule holds — the author cannot be the reviewer, and one pass would have shipped every one of
 them.
+
+---
+
+### D55 — Round ten: the first time anybody attacked it
+**Date:** 2026-09-07
+**Amends:** D19, D29, D39, D54.
+
+Two reviewers. One re-read round nine's diff. The other did what nine rounds had not: it
+attacked the product from outside — as a stranger with a Google account, as somebody holding
+a stolen connector address, and as the author of a reel whose words are trying to give
+instructions to a model. That question had never been asked on its own, and this is about to
+be published.
+
+**The ownership model came back clean, and that matters.** Eleven routes tried with a second
+account against the first account's ids: nothing read, changed or deleted. A second person's
+sync is empty. Firebase tokens are refused on a wrong audience, a wrong issuer, an expiry, a
+forged signature, `alg=none`, `alg=HS256`, an unknown key id; a token from a different
+Firebase project does not work. The app builds every screen with `createElement` and
+`textContent` — verified, not assumed: every `innerHTML` write is `= ""`, and the only
+`href` built from data is an allowlisted platform address. No secret is in the repo or in
+any log. Nine findings, and not one of them was cross-user.
+
+#### One backslash walked round the platform allowlist
+
+D19's outer wall is that only known platforms can be saved at all, because the machine that
+fetches them is a PC on a home network. `https://youtube.com\@attacker.example/x` is, to the
+WHATWG parser the Worker uses, the host `youtube.com` with a path — approved, stored and
+handed to the PC. To Python's `urlparse`, which is what the PC worker's own second check
+uses, the same string is the host `attacker.example`.
+
+**So the wall approved one host and the machine behind it evaluated another**, with the
+private-address check aimed at the wrong name — the exact thing that check exists to stop,
+and a rebinding window straight onto his home network. Reproduced end to end: `201`, then
+the queue handing his PC the attacker's address.
+
+Three changes, because one parser agreeing with itself is not a second opinion.
+`parsesTheSameEverywhere` refuses the shapes where parsers are known to disagree — a
+backslash anywhere, credentials before the host. What is stored as `url_original` is now the
+parser's OWN reading of the address, so nothing downstream can derive a different host from
+the raw text a stranger typed. And the PC worker re-checks the platform allowlist itself, in
+its own words, rather than only asking whether an address is public.
+
+#### The words of a stranger, reaching a model that can act
+
+Three findings, one theme.
+
+- **`save_learning` was laundering model-written text into the owner's own section.** The
+  connector's fence ends with "what follows is the notebook owner's own" — true of their
+  notes, which are typed into the app's note box, and not true of a learning, which is
+  written by an AI at the end of a conversation with a stranger's transcript in it. One
+  successful piece of trickery could be saved once and then read back inside the trusted
+  half of the page on every future `fetch`. Proven. That block now says what it is.
+- **The fence existed only on the connector.** The Worker's own analysis prompt — whose
+  output is written to the SHARED row that every saver of that reel reads — had no warning
+  at all, and neither did the two prompts the app hands the user to paste into their own AI,
+  where a stranger's words reach a model already in the middle of their conversation with
+  their other tools in reach. All three carry `UNTRUSTED_WARNING` now. It is one sentence,
+  not a mechanism: it cannot make a model obey, and it costs nothing.
+- **The connector parsed any body before it checked anything.** Unauthenticated and
+  uncapped, while everything under `/v1` has been capped since the day it was written.
+  Capped at 128KB now, and a secret that is not even the right shape is refused before it
+  can cost a hash and a database read — the security is the 32 random bytes; this is what
+  stops a guessing machine spending everybody else's share of one free database.
+
+#### One free database, behind every notebook
+
+Notes and learnings had no volume limit at all: 300 notes of 20KB accepted on one clip in
+half a second, and the daily save cap resets with a second Google account. Filling that
+database does not hurt the person doing it — it takes every other notebook down with it, and
+an empty notebook reads exactly like lost data. Both are capped per day now, far above any
+real day's work.
+
+#### And round nine's own three
+
+- **Blanket `COALESCE` was the wrong correction.** It kept a sub-topic stapled to a topic it
+  never came from, and kept product rows on a video the new reading calls an opinion — which
+  the app hides and the connector still reads out, so the two disagreed about what the video
+  contains. Now field by field: chapters are never destroyed (only a long video is asked for
+  them, and nothing re-derives them); topic and sub-topic move as a pair; rows survive a thin
+  reading of the same kind but not a change of kind; and a suggested action is replaced,
+  because a complete reading that names none is saying there is none.
+- **A request that failed at the network still shouted at the next person.** The offline path
+  threw before the account check, so Bob — online, notebook loaded fine — was told in red on
+  the front door of the product that he appeared to be offline, because Alice's save had
+  given up a moment after he signed in.
+- **The new snooze key merged the two notices it was meant to separate.** The same defect as
+  D54's, one level down. Each notice has its own key now.
+
+#### Two things D54 claimed that were not true
+
+Corrected here rather than quietly fixed, because the log is binding.
+
+- **"Both fail a test when turned off" was false.** The two account guards masked each other:
+  moving the one in `api` back to round eight's broken position left the suite green, because
+  `applyDelta`'s guard caught the sync leak anyway. There is now a test that goes through the
+  AI-key list, which `applyDelta` never touches, and moving the guard fails it. `applyDelta`'s
+  guard stays and is still not independently provable — it cannot fire while the first one
+  stands. It is defence in depth, and is described as that now rather than as a backstop
+  somebody has tested.
+- **"The migration advice was corrected" was false** — the patch that wrote it failed part of
+  the way through and the write never happened, which is the same failure the advice itself
+  is about. The wrong sentence is gone now, along with a verification command that could see
+  only one of the four tables those files touch.
+
+#### Written down, not fixed
+
+- The download queue is one FIFO across all users and the PC is one machine, so a stranger
+  can put work in front of his. The daily save cap bounds it per account, and a second
+  account resets that. Fairness needs a scheduler; it is not this build.
+- `saveClip` answers `reused`, which tells a stranger whether a link is already in somebody's
+  notebook. Inherent to the shared layer (D10), and the videos are public.
+- The service token can post a transcript for a source it has claimed, and can set a creator
+  that is not yet set. That is its job; it cannot read notes, learnings, keys, or who saved
+  what.
+- Staging and production share one Firebase project, so a token minted against one verifies
+  against the other. Recorded, not touched: D36 says production is not to be raised.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Eight | 76 | 17 |
+| Nine | 8 | 3 |
+| Ten | 9 | 3 |
+
+**Ninety-three.** Ten rounds, and the last two each found three of their predecessor's own
+making. The rule has not once failed: the author cannot be the reviewer.

@@ -12,6 +12,8 @@
 
 // The seven fields of D29. Six are lists; the seventh is which AI it was, and the date
 // the row was written.
+import { UNTRUSTED_WARNING } from "./analyze.js";
+
 export const LEARNING_LISTS = [
   "learned",
   "verdicts",
@@ -89,7 +91,10 @@ export function buildLearningPrompt({ summary, keyPoints, claims, transcript }) 
     lines.push("");
   }
 
-  if (transcript) lines.push("EVERYTHING THAT WAS SAID:", transcript);
+  // The same warning the Worker's own prompt carries. This one is handed to the user to
+  // paste into their own AI, so a stranger's words reach a model already in the middle of
+  // their conversation, with their other tools in reach. See UNTRUSTED_WARNING.
+  if (transcript) lines.push(UNTRUSTED_WARNING, "", "EVERYTHING THAT WAS SAID:", transcript);
 
   return lines.join("\n");
 }

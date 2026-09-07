@@ -97,6 +97,17 @@ export function newConnectorSecret() {
 }
 
 /** SHA-256, hex. What is stored — never the secret itself. */
+// What one MCP request may weigh. A tool call is a few hundred bytes and the largest
+// thing that comes this way — a saved learning — is a few kilobytes.
+const MAX_MCP_BODY_BYTES = 128 * 1024;
+
+// The shape this product's own secrets have: 32 random bytes, base64 in the URL-safe
+// alphabet (see newConnectorSecret). Checked before anything touches the database, so a
+// stream of guesses costs a string test rather than a hash and an indexed read each. It is
+// not the security — that is the 32 bytes — it is what stops a guessing machine spending
+// somebody else's share of a free database.
+const SECRET_SHAPE = /^[A-Za-z0-9_-]{20,200}$/;
+
 export async function hashSecret(secret) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -109,7 +120,7 @@ export async function hashSecret(secret) {
  * comparison to time, and a revoked row can never match.
  */
 export async function resolveConnector(env, secret) {
-  if (!secret || secret.length < 20 || secret.length > 200) return null;
+  if (!secret || !SECRET_SHAPE.test(secret)) return null;
 
   const row = await env.DB.prepare(
     `SELECT id, user_id FROM connector_tokens WHERE token_hash = ?1 AND revoked_at IS NULL`
@@ -512,7 +523,17 @@ async function runFetch(env, userId, args) {
 
   const worked = learnings.filter((row) => row.clip_id === clip.id);
   if (worked.length) {
-    lines.push("", "WHAT THEY HAVE ALREADY WORKED OUT:");
+    // Said plainly, because this block sits after the line that says what follows is the
+    // owner's own. Their NOTES are — they are typed into the app's own note box. A
+    // learning is not: it is written by an AI at the end of a conversation, an AI that had
+    // just read a stranger's transcript. So one successful piece of trickery could be
+    // saved once and then read back to every future conversation from inside the trusted
+    // half of the page. Naming what it is costs one line.
+    lines.push(
+      "",
+      "WHAT WAS WORKED OUT IN EARLIER CONVERSATIONS (written by an AI at the end of one,",
+      "kept because it was useful — not typed by them, so weigh it as such):"
+    );
     for (const learning of worked) {
       const when = istDate(learning.created_at);
       lines.push(`(${when}${learning.learned_with ? `, with ${learning.learned_with}` : ""})`);
@@ -681,9 +702,23 @@ export async function handleMcp(request, env, secret) {
     return respond(rpcError(null, -32600, "This endpoint accepts POST only."), 405);
   }
 
+  // Read the length before reading the body. Everything under /v1 has been capped since
+  // the day it was written; this one route parsed whatever arrived, from anybody, before
+  // it checked the secret — so an unauthenticated caller could make the Worker read and
+  // parse megabytes. A tool call is a few hundred bytes; a saved learning is the biggest
+  // thing that comes this way and is nowhere near this.
+  const declared = Number(request.headers.get("Content-Length") || 0);
+  if (declared > MAX_MCP_BODY_BYTES) {
+    return respond(rpcError(null, -32600, "That request is too large."), 413);
+  }
+
   let body;
   try {
-    body = JSON.parse(await request.text());
+    const text = await request.text();
+    if (text.length > MAX_MCP_BODY_BYTES) {
+      return respond(rpcError(null, -32600, "That request is too large."), 413);
+    }
+    body = JSON.parse(text);
   } catch {
     return respond(rpcError(null, -32700, "Parse error."), 400);
   }

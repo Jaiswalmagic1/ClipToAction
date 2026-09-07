@@ -348,6 +348,7 @@ export async function loadApp(
   // its own notebook while the first one's reply is still in the air.
   let held = null;
   let holdCount = 0;
+  let skipLeft = 0;
   // `failAfter` makes every request past that many fail the way a lost connection does —
   // `fetch` rejecting. Without it no error path in the app is ever executed by a test, and
   // the messages Golden Rule 29 exists to guarantee are all unproven.
@@ -358,7 +359,8 @@ export async function loadApp(
     // it, which is exactly what makes a late one dangerous.
     const answer = typeof sync === "function" ? sync(signedInAs) : sync;
     let waitHere = null;
-    if (held && holdCount > 0) {
+    if (held && skipLeft > 0) skipLeft -= 1;
+    else if (held && holdCount > 0) {
       holdCount -= 1;
       waitHere = held.promise;
       if (!holdInBody) await waitHere;
@@ -368,7 +370,12 @@ export async function loadApp(
       status: 200,
       json: async () => {
         if (holdInBody && waitHere) await waitHere;
-        return String(url).includes("/v1/sync") ? answer : { ok: true };
+        if (String(url).includes("/v1/sync")) return answer;
+        // The one other route that writes a whole list straight into the store from a
+        // reply. It is answered per account so a test can watch one person's list of AI
+        // keys arrive under another person's name.
+        if (String(url).includes("/v1/keys")) return { ok: true, keys: answer.ai_keys || [] };
+        return { ok: true };
       }
     };
   };
@@ -430,12 +437,19 @@ export async function loadApp(
     },
     /** Signs a different account in, the way switching Google accounts does — no sign-out. */
     signInAs: signIn,
-    /** Holds the next `many` requests open. Returns the release. */
-    hold(many = 1) {
+    /**
+     * Holds `many` requests open, after letting `letThrough` of them past first.
+     *
+     * The second argument is how a test reaches the SECOND request of a two-request
+     * action — pressing "Add" sends the key and then re-reads the list, and it is the
+     * re-read that writes a whole list straight into the store.
+     */
+    hold(many = 1, letThrough = 0) {
       let open;
       held = { promise: new Promise((done) => { open = done; }) };
       holdCount = many;
-      return () => { held = null; holdCount = 0; open(); };
+      skipLeft = letThrough;
+      return () => { held = null; holdCount = 0; skipLeft = 0; open(); };
     },
     /** Fires a window event the app listens for, e.g. returning to the page. */
     fire(name) {

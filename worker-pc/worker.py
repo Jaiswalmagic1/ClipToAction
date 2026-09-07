@@ -144,16 +144,47 @@ def report_failure(source_id, message):
 UUID_PATTERN = re.compile(r"\A[0-9a-fA-F-]{36}\Z")
 
 
+# The sites this worker will fetch from. Deliberately a copy of the API's own list rather
+# than something read from it: the whole point of a second check is that it does not depend
+# on the first one being right.
+ALLOWED_SUFFIXES = (
+    "youtube.com",
+    "youtu.be",
+    "instagram.com",
+    "facebook.com",
+    "fb.watch",
+    "x.com",
+    "twitter.com",
+    "linkedin.com",
+)
+
+
+def host_is_allowed(host):
+    """True when the host is one of the platforms, or a subdomain of one."""
+    host = (host or "").lower().rstrip(".")
+    return any(host == suffix or host.endswith("." + suffix) for suffix in ALLOWED_SUFFIXES)
+
+
 def assert_public_host(url):
-    """Refuses anything resolving inside a private network.
+    """Refuses anything that is not a platform, or that resolves inside a private network.
 
     The API already restricts saves to known platforms, but this worker runs on a home
     LAN -- a router admin page, a NAS, or a cloud metadata endpoint is one bad URL away.
     Two independent checks are cheaper than trusting one.
+
+    The platform check is HERE as well, and that is the part that was missing. The two
+    checks used two different URL parsers, and the parsers disagreed: a single backslash
+    made the API read the host as youtube.com and this file read it as somebody else's
+    address entirely, so the wall approved one host and the machine behind it evaluated
+    another. The API refuses that shape now -- and this asks the same question again, in
+    its own words, on the address it is actually about to fetch.
     """
     host = urlparse(url).hostname
     if not host:
         raise Refused("Link has no host.")
+
+    if not host_is_allowed(host):
+        raise Refused(f"{host} is not a site ClipToAction fetches from.")
 
     try:
         resolved = socket.getaddrinfo(host, None)

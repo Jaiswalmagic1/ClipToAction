@@ -55,6 +55,49 @@ function normalisedHost(parsed) {
   return parsed.hostname.replace(/^www\./, "").toLowerCase();
 }
 
+/**
+ * Characters that mean one thing to this parser and another to the next one along.
+ *
+ * The allowlist below is the outer wall (D19): only known platforms may be saved, because
+ * the machine that fetches them is a PC on a home network. That wall was walked round with
+ * a single backslash. `https://youtube.com\@attacker.example/x` is, to the WHATWG parser
+ * this file uses, the host `youtube.com` with a path — approved, stored, and handed on.
+ * Python's `urlparse`, which is what the PC worker's own second check uses, reads the same
+ * string as the host `attacker.example`. So the wall approved one host and the machine
+ * behind it evaluated a different one: a stranger's address, fetched from his home line,
+ * with the private-network check aimed at the wrong name.
+ *
+ * Two guards, and they are not the same guard twice. This refuses the shapes where parsers
+ * are known to disagree — a backslash anywhere, and credentials before the host — and
+ * `canonicalUrl` then stores the parser's OWN idea of the address, so nothing downstream
+ * can read a different host out of it than the one that was approved.
+ */
+export function parsesTheSameEverywhere(url) {
+  const text = String(url);
+  if (text.includes("\\")) return false;
+  try {
+    const parsed = new URL(text);
+    if (parsed.username || parsed.password) return false;
+    // A host is the only thing before the path. Anything else here is a parser disagreeing
+    // with itself about where the authority ends.
+    return !/[\\@]/.test(parsed.host);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The address as this parser understands it, which is the only form anything else may see.
+ *
+ * Stored as `url_original` so that the PC worker, yt-dlp and every log read the host the
+ * Worker approved rather than re-deriving one of their own from the raw text a stranger
+ * typed. Everything the user wrote that matters survives — scheme, host, path and query —
+ * it is only the ambiguity that does not.
+ */
+export function asItWasUnderstood(url) {
+  return new URL(String(url)).href;
+}
+
 function platformOf(host) {
   const match = PLATFORMS.find((platform) =>
     platform.domains.some((domain) => hostIs(host, domain))
@@ -76,7 +119,7 @@ export function platformFromUrl(url) {
  * user point the PC worker at their own server, or at an address inside the operator's LAN.
  */
 export function isSupportedUrl(url) {
-  return platformFromUrl(url) !== "Unknown";
+  return parsesTheSameEverywhere(url) && platformFromUrl(url) !== "Unknown";
 }
 
 /** Query string with tracking removed and the rest sorted, so parameter order cannot fork the key. */

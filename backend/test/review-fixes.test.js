@@ -682,7 +682,7 @@ describe("re-reading a reel never takes away what the first reading found", () =
 
   after(() => harness.restore());
 
-  test("a re-read that fills in the rows keeps the chapters, the topic and the action", async () => {
+  test("a re-read that fills in the rows keeps the chapters and the folder", async () => {
     harness.answerProviderWith(() => ({
       ok: true,
       status: 200,
@@ -717,12 +717,123 @@ describe("re-reading a reel never takes away what the first reading found", () =
       .get(sourceId);
 
     assert.deepEqual(JSON.parse(row.sections), CHAPTERS, "the chapters were wiped");
-    assert.equal(row.suggested_task, "Raise the price", "the action was wiped");
     assert.equal(row.topic, "Pricing", "the folder was wiped");
     assert.equal(row.sub_topic, "Margins");
+    // The action is NOT kept, and that is the other half of the rule. A re-read asks the
+    // same full question, so a reading that names no action is saying there is none —
+    // keeping the old one means the notebook goes on telling him to raise a price about a
+    // video that no longer suggests it.
+    assert.equal(row.suggested_task, null, "a stale action outlived the reading that dropped it");
     // And what the re-read DID find is in.
     assert.ok(row.summary.includes("second reading"));
     assert.ok(JSON.parse(row.items).length, "the rows it was re-read FOR were not stored");
     harness.answerProviderWith(null);
+  });
+});
+
+describe("and never keeps something the new reading contradicts", () => {
+  // The correction to the correction. Blanket "keep whatever was there" kept a sub-topic
+  // stapled to a topic it never belonged to, and kept product rows on a video the new
+  // reading calls an opinion — which the app then hides and the connector still reads out,
+  // so the two disagree about what the video contains.
+  let harness;
+  let token;
+  let sourceId;
+  let clipId;
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+    const clip = await saveAndClaim(harness, token, "ACHANGEDONE");
+    sourceId = clip.source_id;
+    clipId = clip.id;
+    await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "[0:00:00] stands and prices", lang: "en", engine: "test", duration_sec: 50 }
+    });
+  });
+  after(() => harness.restore());
+
+  const pasteOver = (payload) =>
+    harness.call(worker, `/v1/clips/${clipId}/analysis`, {
+      method: "POST",
+      token,
+      body: { pasted: JSON.stringify(payload) }
+    });
+
+  const mine = () =>
+    harness.database
+      .prepare("SELECT * FROM analyses WHERE source_id = ? AND user_id = 'vish'")
+      .get(sourceId);
+
+  test("a new folder brings its own sub-folder, and the two are never crossed", async () => {
+    await pasteOver({
+      summary: "The first reading.",
+      key_points: [],
+      learn_more: [],
+      claims: [],
+      topic: "Amazon listings",
+      sub_topic: "Product photos"
+    });
+    assert.equal(mine().sub_topic, "Product photos");
+
+    await pasteOver({
+      summary: "The second reading.",
+      key_points: [],
+      learn_more: [],
+      claims: [],
+      topic: "Instagram growth"
+    });
+    const row = mine();
+    assert.equal(row.topic, "Instagram growth");
+    assert.equal(row.sub_topic, null, "a sub-folder was stapled to a topic it never came from");
+  });
+
+  test("a reading with no folder at all leaves the one he has alone", async () => {
+    await pasteOver({ summary: "A third reading.", key_points: [], learn_more: [], claims: [] });
+    assert.equal(mine().topic, "Instagram growth", "the folder was wiped by a quiet reading");
+  });
+
+  test("rows belonging to a kind the video is no longer said to be do not survive", async () => {
+    await pasteOver({
+      summary: "It sells stands.",
+      key_points: [],
+      learn_more: [],
+      claims: [],
+      kind: "product",
+      items: [{ name: "Stand A", cost: "199" }]
+    });
+    assert.equal(JSON.parse(mine().items).length, 1);
+
+    await pasteOver({
+      summary: "Actually it just argues a point.",
+      key_points: [],
+      learn_more: [],
+      claims: [],
+      kind: "opinion"
+    });
+    const row = mine();
+    assert.equal(row.kind, "opinion");
+    assert.equal(row.items, null, "product rows outlived the kind they belonged to");
+  });
+
+  test("but a thin reading of the SAME kind does not lose the rows", async () => {
+    await pasteOver({
+      summary: "Stands again.",
+      key_points: [],
+      learn_more: [],
+      claims: [],
+      kind: "product",
+      items: [{ name: "Stand A", cost: "199" }, { name: "Stand B", cost: "299" }]
+    });
+    await pasteOver({
+      summary: "Stands, read thinly.",
+      key_points: [],
+      learn_more: [],
+      claims: [],
+      kind: "product"
+    });
+    assert.equal(JSON.parse(mine().items).length, 2, "one thin reading emptied the table");
   });
 });
