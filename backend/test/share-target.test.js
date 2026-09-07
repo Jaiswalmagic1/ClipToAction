@@ -99,6 +99,25 @@ describe("the page the share sheet opens", () => {
     assert.match(queued[0].url, /R5/, "the wrong end was trimmed");
   });
 
+  test("and the cap never throws away the one reel carried over from the old app", () => {
+    // The trim takes from the front, and the carried reel is put at the front — so a full
+    // queue would throw away the one entry that has no other copy anywhere. At most one of
+    // those exists, ever.
+    const carried = {
+      title: "", text: "", url: "https://www.instagram.com/reel/CARRIED/", at: 0, ask: true
+    };
+    const store = new Map([[QUEUE, JSON.stringify([carried])]]);
+    for (let n = 0; n < 30; n += 1) {
+      share(`?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FQ${n}%2F`, { store });
+    }
+    const queued = JSON.parse(store.get(QUEUE));
+    assert.ok(
+      queued.some((one) => String(one.url).includes("CARRIED")),
+      "the reel carried over from the old app was the first thing thrown away"
+    );
+    assert.ok(queued.length <= 25, `the queue grew to ${queued.length}`);
+  });
+
   test("a link somebody SENT him is not queued — it goes to the address to be asked about", () => {
     // This address is public and guessable. A cross-origin referrer means somebody sent him
     // a link rather than sharing through the sheet, and saving it with no press would let a

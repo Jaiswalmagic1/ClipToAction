@@ -4536,3 +4536,117 @@ result in this round is the harness's model of a full storage box, not a browser
 **Two hundred and fifty-seven.** Eleven rounds running, the regression half has found only its
 predecessor's faults — and this is the first time one of those faults was a security hole
 rather than a bug.
+
+---
+
+### D74 — Round twenty-two: the security fix deleted the reel it was protecting
+**Date:** 2026-09-08
+**Amends:** D50, D70, D71, D72, D73.
+
+Thirty-five mutations against D73. Its verdict was **do not ship**, and it was right: the
+commit closed the hole it names and opened a data-loss hole in the same three lines. Twelve
+rounds running, the regression half has found only its predecessor's faults.
+
+#### "Now that it is in the box in front of him" — the box is not storage
+
+D73 stopped a carried-over share saving itself, and then dropped it from the queue, on the
+reasoning that it was in the input box for him to press Save on. But the box is cleared by
+the next successful save and dies with the tab. So:
+
+| what happened | what the screen said |
+|---|---|
+| the carried reel removed from the queue | — |
+| the drain saves the reel behind it | "Saved. It will start working on it shortly." |
+| `saveLink` empties the box | — |
+| **the carried reel is now nowhere at all** | nothing |
+
+Gone from storage, gone from the box, never posted, and the app reporting success. That is
+D36's one prohibition and Golden Rule 29 together — **the third round running that this
+function has caused the loss it exists to prevent.** And the test written for it asserted the
+drop, so it locked the bug in.
+
+Security needs "do not save it without a press", not "delete it". It stays queued, marked,
+and is offered again on every open until he presses Save — which then clears it.
+
+#### And the carry-over ran away with itself
+
+Reading the queue through `queuedShares()` — which calls `carryOverOldShare()`, which had not
+yet removed the old key — carried the same reel over on every nested call. Measured: one
+share written **twenty-five times**, with the real ones buried behind it. Introduced while
+fixing a different finding in this same round, and caught only because a test that should
+have passed did not.
+
+#### The referrer check does not fire for the channel it was written for
+
+`document.referrer` is empty for a link opened from WhatsApp's, Instagram's or Telegram's
+in-app browser, an Android intent-launched tab, or any page that sets `no-referrer`. Empty
+reads as "not external", so such a link is queued **unmarked** and saves itself. D73's threat
+sentence is *"an address somebody sends him in a message"* — precisely where the check is
+blind.
+
+The residual is bounded: only allowlisted video hosts are accepted, there is a daily cap, and
+the save is announced. So the harm is one video of an attacker's choosing downloaded,
+transcribed and analysed. **The sound fix is a POST share target** — a plain link cannot
+produce a POST — and it is NOT in this release, on purpose: a POST reaching GitHub Pages
+before the service worker controls the page returns 405 and the reel is lost, the manifest's
+`share_target` usually needs the app reinstalled on Android before it takes effect, and none
+of that can be settled without a real phone. Shipping it untested risks the one path a reel
+gets in by. It is in `DECISIONS.md` under Open, as his call. **D73's claim that this class is
+closed was wrong and is corrected here.**
+
+#### Five more, all of them silence
+
+- **A URL anywhere in a question deleted ordinary English words from it.** The scaffolding
+  strip was applied to the whole query, and `video`, `share`, `watch`, `story` and `in` are
+  all in that list — so "video https://…" quietly became "https://…" and answered about a
+  different reel, with nothing saying a word had been thrown away. It strips from the
+  address only now.
+- **And it only worked with `https://` on the front.** A link pasted out of a chat usually
+  has none. Matched on the shape of an address now.
+- **A half-pasted address returned the entire notebook.** `unreadable` was measured *before*
+  the strip, so `https://www.instagram.com/` came out readable, then reduced to no words —
+  and no words means "no query". D69's exact failure, re-opened for anything address-shaped.
+  It is measured after, and the reply says which of the two reasons applied.
+- **A corrupt queue stranded the reel waiting to be carried over, for ever.** The read sat
+  inside the write's `try`, so unreadable rubbish threw into a catch whose whole reason is
+  "the box is full".
+- **An old slot holding a JSON array** passed the object guard, spread to `{"0": …}`, lost
+  its address, and made the app announce a failed share to somebody who never made one.
+
+Also: the `#/share-ask/` branch never drained the queue (`shared.more` is undefined there),
+and the 25-cap trimmed the front — which is exactly where the carried reel is put, so a full
+queue would have thrown away the one entry with no other copy anywhere.
+
+#### Four claims that were correct and unheld
+
+`ask` being written after the spread, so a planted `ask: false` cannot clear its own mark.
+The carried reel going in front rather than at the back. The sentence that tells him the box
+is the only copy when storage is refusing. And the drain's refusal to save an unknown link.
+All four now fail when deleted — and two of the tests written for them had to be rewritten
+first, because with a connection the drain removed the other reel and left the carried one at
+the front whichever end it went in at.
+
+#### What round twenty-two established as sound
+
+`.normalize("NFC")` touches nothing outside search — `wordsOf` has one definition, and
+canonicalisation and dedupe are untouched. The write-then-remove ordering in the carry-over.
+The queue key join in both directions. The property-order attack on the mark. The emoji,
+apostrophe, matra and nukta fixes.
+
+#### Where the next find is, in the reviewer's own words
+
+Every round so far has asked *"was it saved?"* Three of this round's findings live in *"it
+was not saved, and it is also no longer anywhere."* A pass that walks each branch and asks
+**"name every place this reel now exists"** would have caught all three at once.
+
+And a real phone is still unstood-on. Five rounds have now reasoned about the referrer, the
+storage quota and the cached-old-page upgrade; none has run one.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Twenty-one | 257 | 104 |
+| Twenty-two (regression) | 13 | 12 |
+
+**Two hundred and seventy.**

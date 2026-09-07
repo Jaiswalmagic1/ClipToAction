@@ -266,6 +266,57 @@ describe("what search promises, proved one claim at a time", () => {
     assert.match(found.results[0].url, /ZX9QW/);
   });
 
+  test("and a URL in the question does not delete ordinary words from it", async () => {
+    // `video`, `share`, `watch`, `story` and `in` are all address scaffolding, and the strip
+    // was applied to the WHOLE query — so "video https://…" quietly became "https://…" and
+    // answered about a different reel, with nothing saying a word had been thrown away.
+    await reel("VIDEOWORD", {
+      platformTitle: "The best video about packing orders",
+      summary: "A short one.",
+      transcript: "he shows the boxes",
+      daysAgo: 13
+    });
+    const alone = await call("search", { query: "video" });
+    assert.equal(alone.total, 1, `"video" on its own matched ${alone.total}`);
+
+    // The same word, with a DIFFERENT reel's address beside it, must match neither: the
+    // word belongs to one reel and the address to another, and no reel has both.
+    const withAddress = await call("search", {
+      query: "video https://www.instagram.com/reel/ZX9QW/"
+    });
+    assert.equal(
+      withAddress.total,
+      0,
+      `the word "video" was thrown away and it answered about`
+        + ` ${withAddress.results.map((one) => one.title).join(" | ")}`
+    );
+  });
+
+  test("and an address with no https on the front still finds its reel", async () => {
+    // A link pasted out of a chat or typed by hand very often has no scheme at all.
+    for (const query of [
+      "https://www.instagram.com/reel/ZX9QW/",
+      "www.instagram.com/reel/ZX9QW/",
+      "instagram.com/reel/ZX9QW"
+    ]) {
+      // eslint-disable-next-line no-await-in-loop
+      const found = await call("search", { query });
+      assert.equal(found.total, 1, `"${query}" matched ${found.total}`);
+    }
+  });
+
+  test("and a half-pasted address does not return the whole notebook", async () => {
+    // `unreadable` was measured BEFORE the scaffolding was stripped, so
+    // `https://www.instagram.com/` came out readable, then reduced to no words — and no
+    // words means "no query", which returns everything, scored nothing, reported as
+    // matches. D69's exact failure, re-opened for anything address-shaped.
+    const found = await call("search", { query: "https://www.instagram.com/" });
+    assert.equal(found.total, 0, `a half-pasted address matched ${found.total} reels`);
+    // And the reason has to be the true one — "punctuation only" is not what happened.
+    assert.match(found.note, /address/i, found.note);
+    assert.doesNotMatch(found.note, /punctuation/i, found.note);
+  });
+
   test("and an emoji in the question does not silence the whole search", async () => {
     // Every word has to appear, and a variation selector is a Mark — so `❤️` became a
     // "word" made of nothing but it, which no reel could contain. One emoji anywhere in the

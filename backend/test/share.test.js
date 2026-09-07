@@ -166,10 +166,58 @@ describe("a reel shared from the share sheet", () => {
       `a link of unknown origin saved itself with no press: ${saved.join(", ")}`
     );
     assert.match(app.text("saveMsg"), /Press Save/i, app.text("saveMsg"));
+    // AND IT IS STILL THERE. Dropping it "now that it is in the box in front of him" threw
+    // the reel away: the box is not storage — the next save empties it and the tab dies
+    // with it — so the queue was the only durable copy. Security needs "do not save it
+    // without a press", not "delete it".
+    const left = app.localStore.get(QUEUE) || "";
+    assert.match(left, /SENT/, `the link was deleted rather than left waiting: ${left}`);
+    assert.match(app.$("saveUrl").value, /SENT/, "and it is not in the box either");
+    app.restore();
+  });
+
+  test("and a carried-over reel is not wiped by the next save succeeding", async () => {
+    // The worst shape of it. The carried reel was dropped from storage, then the drain ran,
+    // then `saveLink` emptied the box on success — so the screen said "Saved." while the
+    // carried reel was gone from storage, gone from the box, and never posted.
+    const app = await loadApp(syncPayload({}), {
+      seed: [
+        ["cliptoaction-pending-share",
+          JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/OLD/" })],
+        [QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/HIS/", 9)])]
+      ]
+    });
+    for (let n = 0; n < 10; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(saved.some((one) => one.includes("HIS")), `his own reel: ${saved.join(", ")}`);
+    // The carried one is in exactly one of the two places it can be, and preferably both.
+    const left = app.localStore.get(QUEUE) || "";
+    assert.ok(
+      left.includes("OLD") || app.$("saveUrl").value.includes("OLD"),
+      `the carried reel is nowhere — queue ${left}, box "${app.$("saveUrl").value}"`
+    );
+    assert.match(left, /OLD/, `it is not in the only place that survives the tab: ${left}`);
+    app.restore();
+  });
+
+  test("and pressing Save on it clears it, so it does not come back", async () => {
+    const app = await loadApp(syncPayload({}), {
+      seed: [["cliptoaction-pending-share",
+        JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/PRESSED/" })]]
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+    assert.match(app.$("saveUrl").value, /PRESSED/);
+
+    app.$("saveForm").onsubmit({ preventDefault() {} });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(saved.some((one) => one.includes("PRESSED")), `not saved: ${saved.join(", ")}`);
     assert.equal(
       app.localStore.get(QUEUE),
       undefined,
-      "it stayed queued and will be offered again on every open"
+      "it will be offered again on every open after he already said yes"
     );
     app.restore();
   });
@@ -193,6 +241,94 @@ describe("a reel shared from the share sheet", () => {
     );
     // And his own share, which was behind it, still goes in.
     assert.ok(saved.some((one) => one.includes("HIS")), `his own reel was not saved: ${saved.join(", ")}`);
+    // The unknown one is still waiting, not deleted.
+    assert.match(app.localStore.get(QUEUE) || "", /SENT/, "the unknown link was thrown away");
+    app.restore();
+  });
+
+  test("an old slot holding a LIST does not become a share with no address", async () => {
+    // A JSON array is `typeof "object"` too. Spread into an object it becomes `{"0": …}`,
+    // loses its url, and is dropped under "there was nothing to save".
+    const app = await loadApp(syncPayload({}), {
+      seed: [["cliptoaction-pending-share", JSON.stringify([{ url: "https://x.test/a" }])]]
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    // Carried over, it becomes `{"0": …}` with no url — which lands at the head of the
+    // queue and is then read as "a share with no link in it", so the app announces a failed
+    // share to somebody who never made one. It was never a share; nothing is said.
+    assert.equal(
+      app.text("saveMsg"),
+      "",
+      `the app announced a failed share that never happened: "${app.text("saveMsg")}"`
+    );
+    assert.equal(app.localStore.get(QUEUE), undefined, "rubbish reached the queue");
+    assert.equal(
+      app.localStore.get("cliptoaction-pending-share"),
+      undefined,
+      "and it will be read again on every open"
+    );
+    app.restore();
+  });
+
+  test("a link that arrived broken in the address still lets the queue drain", async () => {
+    // The branch for an unreadable address never called the drain, so anything already
+    // queued sat untouched for the whole session — the same shape as the photo finding, on
+    // a different branch.
+    const app = await loadApp(syncPayload({}), {
+      hash: "#/share/%E0%A4",
+      referrer: "https://app.test/share-target.html",
+      seed: [[QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/WAITING/", 6)])]]
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(
+      saved.some((one) => one.includes("WAITING")),
+      `a queued reel was ignored for the session: ${saved.join(", ")}`
+    );
+    app.restore();
+  });
+
+  test("a corrupt queue does not strand the reel waiting to be carried over", async () => {
+    // The queue read used to sit inside the write's `try`, so unreadable rubbish threw into
+    // a catch whose whole reason is "the box is full" — and the carried reel was left in the
+    // old slot for ever, with nothing on screen, healing only if he shared something else.
+    const app = await loadApp(syncPayload({}), {
+      seed: [
+        ["cliptoaction-pending-share",
+          JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/STUCK/" })],
+        [QUEUE, "{ not json"]
+      ]
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    assert.equal(
+      app.localStore.get("cliptoaction-pending-share"),
+      undefined,
+      "the reel was stranded in the old slot by a corrupt queue"
+    );
+    assert.match(app.localStore.get(QUEUE) || "", /STUCK/, "and it did not reach the queue");
+    app.restore();
+  });
+
+  test("the carry-over does not run away with itself", async () => {
+    // `carryOverOldShare` read the queue through `queuedShares`, which calls
+    // `carryOverOldShare` — and the old key is not removed until after the write, so every
+    // nested call carried the same reel over again. The queue filled with copies of one
+    // share and the real ones were buried behind them.
+    const app = await loadApp(syncPayload({}), {
+      seed: [
+        ["cliptoaction-pending-share",
+          JSON.stringify({ title: "", text: "", url: "https://evil.example/reel/ONCE/" })],
+        [QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/REAL/", 9)])]
+      ]
+    });
+    for (let n = 0; n < 10; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const queued = JSON.parse(app.localStore.get(QUEUE) || "[]");
+    const copies = queued.filter((one) => String(one.url).includes("ONCE")).length;
+    assert.equal(copies, 1, `the carried share was written ${copies} times`);
     app.restore();
   });
 
@@ -311,7 +447,10 @@ describe("a reel shared from the share sheet", () => {
       `the drain saved an unknown link: ${saved.join(", ")}`
     );
     assert.equal(saved.length, 2, `${saved.length} saved: ${saved.join(", ")}`);
-    assert.equal(app.localStore.get(QUEUE), undefined, "something was left queued");
+    // Both of his are gone from the queue; the unknown one is still waiting for a press.
+    const left = JSON.parse(app.localStore.get(QUEUE) || "[]");
+    assert.equal(left.length, 1, `${left.length} left: ${JSON.stringify(left)}`);
+    assert.match(left[0].url, /BEHIND/);
     app.restore();
   });
 
@@ -368,6 +507,71 @@ describe("a reel shared from the share sheet", () => {
       left,
       /this one too/,
       `the second share of the same reel was dropped without being saved: ${left}`
+    );
+    app.restore();
+  });
+
+  test("an ask mark planted in the old slot cannot clear itself", async () => {
+    // M3. `{ ...share, ask: true }` is only safe because `ask` is written AFTER the spread.
+    // Written before it, an `ask: false` planted in the old slot — which anything that can
+    // reach that origin's storage can do — would clear its own mark and save itself.
+    const app = await loadApp(syncPayload({}), {
+      seed: [["cliptoaction-pending-share", JSON.stringify({
+        ask: false, title: "", text: "", url: "https://evil.example/reel/PLANTED/"
+      })]]
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 0, `a planted mark cleared itself: ${saved.join(", ")}`);
+    assert.match(app.localStore.get(QUEUE) || "", /"ask":true/, "the mark was not applied");
+    app.restore();
+  });
+
+  test("the reel carried over goes in FRONT of anything shared since", async () => {
+    // M12. It was shared before everything else in the queue, and the queue is drained
+    // oldest first — so appending it would show him his reels out of the order he saved
+    // them, and put the one with no other copy last in line.
+    // Offline, so nothing drains and the order it was written in is what is still there.
+    // With a connection the later reel is saved and removed, which leaves the carried one
+    // at the front whichever end it went in at — and the assertion proves nothing.
+    const app = await loadApp(syncPayload({}), {
+      failAfter: 0,
+      seed: [
+        ["cliptoaction-pending-share",
+          JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/EARLIER/" })],
+        [QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/LATER/", 9)])]
+      ]
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const queued = JSON.parse(app.localStore.get(QUEUE) || "[]");
+    assert.equal(queued.length, 2, `${queued.length} in the queue`);
+    assert.match(
+      String(queued[0]?.url),
+      /EARLIER/,
+      `out of order: ${queued.map((one) => one.url).join(", ")}`
+    );
+    app.restore();
+  });
+
+  test("storage that refuses says the box is the only copy", async () => {
+    // M10. When the share page cannot use storage the link travels in the address, which
+    // the app then wipes — so an offline save leaves the reel in an input box and nowhere
+    // else. Without a sentence saying so he sees two identical "you appear to be offline"
+    // messages and no reason to keep the page open.
+    const app = await loadApp(syncPayload({}), {
+      hash: "#/share/https%3A%2F%2Fwww.instagram.com%2Freel%2FONLYHERE%2F",
+      referrer: "https://app.test/share-target.html",
+      failAfter: 0
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    assert.match(app.$("saveUrl").value, /ONLYHERE/, "the link is not even in the box");
+    assert.match(
+      app.text("saveMsg"),
+      /will be lost|keep this page open/i,
+      `nothing said the reel is at risk: "${app.text("saveMsg")}"`
     );
     app.restore();
   });

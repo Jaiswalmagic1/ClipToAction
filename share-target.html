@@ -38,10 +38,26 @@
     // CROSS-ORIGIN referrer means this was a link, not a share, and the app is told to ask
     // rather than to save.
     //
-    // Not airtight, and deliberately not sold as such: a page that sends no referrer at
-    // all still looks like a share. The residual is bounded — the save is announced on
-    // screen, only allowlisted video hosts are accepted, and there is a daily cap — and
-    // closing it completely would cost a press on the one path that has to be effortless.
+    // NOT AIRTIGHT, and the gap is bigger than "a page that sends no referrer".
+    //
+    // `document.referrer` is empty for a link opened from WhatsApp's, Instagram's or
+    // Telegram's in-app browser, for an Android intent-launched tab, and for any link whose
+    // page sets `referrer: no-referrer`. Empty means "not external" here, so it is treated
+    // as his own share and saves itself. A message app is exactly the channel this check
+    // was written to defend, and it is the channel where it does not fire.
+    //
+    // The residual is bounded: only allowlisted video hosts are accepted, there is a daily
+    // cap, and the save is announced on screen. So the harm is one video of an attacker's
+    // choosing downloaded, transcribed and analysed — real, and not a way into anything.
+    //
+    // THE SOUND FIX IS A POST SHARE TARGET. `method: "POST"` in the manifest, handled by
+    // the service worker: a plain link cannot produce a POST, so the two become
+    // distinguishable with no guessing. It is not in this release because a POST share
+    // reaching GitHub Pages before the service worker controls the page gets a 405 and the
+    // reel is lost, the manifest's share_target usually needs the app reinstalled on
+    // Android before it takes effect, and none of that can be settled without a real phone.
+    // Shipping it untested risks the one path a reel gets in by. It is written down in
+    // DECISIONS.md as the next thing to do here.
     var external = true;
     try {
       external = Boolean(document.referrer)
@@ -75,7 +91,23 @@
         // A ceiling, so a bug that never drains this cannot fill his storage and take the
         // whole app down with it. The OLDEST go first: the newest share is the one he is
         // watching happen.
-        if (waiting.length > 25) waiting = waiting.slice(waiting.length - 25);
+        //
+        // Except one. A share carried over from the app that was live before this release
+        // is put at the FRONT and marked `ask`, so trimming the front would make it the
+        // first thing thrown away — and it is the only one with no other copy anywhere.
+        // At most one of those exists, ever.
+        if (waiting.length > 25) {
+          var keep = [];
+          var rest = [];
+          for (var n = 0; n < waiting.length; n += 1) {
+            if (waiting[n] && waiting[n].ask) keep.push(waiting[n]);
+            else rest.push(waiting[n]);
+          }
+          if (rest.length > 25 - keep.length) {
+            rest = rest.slice(rest.length - Math.max(0, 25 - keep.length));
+          }
+          waiting = keep.concat(rest);
+        }
         localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(waiting));
         stored = true;
       } catch (storageError) {

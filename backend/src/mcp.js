@@ -664,18 +664,32 @@ async function runSearch(env, userId, args) {
   const wanted = asked.filter((word) => /[\p{L}\p{N}]/u.test(word));
   // The address of a reel is a perfectly ordinary thing to paste into a chat — often the
   // only identifier a person is actually holding. The stored link has its scaffolding
-  // stripped (see `shortcodeOf`), so a query that still carries `https`, `www`, `com` and
-  // the rest asked for words no reel has any more and found nothing at all, while the app's
-  // own search box found it.
-  const looksLikeAddress = /https?:\/\//i.test(query);
-  const asWords = looksLikeAddress
-    ? wanted.filter((word) => !ADDRESS_NOISE.has(word))
-    : wanted;
-  // A query was asked but nothing readable came out of it — punctuation, or symbols in a
-  // script this cannot tokenise. That is NOT the same as asking nothing, which means "show
-  // me what is in my notebook". Conflating them returned every reel, scored zero, reported
-  // as matches, with nothing in the reply to say the words had not been read.
+  // stripped (see `shortcodeOf`), so a query still carrying `https`, `www`, `com` and the
+  // rest asked for words no reel has any more and found nothing at all.
+  //
+  // Stripped from the ADDRESS ONLY, never from the rest of the question. Applying it to the
+  // whole query deleted ordinary English: `video`, `share`, `watch`, `story` and `in` are
+  // all in that list, so "video https://…" quietly became "https://…" and answered about a
+  // different reel, with nothing in the reply saying a word had been thrown away. And the
+  // match is on the shape of an address, not on `https` — a link pasted out of a chat very
+  // often has no scheme at all, and `www.instagram.com/reel/X` found nothing.
+  const addresses = query.match(/\S*[\p{L}\p{N}-]+\.[a-z]{2,}\/\S*/giu) || [];
+  const fromAddress = new Set(addresses.flatMap((one) => wordsOf(one)));
+  const asWords = wanted.filter(
+    (word) => !(fromAddress.has(word) && ADDRESS_NOISE.has(word))
+  );
+  // A query was asked but nothing usable came out of it. That is NOT the same as asking
+  // nothing, which means "show me what is in my notebook". Conflating them returned every
+  // reel, scored zero, reported as matches, with nothing to say the words were not read.
+  //
+  // Measured AFTER the stripping, not before. Measured before, `https://www.instagram.com/`
+  // — a half-finished paste — came out readable, then reduced to no words, and the empty
+  // list means "no query": the whole notebook, reported as matches. D69's exact failure,
+  // re-opened for anything address-shaped.
   const unreadable = query.length > 0 && asWords.length === 0;
+  // And WHY, because the two reasons need different sentences. "Punctuation only" is untrue
+  // of an address that simply had no name in it.
+  const onlyAnAddress = unreadable && wanted.length > 0;
 
   const filters = {
     kind: String(args?.kind || "").trim().toLowerCase(),
@@ -807,7 +821,11 @@ async function runSearch(env, userId, args) {
     badDates.length
       ? `Ignored, because a date here has to be written as YYYY-MM-DD: ${badDates.join("; ")}.`
       : "",
-    unreadable
+    unreadable && onlyAnAddress
+      ? "That address has nothing in it to search for — no name, and no shortcode. Paste the"
+        + " whole address of one reel, or ask in words."
+      : "",
+    unreadable && !onlyAnAddress
       ? "No words could be read out of that query — it was punctuation or symbols only."
         + " Ask again in words, or use the folder, creator, kind, status, saved_after or"
         + " saved_before filters on their own."

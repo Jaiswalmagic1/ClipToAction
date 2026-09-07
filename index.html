@@ -4040,11 +4040,20 @@ async function saveLink(url) {
   }
 }
 
-$("saveForm").onsubmit = (event) => {
+$("saveForm").onsubmit = async (event) => {
   event.preventDefault();
   const url = $("saveUrl").value.trim();
-  if (url) saveLink(url);
+  if (!url) return;
+  const took = await saveLink(url);
+  // He pressed Save, so a link that was waiting to be asked about has had its answer and
+  // must not come back under the same sentence on the next open. Only on success: a save
+  // that failed still needs the queue to be holding it.
+  if (took) for (const one of queuedShares()) if (one.ask && sameLink(one, url)) dropShare(one);
 };
+
+/** Whether a queued share is the link now in the box. */
+const sameLink = (share, url) =>
+  `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/)?.[0] === url;
 
 /** A link handed over by the Android share sheet (D17). */
 /**
@@ -4117,6 +4126,19 @@ function pendingShare() {
   return { url: found[0], own: !share.ask, share, more: waiting.length - 1 };
 }
 
+/** What is written in the queue, exactly as it stands — no carry-over, no recursion. */
+function readQueue() {
+  try {
+    const raw = localStorage.getItem("cliptoaction-pending-shares");
+    const waiting = raw ? JSON.parse(raw) : [];
+    return Array.isArray(waiting)
+      ? waiting.filter((one) => one && typeof one === "object")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Everything the share target has handed over and the API has not yet taken. */
 function queuedShares() {
   try {
@@ -4173,17 +4195,32 @@ function carryOverOldShare() {
     try { localStorage.removeItem("cliptoaction-pending-share"); } catch { /* gone */ }
     return;
   }
-  if (!share || typeof share !== "object") {
+  // An ARRAY is `typeof "object"` too. Spread into an object it becomes `{"0": …}`, loses
+  // its url, and is then dropped under "there was nothing to save".
+  if (!share || typeof share !== "object" || Array.isArray(share)) {
     try { localStorage.removeItem("cliptoaction-pending-share"); } catch { /* gone */ }
     return;
   }
 
+  // Read the queue OUTSIDE the write's try. A queue left holding rubbish used to throw
+  // here, into a catch whose whole reason is "the box is full" — so a corrupt queue was
+  // treated as a storage failure and the carried reel was stranded in the old slot for
+  // ever, with nothing on screen, healing only if he happened to share something else.
+  // Unreadable rubbish is replaced; a box that will not take the write is a different thing.
+  //
+  // Read DIRECTLY, never through `queuedShares` — that calls this function, and this
+  // function had not yet removed the old key, so each nested call carried the same reel
+  // over again. The queue filled with copies of one share and the real ones were buried.
+  const queue = readQueue();
+
   try {
-    const waiting = JSON.parse(localStorage.getItem("cliptoaction-pending-shares") || "[]");
-    const queue = Array.isArray(waiting) ? waiting : [];
     // At the FRONT: it was shared before everything else here. `ask` is what stops it
-    // saving itself — see the note above.
+    // saving itself, and it is written AFTER the spread so that an `ask: false` planted in
+    // the old slot cannot clear its own mark.
     queue.unshift({ ...share, at: share.at || 0, ask: true });
+    // The share page trims the FRONT when the queue is full, and this is now the front — so
+    // the pre-upgrade reel would be the first thing thrown away. It is exempt: there are at
+    // most one of these, ever, and it is the only one with no other copy anywhere.
     localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(queue));
   } catch {
     // The box is full, or site data is blocked. LEAVE the old key where it is: it is the
@@ -4199,7 +4236,7 @@ function carryOverOldShare() {
 function dropShare(share) {
   if (!share) return;
   try {
-    const left = queuedShares().filter(
+    const left = readQueue().filter(
       (one) => !(one.at === share.at && one.url === share.url && one.text === share.text)
     );
     if (left.length) {
@@ -4886,14 +4923,35 @@ onAuthStateChanged(auth, async (account) => {
     // saved now, oldest first, and anything that fails stays queued.
     if (took) await drainShares();
   } else if (shared.url) {
-    say("saveMsg", "Somebody shared this link with you. Press Save if you want it.", "warn");
-    // Out of the queue now that it is in the box in front of him, or it comes back under
-    // the same sentence on every future open. This is the same treatment the address route
-    // has always given a link somebody sent.
-    dropShare(shared.share);
-    if (shared.more > 0) await drainShares();
+    // A link whose origin is not known: it waits for a press, and it STAYS WHERE IT IS.
+    //
+    // It used to be dropped here, "now that it is in the box in front of him" — which threw
+    // the reel away. The box is not storage: the next save clears it, the tab dies with it,
+    // and the queue was the only durable copy. So a reel carried over from the old slot was
+    // deleted on sight, and if anything else was queued behind it the screen then said
+    // "Saved." while the carried one was gone for good. The third round running that this
+    // function has caused the loss it exists to prevent.
+    //
+    // Security needs "do not save it without a press", not "delete it". The cost of keeping
+    // it is one repeated sentence per open; the cost of dropping it is the reel.
+    //
+    // Drained FIRST, then put in the box: `saveLink` empties the box on success, so filling
+    // it before the drain wiped it again.
+    // Unconditionally: `shared.more` is undefined on the address route, so a test on it
+    // meant anything already queued sat untouched for the whole session.
+    await drainShares();
+    $("saveUrl").value = shared.url;
+    say(
+      "saveMsg",
+      "Somebody shared this link with you. Press Save if you want it — it will keep waiting"
+      + " here until you do.",
+      "warn"
+    );
   } else if (shared.broken) {
     say("saveMsg", "Something was shared but the link could not be read. Paste it here.");
+    // `shared.more` is undefined on the address route, so the drain never ran here and
+    // anything already queued sat untouched for the whole session.
+    await drainShares();
   } else if (shared.notALink) {
     // A photo, or plain text. It used to reach exactly here and say nothing at all.
     //
@@ -4925,10 +4983,8 @@ async function drainShares() {
     // Without this the drain would do exactly what the branch above refuses to do, one
     // line later, and a link somebody sent him would go in with no press after all.
     if (share.ask) {
-      say("saveMsg", "Somebody shared a link with you. Press Save if you want it.", "warn");
-      $("saveUrl").value = `${share.url || ""} ${share.text || ""}`
-        .match(/https?:\/\/\S+/)?.[0] || $("saveUrl").value;
-      dropShare(share);
+      // Left where it is, like the branch above — a press is what it is waiting for, and
+      // the box it would go in is not somewhere anything survives.
       continue;
     }
     const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
