@@ -4262,3 +4262,49 @@ Message routing on every screen. No hover-only controls, no drag, no keyboard-on
 **Two hundred and thirty-nine.** The sixth round to find things by standing somewhere new
 rather than looking harder, and the sixth to create nothing of its own. Every one of those six
 asked about the product from outside the code.
+
+---
+
+### D71 — The queue's own upgrade, and a harness that could not see what it sent
+**Date:** 2026-09-08
+**Amends:** D70.
+
+D70 replaced the share target's single storage slot with a queue. Written down here because
+the change had a hole in exactly the place D70 itself is about, and because the test that was
+supposed to prove the ordering could never have failed.
+
+#### A reel shared in the minutes before the release would have been lost by the release
+
+The app that is live today writes ONE share to `cliptoaction-pending-share`. The new one
+reads a queue under a different name. So a reel he shares and does not open the app for —
+the completely ordinary case, and the reason the slot exists at all — sits in his storage
+after the merge and is read by nothing, ever again. **A lost reel caused entirely by the
+upgrade**, which is the one thing D36 does not allow, introduced by the fix for losing reels.
+
+The old slot is now read once on the first open, moved to the FRONT of the queue (it was
+shared before everything else there), and removed for good.
+
+#### And a `null` in the queue would have blocked every reel behind it
+
+`${share.url} ${share.text}` on a `null` reads as the literal words "undefined undefined",
+which matches no link — so the entry could never be saved and never be dropped, and it would
+sit at the head of the queue for ever with every real reel stuck behind it. Only entries that
+are actually objects are read.
+
+#### The harness never passed a request's body to anything
+
+`globalThis.fetch` took `(url)` and threw the options away. Two consequences, both found by
+writing a test that should have failed and did not:
+
+- Every `answerWith` handler written as `(url, options) => …` was reading `undefined` and
+  quietly doing nothing. One of D70's own tests collected saved URLs into an array that was
+  always empty, and asserted on a different array instead.
+- **No test could assert what was actually sent** — only how many requests there were. A test
+  claiming three shares are saved in the order they were made had no way to see the order.
+
+The stub records method and body now, hands them to responders, and `bodiesTo(route)` returns
+them parsed. The order assertions are real assertions.
+
+Three more mutation-checked claims: removing the carry-over fails two tests, removing the
+object filter fails one, and appending the old share instead of putting it first fails one.
+608 backend tests.

@@ -385,18 +385,24 @@ export async function loadApp(
   let holdCount = 0;
   let skipLeft = 0;
   let replies = null;
+  const sent = [];
   // `failAfter` makes every request past that many fail the way a lost connection does —
   // `fetch` rejecting. Without it no error path in the app is ever executed by a test, and
   // the messages Golden Rule 29 exists to guarantee are all unproven.
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options) => {
     calls.push(String(url));
+    // WHAT was sent, not only where. Without this a test can count requests but cannot see
+    // which reel was in one — so a test asserting on the ORDER things were saved in had no
+    // way to fail, and `answerWith` handlers written to read `options.body` were reading
+    // `undefined` and silently doing nothing.
+    sent.push({ url: String(url), method: options?.method || "GET", body: options?.body });
     if (failAfter !== null && calls.length > failAfter) throw new TypeError("Failed to fetch");
     // Decided NOW, before any waiting — a reply carries the notebook of whoever asked for
     // it, which is exactly what makes a late one dangerous.
     const answer = typeof sync === "function" ? sync(signedInAs) : sync;
     // A test that wants to answer one particular route its own way — for a press that
     // sends several requests and reads what comes back from each one.
-    const written = replies ? replies(String(url)) : null;
+    const written = replies ? replies(String(url), options) : null;
     let waitHere = null;
     if (held && skipLeft > 0) skipLeft -= 1;
     else if (held && holdCount > 0) {
@@ -458,6 +464,14 @@ export async function loadApp(
   return {
     document,
     calls,
+    /** Every request, with its method and body — see the fetch stub. */
+    sent,
+    /** The bodies of every POST/PUT to a route, in order, already parsed. */
+    bodiesTo(route) {
+      return sent
+        .filter((one) => one.url.includes(route) && one.body)
+        .map((one) => { try { return JSON.parse(one.body); } catch { return one.body; } });
+    },
     localStore: store,
     /** How many times the app has drawn a screen. A press should cost exactly one. */
     renders: () => renderCount.value,

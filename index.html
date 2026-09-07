@@ -4107,11 +4107,50 @@ function pendingShare() {
 /** Everything the share target has handed over and the API has not yet taken. */
 function queuedShares() {
   try {
+    carryOverOldShare();
     const raw = localStorage.getItem("cliptoaction-pending-shares");
     const waiting = raw ? JSON.parse(raw) : [];
-    return Array.isArray(waiting) ? waiting : [];
+    // Only entries that are actually shares. A `null`, a string or a number in this list
+    // would reach `${share.url}` and read as the word "undefined", which matches no link
+    // and would sit at the head of the queue for ever, blocking everything behind it.
+    return Array.isArray(waiting)
+      ? waiting.filter((one) => one && typeof one === "object")
+      : [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * A reel he shared before this version, still sitting in the single slot the old app used.
+ *
+ * The app that is live today writes `cliptoaction-pending-share` — one share, one key. This
+ * one reads a queue under a different name. Without this, a reel shared in the minutes
+ * before the release lands is on his phone, in his storage, and read by nothing ever again:
+ * a lost reel caused entirely by the upgrade, which is the one thing that must not happen
+ * (D36). Moved across once, then the old key is gone for good.
+ */
+function carryOverOldShare() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem("cliptoaction-pending-share");
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  try {
+    const share = JSON.parse(raw);
+    if (share && typeof share === "object") {
+      const waiting = JSON.parse(localStorage.getItem("cliptoaction-pending-shares") || "[]");
+      const queue = Array.isArray(waiting) ? waiting : [];
+      // At the FRONT: it was shared before everything else here.
+      queue.unshift({ ...share, at: share.at || 0 });
+      localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(queue));
+    }
+    localStorage.removeItem("cliptoaction-pending-share");
+  } catch {
+    // Unreadable, and it cannot be saved. Remove it rather than reading it every open.
+    try { localStorage.removeItem("cliptoaction-pending-share"); } catch { /* gone */ }
   }
 }
 

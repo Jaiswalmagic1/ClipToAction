@@ -86,23 +86,14 @@ describe("a reel shared from the share sheet", () => {
       shared("https://www.instagram.com/reel/TWO/", 2),
       shared("https://www.instagram.com/reel/THREE/", 3)
     ]);
-    const saved = [];
-    const app = await loadApp(syncPayload({}), {
-      seed: [[QUEUE, three]],
-      answerWith: null
-    });
-    app.answerWith((url, options) => {
-      if (String(url).includes("/v1/clips") && options?.method === "POST") {
-        saved.push(JSON.parse(options.body).url);
-      }
-      return null;
-    });
-    // The first is saved during sign-in; press through the rest.
+    const app = await loadApp(syncPayload({}), { seed: [[QUEUE, three]] });
     await new Promise((done) => setTimeout(done, 0));
     await new Promise((done) => setTimeout(done, 0));
 
-    const posts = app.calls.filter((one) => one.includes("/v1/clips")).length;
-    assert.ok(posts >= 3, `only ${posts} of the three shares reached the API`);
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 3, `${saved.length} of the three shares reached the API`);
+    assert.match(saved[0], /ONE/, `saved out of order: ${saved.join(", ")}`);
+    assert.match(saved[2], /THREE/, `saved out of order: ${saved.join(", ")}`);
     assert.equal(app.localStore.get(QUEUE), undefined, "shares were left behind");
     app.restore();
   });
@@ -120,6 +111,63 @@ describe("a reel shared from the share sheet", () => {
       `nothing was said about a share that could not be saved: "${app.text("saveMsg")}"`
     );
     assert.equal(app.localStore.get(QUEUE), undefined, "an unsaveable share stayed queued");
+    app.restore();
+  });
+
+  test("one shared just before the release lands is not lost by the upgrade", async () => {
+    // The app that is live today writes ONE share to `cliptoaction-pending-share`. This one
+    // reads a queue under a different name. Without carrying it across, a reel shared in
+    // the minutes before the merge sits in his storage and is read by nothing, ever again —
+    // a lost reel caused entirely by the upgrade, which is the one thing D36 forbids.
+    const app = await loadApp(syncPayload({}), {
+      seed: [[
+        "cliptoaction-pending-share",
+        JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/OLD/" })
+      ]]
+    });
+    await new Promise((done) => setTimeout(done, 0));
+
+    assert.ok(
+      app.calls.some((one) => one.includes("/v1/clips")),
+      "a reel shared before the release was never saved"
+    );
+    assert.equal(
+      app.localStore.get("cliptoaction-pending-share"),
+      undefined,
+      "the old slot was left behind and will be carried over again every open"
+    );
+    app.restore();
+  });
+
+  test("and it goes in FIRST, ahead of anything shared since", async () => {
+    const app = await loadApp(syncPayload({}), {
+      seed: [
+        ["cliptoaction-pending-share",
+          JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/OLD/" })],
+        [QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/NEW/", 9)])]
+      ]
+    });
+    await new Promise((done) => setTimeout(done, 0));
+    await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(saved.length >= 2, `only ${saved.length} were saved: ${saved.join(", ")}`);
+    assert.match(saved[0], /OLD/, `saved out of order: ${saved.join(", ")}`);
+    app.restore();
+  });
+
+  test("a null in the queue does not block everything behind it", async () => {
+    // `${share.url}` on a null reads as the word "undefined", which matches no link — so
+    // the entry can never be saved and can never be dropped, and it sits at the head of the
+    // queue for ever with every real reel stuck behind it.
+    const app = await loadApp(syncPayload({}), {
+      seed: [[QUEUE, JSON.stringify([null, shared("https://www.instagram.com/reel/REAL/", 3)])]]
+    });
+    await new Promise((done) => setTimeout(done, 0));
+    assert.ok(
+      app.calls.some((one) => one.includes("/v1/clips")),
+      "a real reel was stuck behind a broken entry"
+    );
     app.restore();
   });
 
