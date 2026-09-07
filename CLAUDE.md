@@ -84,8 +84,18 @@ named explicitly, and never shares a secret value with staging.
 ### One-time setup on GitHub (not yet done)
 
 Settings → Branches → Add branch ruleset for `main`: require a pull request, and require
-the status checks **CI / Tests and checks** and **PM Discipline Check** to pass. Without
-this the gate is advisory — CI will still run and go red, but nothing stops a merge.
+the status checks **Tests and checks** and **PM Discipline Check** to pass. Without this the
+gate is advisory — the checks still run and still go red, but nothing stops a merge.
+
+Two things about that screen. **Pick both names from its dropdown, do not type them.** The
+required check is the JOB's name, not the workflow's: typing `CI / Tests and checks` — which
+is how GitHub renders it in the PR's own list — creates a required check that nothing ever
+reports, and every future PR waits for it for ever. And **do this last**, after the big
+build's PR has merged: switching it on first blocks the very PR that carries the checks.
+
+Note also that publishing does not wait for any of it. `pages.yml` fires on a push to `main`
+and depends on nothing, so a merge publishes even if `Tests and checks` then goes red. The
+ruleset is what stops the merge; nothing stops the publish.
 
 ## The enforcement — enable it once per clone
 

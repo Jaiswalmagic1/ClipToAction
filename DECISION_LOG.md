@@ -3991,3 +3991,82 @@ predecessor's faults, and this is the fourth time it has caught a fix that fixed
 this one by noticing that no test in the suite could reach the state the fix was for. Every
 payload the harness builds carries `now: Date.now()`, so a clock frozen at the last sync
 looked exactly like the current one. There are tests for a stale app now.
+
+---
+
+### D68 — Round eighteen: walking the release, on paper, before walking it for real
+**Date:** 2026-09-08
+**Amends:** D16, D20, D40, D42.
+
+Every round so far has reviewed the code. This one reviewed **the instructions for putting
+the code live** — the release order in `backend/README.md` and the one-time GitHub setup in
+`CLAUDE.md` — by following them literally, as somebody would at eleven at night with a
+notebook full of real reels on the other end. Six of the nine steps were wrong, missing, or
+would have failed in a way that reads as lost data.
+
+#### The PC worker was still pinned at three hours, and nothing could have caught it
+
+`worker-pc/.env` is gitignored on purpose, so no test, no CI check and no reviewer reading
+the repo can see it. It was byte-identical to the backup taken before this build started:
+`MAX_DURATION_SEC=10800`, and no `WARN_ABOVE_SEC` or `MAX_TRANSCRIPT_CHARS` at all. D42's
+whole point — a six-hour ceiling with a warning above thirty minutes — would have been live
+in the Worker and absent on the only machine that does the work. The five-hour video he
+approved would have been refused at three. It is now **step 0** of the release, before
+anything else, and its three lines are written out.
+
+#### A refusal the worker answered by asking again, 196 times
+
+`fill_in_creators` backs off politely when the API says "not now". On a **network or auth
+error** it just returned — straight back into the loop, which sleeps 31 seconds. His live
+`worker.log` holds 196 consecutive 401s at exactly that spacing, from a token that had
+expired hours earlier. The backoff was written and then not applied on the one path that
+needed it most. Both paths back off now, and the test fails if the second one is removed.
+
+#### The command for checking which migrations landed could not see two of them
+
+It listed columns and tables. `0014` and `0016` leave nothing but **indexes** — five of the
+six in this release — so following the instructions exactly, then reading the table of what
+to look for, gives no way to answer the question for two files. It selects indexes now. The
+same table named `users.relook_last_at`, a column that has never existed; the migration
+creates `users.relooked_at`. Checking for the wrong name is worse than not checking.
+
+#### And the order itself was missing its beginning and its end
+
+- **No push, and no wait for CI.** The order began at the migrations. Pushing the branch is
+  free (nothing on a branch is served) and both checks run on it, so a failure is found
+  before a single migration has touched the database. It is step 1.
+- **No way back.** Nothing said what to do if staging misbehaves. `wrangler rollback --env
+  staging` returns the code in seconds, and the migrations being additive is exactly what
+  makes that safe — the old Worker never reads the new columns.
+- **A squash merge would have gone red on `main`.** The PM check reads `[PM-REVIEWED]` from
+  every commit in the range; a squash discards all thirty-seven messages in favour of the PR
+  title, and the check then fails on code that is already published.
+- **The requeue would have looked like it did nothing.** It reset `state`, `attempts` and the
+  errors, but not `releases` or `claimed_at`. A row at the release cap is sent straight back
+  to `failed` by the first claim that lets go of it. And the ids were written as `(...)` —
+  there is a `SELECT` to find them now.
+- **The branch ruleset was listed as setup, with no place in the order.** Switching it on
+  before the merge blocks the very PR that carries the checks it requires. It is step 9.
+
+#### The check name that would have blocked every future PR
+
+`CLAUDE.md` said to require **`CI / Tests and checks`**. That is how GitHub *renders* it in a
+PR's check list; the name a ruleset matches on is the **job's** — `Tests and checks`. Typing
+the rendered form creates a required check that nothing ever reports, and every PR after it
+waits for a check that will never arrive. Pick both from the dropdown, do not type them.
+
+Also written down there: publishing does not wait for any of this. `pages.yml` fires on a
+push to `main` and depends on nothing, so a merge publishes even if the tests then go red.
+The ruleset stops the merge; nothing stops the publish.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Seventeen | 215 | 81 |
+| Eighteen (the release, followed literally) | 8 | 0 |
+
+**Two hundred and twenty-three.** The fifth round to find things by standing somewhere new
+rather than looking harder, and the fifth to create nothing of its own. Two of the eight were
+invisible to every previous round by construction: one lived in a gitignored file, and one
+only in a log on his machine.

@@ -497,7 +497,14 @@ def fill_in_creators():
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as error:
+        # Quiet for the same half hour a lookup failure buys. This branch had a bare
+        # return, so the backoff D40 was built for did not cover the API question at all --
+        # and against a Worker that answers 401 (an old deployment, or a token that no
+        # longer matches) this asked again every thirty seconds, for ever. Measured on his
+        # own machine: 196 consecutive failures in under two hours, with nothing else in
+        # the log.
         say(f"  ! could not ask which videos need a creator: {error}")
+        _creator_quiet_until = time.monotonic() + CREATOR_BACKOFF_SEC
         return
 
     pending = payload.get("sources", [])

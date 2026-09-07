@@ -170,8 +170,8 @@ wrangler d1 execute cliptoaction-staging --remote --env staging --file=./migrati
 # ... and so on, in order, up to 0016_sync_indexes.sql
 ```
 
-Each is additive — `ALTER TABLE ADD COLUMN`, `CREATE TABLE IF NOT EXISTS` and one index — so they are
-safe on a database holding real reels, and none of them rewrites a single existing row.
+Each is additive — `ALTER TABLE ADD COLUMN`, `CREATE TABLE IF NOT EXISTS` and six indexes — so they
+are safe on a database holding real reels, and none of them rewrites a single existing row.
 They are **not** safe to run twice: SQLite has no `ADD COLUMN IF NOT EXISTS`, so a repeat
 fails with "duplicate column name". (`0014` is the exception — it only creates an index,
 and opens with a `DROP INDEX IF EXISTS` so that re-running it actually corrects an earlier
@@ -190,7 +190,7 @@ its remaining statements by hand rather than the file again.
 To see which have landed — every table and column these files touch, not just `sources`:
 
 ```bash
-wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT 'analyses' AS t, name FROM pragma_table_info('analyses') UNION ALL SELECT 'sources', name FROM pragma_table_info('sources') UNION ALL SELECT 'clips', name FROM pragma_table_info('clips') UNION ALL SELECT 'users', name FROM pragma_table_info('users') UNION ALL SELECT 'table', name FROM sqlite_master WHERE type='table'"
+wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT 'analyses' AS t, name FROM pragma_table_info('analyses') UNION ALL SELECT 'sources', name FROM pragma_table_info('sources') UNION ALL SELECT 'clips', name FROM pragma_table_info('clips') UNION ALL SELECT 'users', name FROM pragma_table_info('users') UNION ALL SELECT 'table', name FROM sqlite_master WHERE type='table' UNION ALL SELECT 'index', name FROM sqlite_master WHERE type='index'"
 ```
 
 What to look for, file by file:
@@ -198,7 +198,7 @@ What to look for, file by file:
 | File | What it must have left behind |
 |---|---|
 | `0009` | `analyses.shapes_version` |
-| `0010` | `users.relook_days`, `users.relook_last_at`, `clips.relooked_at`, **and the `relooks` table** |
+| `0010` | `users.relook_days`, `users.relooked_at`, `clips.relooked_at`, **and the `relooks` table** plus `idx_relooks_sync` |
 | `0011` | `sources.creator`, `sources.creator_checked_at` |
 | `0012` | `sources.long_ok_at`, `sources.long_ok_by` |
 | `0013` | `sources.creator_tries` |
@@ -209,31 +209,85 @@ What to look for, file by file:
 ### The release order, in full
 
 Getting these the wrong way round is the only way this release can look like lost data, so
-they are written out rather than left to be inferred.
+they are written out rather than left to be inferred. **Do them in this order.** Steps 1-3
+are all reversible; from step 5 the app is live.
 
-1. **Every unapplied migration, on staging, in order.** Safe while the old Worker is still
-   running: they are all additive and nothing reads the new columns yet.
-2. **`npm run deploy:staging`.** Never before step 1 — the new code reads columns that
-   would not exist, and `/v1/sync` then fails for everybody, which on screen is
-   indistinguishable from an empty notebook.
-3. **Restart the PC worker's scheduled task**, so it runs the code that matches.
-   `Stop-ScheduledTask ClipToActionWorker` then `Start-ScheduledTask ClipToActionWorker`.
-   This step is order-independent by design: `claim_batch` falls back to its pre-D42
-   behaviour when the API sends no limits, so an old Worker and a new worker get along.
-4. **Merge to `main`**, which is what publishes the app (D16). Do it promptly after step 2
-   and not days later: between the two, GitHub Pages is still serving the OLD app against
-   the NEW Worker, and a video waiting on a length approval draws there as the bare word
-   `needs_ok` with no button to answer it. Nothing is lost and it corrects itself the
-   moment this step lands.
-5. **Open the app once, directly, before sharing anything to it.** The service worker
-   already on his phone is cache-first, so the very first open after step 4 may still be
-   served the old page while the new one installs; the old page consumes a pending share
-   into a list the new app does not read. One direct open settles it for good.
-6. **Then** requeue anything that was stuck, e.g. the three long videos that were retired
-   before D42 existed:
-   `UPDATE sources SET state='pending', attempts=0, error=NULL, error_detail=NULL WHERE id IN (...)`.
+**0. The PC worker's `.env` first.** It is gitignored, so nothing in the repo updates it and
+no test can catch it being stale. It must carry the new ceilings before the worker restarts,
+or a five-hour video is still refused at three:
+
+```
+MAX_DURATION_SEC=21600
+WARN_ABOVE_SEC=1800
+MAX_TRANSCRIPT_CHARS=400000
+```
+
+**1. Push the branch and wait for CI to go green.** `git push -u origin big-build`. Pushing a
+branch releases nothing (D16) — only `main` is served. Both checks run on the branch push, so
+a failure is found here rather than at the merge, and **Tests and checks** must be green
+before anything below is worth starting.
+
+**2. Every unapplied migration, on staging, in order** — `0009` to `0016`. Safe while the old
+Worker is still running: they are all additive and nothing reads the new columns yet. Verify
+with the command above before moving on; if a file half-applied, read the paragraph about
+"duplicate column name" again before re-running anything.
+
+**3. `npm run deploy:staging`.** Never before step 2 — the new code reads columns that would
+not exist, and `/v1/sync` then fails for everybody, which on screen is indistinguishable from
+an empty notebook.
+
+> **The way back.** If staging misbehaves, `wrangler rollback --env staging` returns the
+> Worker to the previous deployment in seconds. It rolls back **code only** — the migrations
+> stay applied, which is exactly why they are additive: the old code never reads the new
+> columns, so a rolled-back Worker runs correctly against the new database.
+
+**4. Restart the PC worker's scheduled task**, so it runs the code that matches its new
+`.env`. `Stop-ScheduledTask ClipToActionWorker` then `Start-ScheduledTask ClipToActionWorker`.
+This step is order-independent by design: `claim_batch` falls back to its pre-D42 behaviour
+when the API sends no limits, so an old Worker and a new worker get along.
+
+**5. Put a real reel through staging, by hand.** This is the point of the whole rehearsal.
+Nothing below happens until one reel has gone from share to analysed on staging.
+
+**6. Open the PR and merge it to `main`**, which is what publishes the app (D16). Do it
+promptly after step 3 and not days later: between the two, GitHub Pages is still serving the
+OLD app against the NEW Worker, and a video waiting on a length approval draws there as the
+bare word `needs_ok` with no button to answer it. Nothing is lost and it corrects itself the
+moment this step lands.
+
+> **Merge commit, not squash.** The PM Discipline check reads `[PM-REVIEWED]` out of every
+> commit message in the range, and a squash throws all of them away in favour of the PR
+> title. The check then runs on `main`'s push and goes red on code that is already live.
+> Choose "Create a merge commit".
+
+**7. Open the app once, directly, before sharing anything to it.** The service worker already
+on his phone is cache-first, so the very first open after step 6 may still be served the old
+page while the new one installs; the old page consumes a pending share into a list the new
+app does not read. One direct open settles it for good.
+
+**8. Then** requeue anything that was stuck — the three long videos that were retired before
+D42 existed. Find them first rather than guessing at ids:
+
+```bash
+wrangler d1 execute cliptoaction-staging --remote --env staging --command "SELECT id, title, error, error_detail, attempts, releases FROM sources WHERE state='failed'"
+```
+
+Then requeue only those, by id:
+
+```bash
+wrangler d1 execute cliptoaction-staging --remote --env staging --command "UPDATE sources SET state='pending', attempts=0, releases=0, claimed_at=NULL, error=NULL, error_detail=NULL WHERE id IN ('...','...','...')"
+```
+
+`releases=0` and `claimed_at=NULL` are not tidiness. A row at the release cap is sent
+straight back to `failed` by the first claim that lets go of it, and a row with a stale
+`claimed_at` is invisible to the queue until the lease expires — either way the requeue looks
+like it did nothing.
+
+**9. Last of all, turn on the branch ruleset** described in `CLAUDE.md`. Doing it before step
+6 blocks the very PR that carries the checks it names.
 
 ## AI providers
+
 
 Analysis runs inside the Worker (`src/analyze.js`) so a user's API key never leaves it.
 Endpoints and model IDs were checked against each provider's own documentation on

@@ -716,3 +716,63 @@ class NothingIsSweptWhileItStillHoldsWork(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AskingTheApiAboutCreators(unittest.TestCase):
+    """One failure has to quieten the backfill, whichever end it came from.
+
+    The pause D40 built for a throttling platform did not cover the question this machine
+    asks the API first. Against a Worker that answers 401 -- an old deployment, or a token
+    that no longer matches -- it asked again every thirty seconds for ever: 196 consecutive
+    failures in under two hours on his own machine, with nothing else in the log.
+    """
+
+    def space(self, requests_stub, clock):
+        return load(
+            "fill_in_creators",
+            API_BASE="https://api.test",
+            HEADERS={},
+            CREATOR_BATCH=2,
+            CREATOR_PAUSE_SEC=20,
+            CREATOR_BACKOFF_SEC=1800,
+            requests=requests_stub,
+            time=clock,
+            say=lambda message: None,
+            _creator_quiet_until=0,
+        )
+
+    def test_an_api_that_refuses_is_not_asked_again_for_half_an_hour(self):
+        asked = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def get(url, params=None, headers=None, timeout=None):
+                asked.append(url)
+                raise RuntimeError("401 Client Error: Unauthorized")
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls):
+                return cls.now
+
+            @staticmethod
+            def sleep(seconds):
+                pass
+
+        space = self.space(Requests, Clock)
+        space["fill_in_creators"]()
+        self.assertEqual(len(asked), 1)
+
+        # Thirty seconds later, the next idle poll.
+        Clock.now = 30.0
+        space["fill_in_creators"]()
+        self.assertEqual(len(asked), 1, "it asked again half a minute after being refused")
+
+        # And half an hour later it tries once more, as it should.
+        Clock.now = 1801.0
+        space["fill_in_creators"]()
+        self.assertEqual(len(asked), 2, "it never asked again at all")
