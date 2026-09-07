@@ -738,6 +738,53 @@ let focusTopicId = null;
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
 /**
+ * Keeps what he has half-typed in a box, so that pressing something else does not erase it.
+ *
+ * A clip's page is rebuilt from nothing on every draw — `clipView.innerHTML = ""` — and
+ * seven of the buttons ON that page redraw it when they succeed. So pasting an hour of
+ * conversation into "Paste the AI's last reply", then remembering to add a note first and
+ * pressing Add note, saved the note and **erased the hour**, with nothing on screen
+ * mentioning it. Ticking one tracker row wiped two boxes at once.
+ *
+ * The box is not storage — the lesson of the round before, one screen further in. What he
+ * has typed is written down as he types it, comes back when the page is rebuilt, and
+ * survives a reload and a closed tab. It is cleared the moment the thing is saved.
+ *
+ * Per account, like every other key on the device: his half-written note is his.
+ */
+const draftKey = (what, clipId) =>
+  `cliptoaction-draft-${user ? user.uid : "none"}-${clipId}-${what}`;
+
+function keepDraft(box, what, clipId) {
+  const key = draftKey(what, clipId);
+  try {
+    const held = localStorage.getItem(key);
+    if (held !== null && held !== "") box.value = held;
+  } catch {
+    // Storage is blocked. The box still works; it just will not survive a redraw.
+  }
+  box.addEventListener("input", () => {
+    try {
+      if (box.value.trim()) localStorage.setItem(key, box.value);
+      else localStorage.removeItem(key);
+    } catch {
+      // A full or blocked box. Nothing to do, and nothing worth saying: the text is still
+      // on screen, and this is a convenience over the top of it.
+    }
+  });
+  return box;
+}
+
+/** The thing was saved, so what was half-typed towards it is finished with. */
+function forgetDraft(what, clipId) {
+  try {
+    localStorage.removeItem(draftKey(what, clipId));
+  } catch {
+    // Gone anyway.
+  }
+}
+
+/**
  * Who is signed in, as a name that can be compared — and the reason that matters.
  *
  * Signing straight from one Google account into another fires the auth handler with the
@@ -753,6 +800,30 @@ const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
  * hand, and `applyDelta`, which is the door the data actually walks through.
  */
 const whoIsSignedIn = () => (user ? user.uid : null);
+
+/**
+ * Who this device belongs to, written where the share page can read it.
+ *
+ * The share sheet opens `share-target.html` with no account context at all — Firebase is
+ * not even loaded there — so the queue it writes is device-wide, while every other key on
+ * the device carries the uid. That meant a reel he shared and did not open the app for was
+ * drained into WHOEVER SIGNED IN NEXT: his reel in her notebook, gone from the queue, and
+ * nothing on either screen. Two accounts on one phone is the case this app designs for
+ * everywhere else (D53, D60).
+ *
+ * So the share page stamps each entry with whoever was last using the app, and a share
+ * stamped for somebody else is asked about rather than saved.
+ */
+const HOLDER_KEY = "cliptoaction-last-account";
+
+function rememberWhoseDeviceThisIs() {
+  try {
+    if (user) localStorage.setItem(HOLDER_KEY, user.uid);
+  } catch {
+    // Blocked storage. The share page then stamps nothing, and an unstamped share is asked
+    // about rather than saved — the safe direction.
+  }
+}
 
 function loadCache() {
   try {
@@ -784,9 +855,17 @@ function loadCache() {
  * And when even that will not fit, nothing is written at all — so the last complete copy
  * survives. Stale and whole beats current with pieces missing.
  */
+// Whether the device copy is the reduced one. Once the box is full it STAYS full, so
+// every cold start from then on re-fetches the whole notebook from row zero — for ever,
+// silently, and against the row budget D59 spent a round measuring. It is not a bug; it is
+// the price of not destroying the transcripts. But he is told, because a phone that reloads
+// everything on every open is slow for a reason he can do something about.
+let cacheIsReduced = false;
+
 function saveCache() {
   try {
     localStorage.setItem(cacheKey(), JSON.stringify(store));
+    cacheIsReduced = false;
     return;
   } catch {
     // Almost always the transcripts. D42 allows a single video to be 400,000 characters
@@ -807,6 +886,7 @@ function saveCache() {
     // Nothing he typed is ever dropped. His notes and his learnings are the one thing in
     // here that exists nowhere else on the device, and a smaller cache is not worth them.
     localStorage.setItem(cacheKey(), JSON.stringify({ ...store, since: 0, transcripts: [] }));
+    cacheIsReduced = true;
   } catch {
     // Storage will not take it at all. Nothing is written, so WHATEVER WAS THERE BEFORE
     // survives — a complete copy that is a little stale, which is better than a current
@@ -1043,6 +1123,29 @@ const unsortedClips = () =>
  * never told them. On Home it arrived only after the machine had run and left a reel
  * "written down, never summarised" — which can be hours, or a day if that machine is off.
  */
+/**
+ * Said out loud, because it is slow for a reason he can do something about.
+ *
+ * Once his notebook outgrows the browser's storage box, the device copy is written without
+ * the words spoken in each reel — and with its clock wound back to zero, because a delta
+ * sync would never fetch those words again otherwise (D47). The box then STAYS full, so
+ * every cold start from that point re-reads the whole notebook from the server, for ever.
+ *
+ * Nothing is lost and nothing is wrong. It is simply the most expensive thing the app does,
+ * happening every time he opens it, with nothing on any screen saying so.
+ */
+function shortOfSpaceNotice() {
+  if (!cacheIsReduced) return null;
+  const notice = document.createElement("div");
+  notice.className = "notice warn";
+  notice.textContent =
+    "This phone is short of space, so the app cannot keep a full copy of your notebook on"
+    + " it. Nothing is lost — but it has to fetch everything again each time you open it,"
+    + " which is slower and uses more of the free allowance. Clearing some space on the"
+    + " phone will fix it.";
+  return notice;
+}
+
 function setupNudge() {
   if (!store.settings || store.settings.ai_provider) return null;
   const saved = store.clips.filter((clip) => !clip.deleted_at).length;
@@ -2590,9 +2693,11 @@ function topicSection(clip) {
   const topicBox = document.createElement("input");
   topicBox.placeholder = "Topic — the broad subject";
   topicBox.value = path ? path.topic : "";
+  keepDraft(topicBox, "topic", clip.id);
   const subBox = document.createElement("input");
   subBox.placeholder = "Sub-topic — optional";
   subBox.value = path ? path.subTopic : "";
+  keepDraft(subBox, "subtopic", clip.id);
   subBox.style.marginTop = "8px";
 
   const save = document.createElement("button");
@@ -2605,8 +2710,23 @@ function topicSection(clip) {
         method: "PUT",
         body: JSON.stringify({ topic: topicBox.value.trim(), sub_topic: subBox.value.trim() })
       });
-      await sync();
-      render();
+      // Saved. Two things follow from that, and both were wrong before.
+      //
+      // What was half-typed towards it is finished with — otherwise it comes back into the
+      // box on the next draw, and he saves it twice.
+      //
+      // And the refresh below gets its OWN try. These were one, so a refresh that failed
+      // came back as a save that failed: the row was in his notebook and the screen said it
+      // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
+      // still live in every other place that saves something he typed.
+      forgetDraft("topic", clip.id);
+      forgetDraft("subtopic", clip.id);
+      try {
+        await sync();
+        render();
+      } catch {
+        say("clipMsg", "Filed. The screen may be a moment behind.", "ok");
+      }
     } catch (error) {
       say("clipMsg", error.message);
       save.disabled = false;
@@ -2723,6 +2843,7 @@ function byHandSection(clip) {
   const answer = document.createElement("textarea");
   answer.placeholder = "Paste the AI's whole reply here";
   answer.style.marginTop = "10px";
+  keepDraft(answer, "reading", clip.id);
 
   const saveButton = document.createElement("button");
   saveButton.textContent = "Save the answer";
@@ -2740,8 +2861,22 @@ function byHandSection(clip) {
         method: "POST",
         body: JSON.stringify({ pasted })
       });
-      await sync();
-      render();
+      // Saved. Two things follow from that, and both were wrong before.
+      //
+      // What was half-typed towards it is finished with — otherwise it comes back into the
+      // box on the next draw, and he saves it twice.
+      //
+      // And the refresh below gets its OWN try. These were one, so a refresh that failed
+      // came back as a save that failed: the row was in his notebook and the screen said it
+      // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
+      // still live in every other place that saves something he typed.
+      forgetDraft("reading", clip.id);
+      try {
+        await sync();
+        render();
+      } catch {
+        say("byHandMsg", "Saved. The screen may be a moment behind.", "ok");
+      }
     } catch (error) {
       say("byHandMsg", error.message);
       saveButton.disabled = false;
@@ -2874,6 +3009,7 @@ function learnSection(clip) {
   const answer = document.createElement("textarea");
   answer.placeholder = "Paste the AI's last reply here";
   answer.style.marginTop = "10px";
+  keepDraft(answer, "learning", clip.id);
 
   const saveButton = document.createElement("button");
   saveButton.textContent = "Save what you learned";
@@ -2891,8 +3027,22 @@ function learnSection(clip) {
         method: "POST",
         body: JSON.stringify({ pasted })
       });
-      await sync();
-      render();
+      // Saved. Two things follow from that, and both were wrong before.
+      //
+      // What was half-typed towards it is finished with — otherwise it comes back into the
+      // box on the next draw, and he saves it twice.
+      //
+      // And the refresh below gets its OWN try. These were one, so a refresh that failed
+      // came back as a save that failed: the row was in his notebook and the screen said it
+      // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
+      // still live in every other place that saves something he typed.
+      forgetDraft("learning", clip.id);
+      try {
+        await sync();
+        render();
+      } catch {
+        say("learnMsg", "Saved. The screen may be a moment behind.", "ok");
+      }
     } catch (error) {
       say("learnMsg", error.message);
       saveButton.disabled = false;
@@ -3237,6 +3387,7 @@ function renderClip(clipId) {
 
   const noteBox = document.createElement("textarea");
   noteBox.placeholder = "Write what you want to remember about this one";
+  keepDraft(noteBox, "note", clip.id);
   const noteButton = document.createElement("button");
   noteButton.textContent = "Add note";
   noteButton.style.marginTop = "8px";
@@ -3249,8 +3400,22 @@ function renderClip(clipId) {
         method: "POST",
         body: JSON.stringify({ clip_id: clip.id, body: text })
       });
-      await sync();
-      render();
+      // Saved. Two things follow from that, and both were wrong before.
+      //
+      // What was half-typed towards it is finished with — otherwise it comes back into the
+      // box on the next draw, and he saves it twice.
+      //
+      // And the refresh below gets its OWN try. These were one, so a refresh that failed
+      // came back as a save that failed: the row was in his notebook and the screen said it
+      // was not, so he pressed again and got two. The same fault D72 fixed in `saveLink`,
+      // still live in every other place that saves something he typed.
+      forgetDraft("note", clip.id);
+      try {
+        await sync();
+        render();
+      } catch {
+        say("clipMsg", "Note added. The screen may be a moment behind.", "ok");
+      }
     } catch (error) {
       say("clipMsg", error.message);
       noteButton.disabled = false;
@@ -3934,8 +4099,10 @@ function renderHome() {
   // into the page. So the bare word sat on his home screen, between the machine line and
   // "What I should act on", on every draw, for everyone who had finished setting up.
   host.append(
-    ...[setupNudge(), actOnSection(), learningSection(), attentionSection(), newSection()]
-      .filter(Boolean)
+    ...[
+      shortOfSpaceNotice(), setupNudge(), actOnSection(), learningSection(),
+      attentionSection(), newSection()
+    ].filter(Boolean)
   );
 
   const last = latestRelook();
@@ -4051,6 +4218,16 @@ $("saveForm").onsubmit = async (event) => {
   if (took) for (const one of queuedShares()) if (one.ask && sameLink(one, url)) dropShare(one);
 };
 
+/**
+ * Whether this share was made while somebody else was using the device.
+ *
+ * An UNSTAMPED share is nobody's in particular — it predates this, or storage was blocked
+ * when it was written — and is treated as his, because the alternative is an extra press on
+ * the one path that has to be effortless (D17) for a case that is not an account mix-up.
+ */
+const forSomebodyElse = (share) =>
+  Boolean(share.by) && Boolean(whoIsSignedIn()) && share.by !== whoIsSignedIn();
+
 /** Whether a queued share is the link now in the box. */
 const sameLink = (share, url) =>
   `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/)?.[0] === url;
@@ -4123,7 +4300,11 @@ function pendingShare() {
   }
   // `ask` marks a share whose provenance is not known — see carryOverOldShare. It goes in
   // the box for him to press Save on, exactly like a link somebody sent.
-  return { url: found[0], own: !share.ask, share, more: waiting.length - 1 };
+  //
+  // And so does a share stamped for a DIFFERENT account. The share sheet has no idea who is
+  // signed in, so the queue is device-wide; without this, a reel one person shared was
+  // saved into the notebook of whoever happened to sign in next.
+  return { url: found[0], own: !share.ask && !forSomebodyElse(share), share, more: waiting.length - 1 };
 }
 
 /** What is written in the queue, exactly as it stands — no carry-over, no recursion. */
@@ -4871,6 +5052,9 @@ onAuthStateChanged(auth, async (account) => {
   }
 
   $("whoEmail").textContent = account.email || "";
+  // Written before anything reads the queue, so the share page stamps the right person from
+  // here on — see rememberWhoseDeviceThisIs.
+  rememberWhoseDeviceThisIs();
   loadCache();
   render();
 
@@ -4941,10 +5125,21 @@ onAuthStateChanged(auth, async (account) => {
     // meant anything already queued sat untouched for the whole session.
     await drainShares();
     $("saveUrl").value = shared.url;
+    // "It will keep waiting here" is only true when something is actually holding it.
+    //
+    // A link that arrived in the ADDRESS has no queue entry — the share page could not use
+    // storage, which is why it travelled that way — and the address has already been wiped.
+    // So the box is the only copy, and saying it will wait was a promise nothing was
+    // keeping. Worse on the route where it is HIS OWN share and storage refused: he was
+    // told "somebody shared this with you", which is also untrue, and the honest sentence
+    // written for exactly that case was unreachable.
     say(
       "saveMsg",
-      "Somebody shared this link with you. Press Save if you want it — it will keep waiting"
-      + " here until you do.",
+      shared.share
+        ? "Somebody shared this link with you. Press Save if you want it — it will keep"
+          + " waiting here until you do."
+        : "This link is in the box above, and this device will not let the app remember it."
+          + " Press Save now, or keep this page open — closing it will lose the link.",
       "warn"
     );
   } else if (shared.broken) {
@@ -4982,9 +5177,10 @@ async function drainShares() {
     // A share whose provenance is not known never saves itself — see carryOverOldShare.
     // Without this the drain would do exactly what the branch above refuses to do, one
     // line later, and a link somebody sent him would go in with no press after all.
-    if (share.ask) {
+    if (share.ask || forSomebodyElse(share)) {
       // Left where it is, like the branch above — a press is what it is waiting for, and
-      // the box it would go in is not somewhere anything survives.
+      // the box it would go in is not somewhere anything survives. A share stamped for
+      // another account waits for that account, and is never drained into this one.
       continue;
     }
     const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);

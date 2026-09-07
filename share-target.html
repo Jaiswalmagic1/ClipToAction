@@ -87,6 +87,17 @@
           waiting = [];
         }
         share.at = Date.now();
+        // WHOSE share this is. This page has no account context of its own -- Firebase is
+        // not loaded here -- so it stamps whoever was last using the app on this device.
+        // Without it a reel one person shared was drained into the notebook of whoever
+        // signed in next, gone from the queue, with nothing said on either screen.
+        try {
+          var holder = localStorage.getItem("cliptoaction-last-account");
+          if (holder) share.by = holder;
+        } catch (holderError) {
+          // Unstamped, which the app treats as his own -- the safe direction for the one
+          // path that has to be effortless.
+        }
         waiting.push(share);
         // A ceiling, so a bug that never drains this cannot fill his storage and take the
         // whole app down with it. The OLDEST go first: the newest share is the one he is

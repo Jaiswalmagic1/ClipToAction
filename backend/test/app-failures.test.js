@@ -187,6 +187,18 @@ describe("when the device will not hold the whole notebook", () => {
     big.transcripts = [
       { source_id: "s1", text: "a".repeat(5000), lang: "en", engine: "test", created_at: now }
     ];
+    // Real rows, so "his notes are never dropped" is decided by the code rather than by
+    // both sides happening to be empty.
+    big.notes = [{
+      id: "n1", user_id: "vish", clip_id: "c1", body: "a note that exists nowhere else",
+      created_at: now, updated_at: now, deleted_at: null
+    }];
+    big.learnings = [{
+      id: "l1", user_id: "vish", clip_id: "c1", source_id: "s1",
+      worked: "[]", did_not: "[]", learned: '["what I worked out"]', questions: "[]",
+      verdicts: "[]", next_steps: "[]", note: null,
+      created_at: now, updated_at: now, deleted_at: null
+    }];
 
     // Big enough for the notebook without its words, too small for it with them.
     const app = await loadApp(big, { quotaChars: 3000 });
@@ -195,8 +207,38 @@ describe("when the device will not hold the whole notebook", () => {
     assert.ok(cached, "nothing was saved at all — the smaller copy must still be written");
     assert.deepEqual(cached.transcripts, [], "the words are the thing that is dropped");
     assert.equal(cached.since, 0, "and the clock MUST be wound back, or they are gone");
-    // What he typed exists nowhere else on the device and is never dropped.
-    assert.ok("notes" in cached && "learnings" in cached && "analyses" in cached);
+    // What he typed exists nowhere else on the device and is never dropped. Asserted on
+    // the CONTENTS, not on the keys: `notes: []` satisfies `"notes" in cached`, so the
+    // claim could be broken with the whole suite green.
+    assert.deepEqual(
+      cached.notes,
+      big.notes,
+      "his notes were dropped from the smaller copy — they exist nowhere else here"
+    );
+    assert.deepEqual(cached.learnings, big.learnings, "and neither may his learnings be");
+    assert.ok(cached.analyses.length > 0, "and the readings went with them");
+    app.restore();
+  });
+
+  test("and he is told his phone is short of space, rather than just being slow", async () => {
+    // Once the box is full it STAYS full, so every cold start from then on re-reads the
+    // whole notebook from the server — for ever, silently, and it is the most expensive
+    // thing the app does. Nothing is lost; it is simply slow for a reason he can fix.
+    const big = payload();
+    big.transcripts = [
+      { source_id: "s1", text: "a".repeat(5000), lang: "en", engine: "test", created_at: now }
+    ];
+    big.notes = [{
+      id: "n1", user_id: "vish", clip_id: "c1", body: "a note of his own",
+      created_at: now, updated_at: now, deleted_at: null
+    }];
+    const app = await loadApp(big, { quotaChars: 3000 });
+
+    assert.match(
+      app.text("homeView"),
+      /short of space/i,
+      "a phone reloading everything on every open says nothing about why"
+    );
     app.restore();
   });
 

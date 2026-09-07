@@ -621,7 +621,40 @@ def transcribe(audio_path, duration_sec=0, max_chars=None, long_above=None):
     return text, info.language
 
 
+# How many times to offer a finished transcript before giving up on it, and how long to
+# wait between goes.
+#
+# The transcript exists in one place when this runs: a variable in memory. The audio it came
+# from is deleted by `cleanup` in the `finally` a few lines later, and nothing writes the
+# text to disk. So one blip on his broadband threw away however long the machine had just
+# spent -- and on a six-hour video (D42) that is hours of it. The work is recoverable in the
+# sense that the API puts the video back in the queue and it is downloaded and transcribed
+# again from scratch; it is not recoverable in the sense that matters, which is his evening.
+POST_TRIES = 4
+POST_PAUSE_SEC = 5
+
+
 def post_transcript(source_id, text, lang, title, duration, creator):
+    for attempt in range(POST_TRIES):
+        try:
+            return _post_transcript_once(source_id, text, lang, title, duration, creator)
+        except requests.RequestException as error:
+            # A REFUSAL is final -- the API has looked at this and said no, and asking again
+            # says the same thing. Anything else is the network, and the network comes back.
+            answer = getattr(error, "response", None)
+            if answer is not None and 400 <= answer.status_code < 500:
+                raise
+            if attempt == POST_TRIES - 1:
+                raise
+            say(
+                f"  ! could not hand back the transcript ({error}); trying again in "
+                f"{POST_PAUSE_SEC}s ({attempt + 1} of {POST_TRIES - 1})"
+            )
+            time.sleep(POST_PAUSE_SEC)
+    return None
+
+
+def _post_transcript_once(source_id, text, lang, title, duration, creator):
     response = requests.post(
         f"{API_BASE}/v1/sources/{source_id}/transcript",
         json={

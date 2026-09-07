@@ -776,3 +776,106 @@ class AskingTheApiAboutCreators(unittest.TestCase):
         Clock.now = 1801.0
         space["fill_in_creators"]()
         self.assertEqual(len(asked), 2, "it never asked again at all")
+
+
+class HandingBackAFinishedTranscript(unittest.TestCase):
+    """An hour of his machine's evening must not be thrown away by one blip.
+
+    When this runs, the transcript exists in exactly one place: a variable in memory. The
+    audio it came from is deleted by `cleanup` in the `finally` a few lines later, and
+    nothing writes the text to disk. So a single failed POST discarded however long the
+    machine had just spent -- and on a six-hour video (D42) that is hours of it.
+    """
+
+    def space(self, requests_stub, clock, said=None):
+        return load(
+            "post_transcript",
+            "_post_transcript_once",
+            API_BASE="https://api.test",
+            HEADERS={},
+            WHISPER_MODEL="small",
+            POST_TRIES=4,
+            POST_PAUSE_SEC=5,
+            requests=requests_stub,
+            time=clock,
+            say=(said.append if said is not None else (lambda message: None)),
+        )
+
+    class Clock:
+        slept = 0.0
+
+        @classmethod
+        def sleep(cls, seconds):
+            cls.slept += seconds
+
+    def test_a_blip_on_the_line_does_not_throw_the_transcript_away(self):
+        tries = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                tries.append(json["text"])
+                if len(tries) < 3:
+                    raise RuntimeError("connection reset")
+
+                class Answer:
+                    status_code = 200
+
+                    @staticmethod
+                    def raise_for_status():
+                        return None
+
+                return Answer()
+
+        clock = type("C", (), {"slept": 0.0, "sleep": classmethod(lambda cls, s: None)})
+        space = self.space(Requests, clock)
+        space["post_transcript"]("s1", "an hour of speech", "hi", "A reel", 3600, None)
+        self.assertEqual(len(tries), 3, "it gave up on the first failure")
+        self.assertEqual(tries[-1], "an hour of speech", "it handed back something else")
+
+    def test_but_a_refusal_is_final_and_is_not_asked_again(self):
+        # The API has looked at this and said no -- too long, wrong shape, unknown source.
+        # Asking again says the same thing and spends the allowance saying it.
+        tries = []
+
+        class Answer:
+            status_code = 413
+
+            @staticmethod
+            def raise_for_status():
+                raise Requests.RequestException("413 Payload Too Large")
+
+        class Requests:
+            RequestException = type("RequestException", (RuntimeError,), {})
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                tries.append(1)
+                error = Requests.RequestException("413 Payload Too Large")
+                error.response = Answer
+                raise error
+
+        clock = type("C", (), {"slept": 0.0, "sleep": classmethod(lambda cls, s: None)})
+        space = self.space(Requests, clock)
+        with self.assertRaises(Requests.RequestException):
+            space["post_transcript"]("s1", "words", "hi", "A reel", 30, None)
+        self.assertEqual(len(tries), 1, "it argued with a refusal")
+
+    def test_and_it_does_give_up_eventually_rather_than_holding_the_claim_for_ever(self):
+        tries = []
+
+        class Requests:
+            RequestException = RuntimeError
+
+            @staticmethod
+            def post(url, json=None, headers=None, timeout=None):
+                tries.append(1)
+                raise RuntimeError("connection reset")
+
+        clock = type("C", (), {"slept": 0.0, "sleep": classmethod(lambda cls, s: None)})
+        space = self.space(Requests, clock)
+        with self.assertRaises(RuntimeError):
+            space["post_transcript"]("s1", "words", "hi", "A reel", 30, None)
+        self.assertEqual(len(tries), 4, f"it tried {len(tries)} times")

@@ -65,6 +65,29 @@ class FakeNode {
     this.value = "";
     this.classList = new FakeClassList(this);
     this._text = "";
+    this._listeners = [];
+  }
+
+  /**
+   * Every element in a browser has this, and this stand-in did not — so the app calling it
+   * on a box it had just created threw, and any feature built on it was untestable. The
+   * app uses it to remember what he has half-typed as he types it.
+   */
+  addEventListener(name, handler) {
+    this._listeners.push([String(name), handler]);
+  }
+
+  removeEventListener(name, handler) {
+    this._listeners = this._listeners.filter(
+      ([listening, held]) => !(listening === String(name) && held === handler)
+    );
+  }
+
+  /** Types into a box the way a finger does: sets the value AND fires `input`. */
+  type(text) {
+    this.value = text;
+    for (const [name, handler] of this._listeners) if (name === "input") handler({ target: this });
+    return this;
   }
 
   get textContent() {

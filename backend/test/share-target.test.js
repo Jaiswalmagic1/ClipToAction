@@ -118,6 +118,20 @@ describe("the page the share sheet opens", () => {
     assert.ok(queued.length <= 25, `the queue grew to ${queued.length}`);
   });
 
+  test("stamps the share with whoever was last using the app on this device", () => {
+    // This page has no account context of its own, so without the stamp the queue is
+    // device-wide while every other key carries the uid — and a reel one person shared was
+    // drained into whoever signed in next.
+    const store = new Map([["cliptoaction-last-account", "vish"]]);
+    const done = share("?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FSTAMPED%2F", { store });
+    assert.equal(done.queued[0].by, "vish", JSON.stringify(done.queued[0]));
+  });
+
+  test("and leaves it unstamped when nobody has used the app here yet", () => {
+    const done = share("?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FFIRST%2F");
+    assert.equal(done.queued[0].by, undefined, JSON.stringify(done.queued[0]));
+  });
+
   test("a link somebody SENT him is not queued — it goes to the address to be asked about", () => {
     // This address is public and guessable. A cross-origin referrer means somebody sent him
     // a link rather than sharing through the sheet, and saving it with no press would let a

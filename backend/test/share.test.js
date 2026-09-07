@@ -576,6 +576,100 @@ describe("a reel shared from the share sheet", () => {
     app.restore();
   });
 
+  test("a reel one person shared does not land in the next person's notebook", async () => {
+    // The share sheet opens a page with no account context, so the queue it writes is
+    // device-wide while every other key on the device carries the uid. A reel he shared and
+    // did not open the app for was drained into WHOEVER SIGNED IN NEXT: his reel in her
+    // notebook, gone from the queue, and nothing on either screen. Two accounts on one
+    // phone is the case this app designs for everywhere else.
+    const app = await loadApp(syncPayload({}), {
+      who: "someoneelse",
+      seed: [[QUEUE, JSON.stringify([
+        { title: "", text: "", url: "https://www.instagram.com/reel/HIS/", at: 1, by: "vish" }
+      ])]]
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(
+      saved.length,
+      0,
+      `one person's reel was saved into another person's notebook: ${saved.join(", ")}`
+    );
+    assert.match(
+      app.localStore.get(QUEUE) || "",
+      /HIS/,
+      "and it was thrown away rather than left for the person who shared it"
+    );
+    app.restore();
+  });
+
+  test("and it is still saved when that person signs back in", async () => {
+    const app = await loadApp(syncPayload({}), {
+      who: "vish",
+      seed: [[QUEUE, JSON.stringify([
+        { title: "", text: "", url: "https://www.instagram.com/reel/HIS/", at: 1, by: "vish" }
+      ])]]
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(saved.some((one) => one.includes("HIS")), `his own reel: ${saved.join(", ")}`);
+    app.restore();
+  });
+
+  test("an unstamped share still saves itself, because it is nobody else's", async () => {
+    // A share written before this existed, or one written while storage refused the stamp.
+    // Requiring a press there would put one on the path that has to be effortless (D17),
+    // for a case that is not an account mix-up at all.
+    const app = await loadApp(syncPayload({}), {
+      seed: [[QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/PLAIN/", 1)])]]
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(saved.some((one) => one.includes("PLAIN")), `not saved: ${saved.join(", ")}`);
+    app.restore();
+  });
+
+  test("a link that nothing is holding is not promised it will wait", async () => {
+    // The address route. The share page could not use storage, so the link travelled in the
+    // address — which the app has already wiped. There is no queue entry, so the box is the
+    // only copy, and telling him it "will keep waiting here" was a promise nothing kept.
+    const app = await loadApp(syncPayload({}), {
+      hash: "#/share-ask/https%3A%2F%2Fwww.instagram.com%2Freel%2FNOWHERE%2F",
+      referrer: "https://app.test/share-target.html"
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    assert.match(app.$("saveUrl").value, /NOWHERE/, "the link is not even in the box");
+    assert.doesNotMatch(
+      app.text("saveMsg"),
+      /keep waiting here/i,
+      `he was promised something nothing is holding: "${app.text("saveMsg")}"`
+    );
+    assert.match(
+      app.text("saveMsg"),
+      /lose the link|keep this page open/i,
+      `and not told the box is the only copy: "${app.text("saveMsg")}"`
+    );
+    app.restore();
+  });
+
+  test("but one the queue IS holding is", async () => {
+    const app = await loadApp(syncPayload({}), {
+      seed: [[QUEUE, JSON.stringify([
+        { title: "", text: "", url: "https://evil.example/reel/HELD/", at: 1, ask: true }
+      ])]]
+    });
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
+    assert.match(
+      app.text("saveMsg"),
+      /keep waiting here/i,
+      `a link that really is being held said otherwise: "${app.text("saveMsg")}"`
+    );
+    app.restore();
+  });
+
   test("a queue that is not a list does not take the app down with it", async () => {
     const app = await loadApp(syncPayload({}), { seed: [[QUEUE, "{ not json"]] });
     await new Promise((done) => setTimeout(done, 0));

@@ -4650,3 +4650,116 @@ storage quota and the cached-old-page upgrade; none has run one.
 | Twenty-two (regression) | 13 | 12 |
 
 **Two hundred and seventy.**
+
+---
+
+### D75 — Round twenty-three: name every place this thing now exists
+**Date:** 2026-09-08
+**Amends:** D9, D17, D27, D29, D47, D53, D74.
+
+Twenty-two rounds all asked the same question: **"was it saved?"** Three of round
+twenty-two's findings lived somewhere else — *"it was not saved, and it is also no longer
+anywhere"* — so this round asked the other question at every branch: **if this fails here,
+what is still holding a copy, and for how long?**
+
+It found a whole class nobody had looked at. **There was no test in this repo that typed
+something and then pressed something else.**
+
+#### Anything half-typed on a clip's page was deleted by any successful press on that page
+
+`renderClip` empties the page — `clipView.innerHTML = ""` — and rebuilds five empty boxes.
+**Seven** buttons on that same page redraw it when they succeed: the tracker status, Add
+note, Save what you learned, Save the answer, Save the filing, and both long-video answers.
+
+He pastes an hour of conversation with his AI into "Paste the AI's last reply", remembers to
+add a note first, and presses **Add note**. The note saves. The hour is erased. Nothing on
+screen mentions it. Ticking one tracker row wiped two boxes at once.
+
+| where the pasted hour existed | survived |
+|---|---|
+| the box on screen | destroyed by the rebuild |
+| browser storage | never written |
+| the server | never sent |
+| his AI's chat history | only if he can find it again |
+
+D74's lesson — *the box is not storage* — one screen further in. What he types is written
+down as he types it, comes back when the page is rebuilt, **survives a reload and a closed
+tab**, is his own and not the next person's to sign in, and is cleared the moment the thing
+is saved so it cannot be saved twice.
+
+#### And the one guard protecting it had no test
+
+`refreshQuietly` refuses to redraw unless the screen is Home or the notebook — the comment
+says it exists so a page with something half-typed on it is never rebuilt. **Deleting that
+condition left all 644 tests green.** Given the above, it is the only thing standing between
+him and losing a note every forty-five seconds, and on every return to the app.
+
+#### A reel one person shared was saved into the next person's notebook
+
+Every device key carries the uid — the cache, the visit watermark, the snooze marks. The
+share queue did not, and could not: the share sheet opens a page with no account context at
+all. So a reel he shared and did not open the app for was **drained into whoever signed in
+next**, removed from the queue, with nothing on either screen. Two accounts on one phone is
+the case this app designs for everywhere else (D53, D60).
+
+The app now records whose device it is where the share page can read it; the share page
+stamps each entry; a share stamped for somebody else waits for them instead of saving here.
+An **unstamped** share still saves itself — it predates this, or storage refused the stamp,
+and neither is an account mix-up worth a press on the one path that has to be effortless.
+
+#### "It will keep waiting here until you do" — and nothing was holding it
+
+A link that arrives in the **address** rather than in storage has no queue entry, and the
+address has already been wiped. So that sentence was a promise nothing kept. Worse on the
+route where it is **his own share and storage refused**: he was told "somebody shared this
+link with you", which is also untrue, and the honest sentence written for exactly that case
+was unreachable. Both are said correctly now, and which one depends on whether anything is
+actually holding it.
+
+#### An hour of his machine's evening, thrown away by one blip
+
+`post_transcript` was a single `requests.post`. When it runs, the transcript exists in
+exactly one place — a variable in memory — and `cleanup` in the `finally` deletes the audio
+it came from. So one dropped connection discarded however long the machine had just spent.
+Recoverable only in the sense that the video is downloaded and transcribed again from
+scratch; on a six-hour video (D42) that is hours of his PC.
+
+Four goes now, five seconds apart. **A refusal is not retried** — the API has looked at it
+and said no, and asking again says the same thing while spending the allowance saying it.
+
+#### And a phone short of space re-reads the whole notebook, for ever, silently
+
+Once the notebook outgrows the storage box, the device copy is written without the words
+spoken and with its clock wound back to zero — which is correct and is what stops the
+transcripts being destroyed (D47). But the box then STAYS full, so every cold start from
+that point re-fetches the notebook whole, for ever, against the row budget D59 spent a round
+measuring. Nothing is lost and nothing is wrong; it is simply the most expensive thing the
+app does, happening on every open, with nothing anywhere saying so. Home says so now.
+
+#### Two guarantees with nothing holding them, and one harness gap
+
+- **"Nothing he typed is ever dropped"** from the reduced cache could be broken with the
+  whole suite green. The test asserted `"notes" in cached`, which `notes: []` satisfies. It
+  asserts the contents now, against a fixture that actually has some.
+- The save and the refresh were one `try` in **six** more places — notes, the tracker
+  status, the filing, both paste boxes, and the retry. D72 fixed that in `saveLink` alone,
+  so a note that saved was still reported as failed when the refresh after it failed, and he
+  pressed again and got two.
+- And the stand-in's elements had **no `addEventListener`** — every element in a browser has
+  one — so the app calling it on a box threw, and anything built on it was untestable. It
+  records now, and `type()` sets a value and fires `input` the way a finger does.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Twenty-two | 270 | 116 |
+| Twenty-three (where does it exist) | 8 | 0 |
+
+**Two hundred and seventy-eight.** The seventh round to find things by standing somewhere
+new rather than looking harder, and the seventh to create nothing of its own.
+
+#### Still nobody has stood here
+
+A **real phone**. Seven rounds have now reasoned about the referrer, the storage quota and
+the cached-old-page upgrade; not one has run one.
