@@ -81,6 +81,51 @@ describe("a sync that answers after the account has changed", () => {
     app.restore();
   });
 
+  test("it is still refused when the delay is in READING the reply", async () => {
+    // The first version of this guard sat one `await` too early: before
+    // `await response.json()`. Reading the body is itself a wait, and on a phone pulling
+    // two hundred reels down it is the SLOW half of the request — so the guard passed and
+    // the reply was handed back anyway, and every word of the leak came back with it.
+    const app = await loadApp(notebookFor, { who: "alice", holdInBody: true });
+    app.tab("notebook");
+    const release = app.hold();
+    app.fire("focus");
+    await new Promise((done) => setTimeout(done, 0));
+
+    await app.signInAs("bob");
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+
+    app.tab("notebook");
+    const holdingAlice = [...app.localStore.entries()]
+      .filter(([, value]) => String(value).includes("ALICE PRIVATE"))
+      .map(([key]) => key);
+    assert.deepEqual(holdingAlice, ["cliptoaction-notebook-alice"]);
+    assert.ok(!app.text("clipList").includes("ALICE PRIVATE"));
+    app.restore();
+  });
+
+  test("nothing about it is shown to the next person as a failure", async () => {
+    // The reply was Alice's and her save DID work. Telling Bob "the account changed while
+    // that was loading" in red, under a box still holding her link, is a failure message
+    // for something that did not fail, addressed to the wrong person.
+    const app = await loadApp(notebookFor, { who: "alice" });
+    app.$("saveUrl").value = "https://www.instagram.com/reel/ALICEPRIVATE/";
+    // Only the save itself. Bob has to be able to load his own notebook meanwhile.
+    const release = app.hold(1);
+    app.$("saveForm").onsubmit({ preventDefault() {} });
+    await new Promise((done) => setTimeout(done, 0));
+
+    await app.signInAs("bob");
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+
+    assert.equal(app.$("saveUrl").value, "", "her link was left in his capture box");
+    assert.equal(app.text("saveMsg").trim(), "", `he was shown: ${app.text("saveMsg")}`);
+    assert.equal(app.$("saveBtn").disabled, false, "the save button was left dead");
+    app.restore();
+  });
+
   test("and what was on screen is the new account's, not a mix", async () => {
     const app = await loadApp(notebookFor, { who: "alice" });
     await app.signInAs("bob");

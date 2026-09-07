@@ -199,6 +199,9 @@ export async function loadApp(
     quotaChars = null,
     referrer = "",
     seed = [],
+    // Where a held request waits: in the request itself, or inside reading its body. The
+    // second is the slow half on a real phone, and the difference is a whole class of bug.
+    holdInBody = false,
     // Who the app signs in as first. Given as a name, because a test that switches accounts
     // reads better than one that switches uids.
     who = "vish"
@@ -354,14 +357,19 @@ export async function loadApp(
     // Decided NOW, before any waiting — a reply carries the notebook of whoever asked for
     // it, which is exactly what makes a late one dangerous.
     const answer = typeof sync === "function" ? sync(signedInAs) : sync;
+    let waitHere = null;
     if (held && holdCount > 0) {
       holdCount -= 1;
-      await held.promise;
+      waitHere = held.promise;
+      if (!holdInBody) await waitHere;
     }
     return {
       ok: true,
       status: 200,
-      json: async () => (String(url).includes("/v1/sync") ? answer : { ok: true })
+      json: async () => {
+        if (holdInBody && waitHere) await waitHere;
+        return String(url).includes("/v1/sync") ? answer : { ok: true };
+      }
     };
   };
 

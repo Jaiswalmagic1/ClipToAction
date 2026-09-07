@@ -84,9 +84,23 @@ const MAX_BODY_BYTES = 256 * 1024;
 // because the general one is far below it: 256KB is about 4.8 hours of speech, so a
 // five-hour video would have had its transcript REFUSED AS TOO LARGE after the machine
 // had already spent three hours making it — the exact failure D42 raised the limits to
-// prevent. Sized well clear of MAX_TRANSCRIPT_CHARS so the checked limit is the one that
-// bites, and a test pins that this stays true.
-const MAX_TRANSCRIPT_BODY_BYTES = 700 * 1024;
+// prevent.
+//
+// Four megabytes for four hundred thousand characters looks absurd until you count what
+// actually goes down the wire. This cap is in BYTES and the limit it protects is in
+// CHARACTERS, and the two are only the same for plain English. Python's `requests` writes
+// JSON with `ensure_ascii=True`, so every character outside ASCII travels as a six-byte
+// escape. At 700KB a three-hour video in his own language was transcribed for hours,
+// refused with "that request is too large", reported to him as "could not reach
+// ClipToAction", and then re-downloaded and re-transcribed twice more before being retired
+// as failed. Whisper is asked to translate (D28), so this should not arise — but "should"
+// is what the last cap rested on, and the machine time it costs when it is wrong is
+// measured in hours of his own PC.
+//
+// The real limit on what can be STORED is untouched: MAX_TRANSCRIPT_CHARS is checked on
+// the parsed text. This only stops the transport refusing something the content rules
+// allow. A test pins the worst case — every character escaped — rather than English.
+export const MAX_TRANSCRIPT_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_SAVES_PER_DAY = 200;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
 // A long video is a different size of job (D42): six hours of video is around three and a
@@ -209,11 +223,10 @@ class RequestError extends Error {
  *
  * `Content-Length` is bytes and `text.length` is characters, and both are compared against
  * the same number. That is only safe because the one body that comes near the cap is a
- * transcript, and a transcript is always English — whisper is asked to TRANSLATE, never to
- * write down what was spoken (D28), so it is effectively one byte per character. If that
- * ever changes, this comparison has to change with it: 400,000 characters of Devanagari is
- * about 1.2MB and would be refused by the byte check with a length the caller was told
- * was fine.
+ * transcript. `text.length` counts characters and the cap is named in bytes, which are
+ * only the same thing for plain English — so the transcript cap is now sized for the worst
+ * case instead, six bytes a character, and the content limit is what actually bites. See
+ * MAX_TRANSCRIPT_BODY_BYTES.
  */
 async function readJson(request, cap = MAX_BODY_BYTES) {
   const declared = Number(request.headers.get("Content-Length") || 0);
@@ -1097,8 +1110,26 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
        ON CONFLICT (source_id, user_id) DO UPDATE SET
          provider = ?3, model = ?4, summary = ?5, key_points = ?6, learn_more = ?7,
-         claims = ?8, suggested_task = ?9, topic = ?10, sub_topic = ?11, sections = ?12,
-         kind = ?13, items = ?14, shapes_version = ?15, created_at = ?16`
+         claims = ?8, kind = ?13, shapes_version = ?15, created_at = ?16,
+         -- COALESCE, and it is the difference between adding to a reel and robbing it.
+         --
+         -- Everything below is OPTIONAL in a reply, on purpose: validateAnalysis lets a
+         -- video come back with no chapters and no topic rather than throwing away a good
+         -- summary over a field the model skipped. That is right for a first reading and
+         -- ruinous for a second one, because "Read those again" writes over a row that
+         -- ALREADY HAS them — so one press of a button this build puts on his home screen
+         -- replaced the chapters of every long video it touched with nothing, stamped the
+         -- shapes version so the reel never comes round again, and left no error, no
+         -- message and no path that could ever derive them back. Hours of talk, and the
+         -- only way back into it, gone quietly.
+         --
+         -- So a new value replaces the old one and an ABSENT one leaves it alone. Nothing
+         -- a reading found is ever destroyed by a reading that found less.
+         suggested_task = COALESCE(?9, suggested_task),
+         topic = COALESCE(?10, topic),
+         sub_topic = COALESCE(?11, sub_topic),
+         sections = COALESCE(?12, sections),
+         items = COALESCE(?14, items)`
     ).bind(
       sourceId,
       ownerId,

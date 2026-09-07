@@ -334,6 +334,22 @@ export function cleanKind(raw) {
  * people read. Null and not "[]", for the same reason `sections` is null — a video with
  * nothing to track is then identical to every video stored before items existed.
  */
+/**
+ * A field that has to read as words — a row's name, a chapter's heading, a claim's text.
+ *
+ * A model that answers `2024` where a name was asked for has given a usable answer in the
+ * wrong wrapper, and throwing the row away for it loses something real. A model that
+ * answers `{"text": "..."}` has not: `String({})` is "[object Object]", which is what got
+ * drawn on the screen, and — for a row's name — flattens through `itemKey` to the single
+ * key "object object", so two such rows on one video became ONE row and a decision about
+ * one thing was attached to another.
+ */
+export function readsAsWords(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value !== "string") return "";
+  return value.trim();
+}
+
 export function cleanItems(kind, raw) {
   if (!KINDS_WITH_ROWS.includes(kind)) return null;
   if (!Array.isArray(raw) || !raw.length) return null;
@@ -348,12 +364,14 @@ export function cleanItems(kind, raw) {
     // one video whose names both came back as objects became THE SAME ROW: he marks one
     // "done" and the other says done too. A decision he made about one thing, silently
     // attached to another.
-    if (typeof item.name !== "string" || !item.name.trim()) continue;
+    const name = readsAsWords(item.name);
+    if (!name) continue;
 
     // Every other field is a line of text, or a number, or nothing. Anything else was
     // drawn into the table as "[object Object]".
-    const row = {};
+    const row = { name };
     for (const [field, value] of Object.entries(item)) {
+      if (field === "name") continue;
       // A null stays a null. Most of these fields are "as said, or null", and dropping the
       // key instead would change the shape of every row that answered one honestly.
       if (value === null || value === undefined) row[field] = null;
@@ -379,7 +397,7 @@ export function cleanSections(raw) {
       part
       && typeof part === "object"
       && !Array.isArray(part)
-      && String(part.heading ?? "").trim()
+      && readsAsWords(part.heading)
   );
   return kept.length ? kept : null;
 }
@@ -399,7 +417,7 @@ export function cleanClaims(raw) {
       entry
       && typeof entry === "object"
       && !Array.isArray(entry)
-      && String(entry.claim ?? "").trim()
+      && readsAsWords(entry.claim)
   );
 }
 

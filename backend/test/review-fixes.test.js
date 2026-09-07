@@ -8,7 +8,7 @@
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import worker from "../src/worker.js";
+import worker, { MAX_TRANSCRIPT_BODY_BYTES } from "../src/worker.js";
 import { MAX_TRANSCRIPT_CHARS, MAX_VIDEO_SEC, CHARS_PER_SEC } from "../src/longvideo.js";
 import { retryPause } from "../src/analyze.js";
 import { createTestEnv } from "./helpers/testenv.js";
@@ -557,5 +557,172 @@ describe("a rate-limited creator backfill must not burn the queue", () => {
         harness.database.prepare("SELECT creator_tries t FROM sources WHERE id = ?").get(one.id).t
     );
     assert.deepEqual(tries, [...tries].sort((a, b) => a - b));
+  });
+});
+
+// -------------------------------------------------------------- the same cap, his language
+
+describe("a long video in a language that is not English still fits", () => {
+  // The cap is named in BYTES and the limit it protects is counted in CHARACTERS, and the
+  // two are only the same thing for plain English. The PC worker posts with Python's
+  // `requests`, which writes JSON with ensure_ascii=True — so every character outside
+  // ASCII travels as a six-byte escape. At the old cap a three-hour video in his own
+  // language was transcribed for hours, refused as too large, reported to him as "could
+  // not reach ClipToAction", and re-downloaded and re-transcribed twice more before being
+  // retired as failed. The old test could not see it: it used English.
+  let harness;
+  let token;
+  let clip;
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+    clip = await saveAndClaim(harness, token, "ALONGHINDIONE");
+  });
+  after(() => harness.restore());
+
+  test("even when every single character is escaped on the wire", async () => {
+    const words = "\u092e\u0942\u0932\u094d\u092f \u0924\u092f \u0939\u0948\u0964 ";
+    const text = words
+      .repeat(Math.ceil(MAX_TRANSCRIPT_CHARS / words.length))
+      .slice(0, MAX_TRANSCRIPT_CHARS - 1);
+    assert.ok(text.length > 300000, "this test is not testing what it thinks it is");
+
+    // Exactly what `requests` puts on the wire, escapes and all — not what JSON.stringify
+    // writes, which leaves these characters alone and hides the whole problem.
+    const body = JSON.stringify({
+      text,
+      lang: "hi",
+      engine: "test",
+      duration_sec: MAX_VIDEO_SEC
+    }).replace(/[^\x00-\x7F]/g, (ch) => "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0"));
+    assert.ok(body.length > 1800000, `only ${body.length} bytes — not the worst case`);
+    // And the arithmetic, which is the part that must stay true whatever this test sends:
+    // every character its own six-byte escape, plus room for the rest of the body.
+    assert.ok(
+      MAX_TRANSCRIPT_CHARS * 6 + 4096 < MAX_TRANSCRIPT_BODY_BYTES,
+      "the cap is in bytes and the limit is in characters — they have drifted apart again"
+    );
+
+    const response = await worker.fetch(
+      new Request(`https://api.test/v1/sources/${clip.source_id}/transcript`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Service-Token": SERVICE_TOKEN,
+          "Content-Length": String(body.length)
+        },
+        body
+      }),
+      harness.env
+    );
+    assert.equal(
+      response.status,
+      200,
+      `hours of his PC spent, then refused at the door: ${await response.text()}`
+    );
+  });
+});
+
+// ------------------------------------------------------------------ round nine
+
+describe("re-reading a reel never takes away what the first reading found", () => {
+  // "Read those again" (D39) is the button this build puts on his home screen, and it
+  // writes over an analysis that is already there. Every optional field — chapters, the
+  // topic, the action, the tracker rows — is optional BECAUSE a first reading that skipped
+  // one is still worth keeping. On a second reading that same leniency meant a reply which
+  // simply did not mention chapters replaced three hours' worth of them with nothing, then
+  // stamped the shapes version so the reel could never come round again. No error, no
+  // message, and nothing anywhere that could derive them back.
+  let harness;
+  let token;
+  let sourceId;
+
+  const CHAPTERS = [
+    { at: "0:00:00", heading: "How he started", detail: "The first year." },
+    { at: "0:22:00", heading: "Pricing", detail: "How he works out a margin." }
+  ];
+
+  before(async () => {
+    harness = await createTestEnv();
+    token = await harness.mintToken("vish");
+    await harness.call(worker, "/v1/settings", {
+      method: "PUT",
+      token,
+      body: { provider: "gemini", api_key: "not-a-real-key-value-at-all" }
+    });
+    const clip = await saveAndClaim(harness, token, "AREREADONE");
+    sourceId = clip.source_id;
+
+    await harness.call(worker, `/v1/sources/${sourceId}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: {
+        text: "[0:00:00] a long talk about pricing",
+        lang: "en",
+        engine: "test",
+        duration_sec: 90 * 60
+      }
+    });
+
+    harness.database
+      .prepare(
+        `INSERT INTO analyses
+           (source_id, user_id, provider, model, summary, key_points, learn_more, claims,
+            suggested_task, topic, sub_topic, sections, kind, items, shapes_version,
+            created_at)
+         VALUES (?, '', 'gemini', 'old', 'The first reading.', '[]', '[]', '[]',
+                 'Raise the price', 'Pricing', 'Margins', ?, 'tactic', NULL, 1, 1)
+         ON CONFLICT (source_id, user_id) DO UPDATE SET
+           sections = excluded.sections, suggested_task = excluded.suggested_task,
+           topic = excluded.topic, shapes_version = 1, items = NULL`
+      )
+      .run(sourceId, JSON.stringify(CHAPTERS));
+  });
+
+  after(() => harness.restore());
+
+  test("a re-read that fills in the rows keeps the chapters, the topic and the action", async () => {
+    harness.answerProviderWith(() => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    summary: "The second reading.",
+                    key_points: ["price up front"],
+                    learn_more: [],
+                    claims: [],
+                    kind: "tactic",
+                    items: [{ name: "price up front", does: "protects the margin" }]
+                  })
+                }
+              ]
+            }
+          }
+        ]
+      })
+    }));
+
+    const done = await harness.call(worker, "/v1/kinds", { method: "POST", token });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    assert.equal(done.body.done, 1);
+
+    const row = harness.database
+      .prepare("SELECT * FROM analyses WHERE source_id = ? AND user_id = ''")
+      .get(sourceId);
+
+    assert.deepEqual(JSON.parse(row.sections), CHAPTERS, "the chapters were wiped");
+    assert.equal(row.suggested_task, "Raise the price", "the action was wiped");
+    assert.equal(row.topic, "Pricing", "the folder was wiped");
+    assert.equal(row.sub_topic, "Margins");
+    // And what the re-read DID find is in.
+    assert.ok(row.summary.includes("second reading"));
+    assert.ok(JSON.parse(row.items).length, "the rows it was re-read FOR were not stored");
+    harness.answerProviderWith(null);
   });
 });

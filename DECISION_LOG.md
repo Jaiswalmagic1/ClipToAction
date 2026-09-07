@@ -2563,3 +2563,110 @@ prints `[object Object]` in the time chip — display only, and it cannot be sto
 
 **Seventy-six**, and round eight created none of its own. The pattern held to the end: the
 rounds that changed the QUESTION found things, and the rounds that repeated it did not.
+
+---
+
+### D54 — Round nine: the fixes, and the day this goes live
+**Date:** 2026-09-07
+**Amends:** D33, D39, D42, D47, D53.
+
+Two independent reviewers, two questions. One re-read round eight's own diff. The other
+asked the question this whole build exists under and had never been asked on its own: **when
+this goes live on top of what is already there, does he keep everything he has?**
+
+Eight findings. The worst was not in the new code at all — it was in a leniency that has
+been right since the day it was written, and became destructive the moment a button was put
+on the home screen that re-reads a reel he already has.
+
+#### "Read those again" deleted the chapters of every long video it touched
+
+`storeAnalysis`'s update wrote **every** column, including the optional ones. Chapters, the
+topic and the suggested action are optional on purpose (D27, D33): a first reading that
+skipped one is still a summary worth keeping. On a **second** reading of a row that already
+has them, an omitted field overwrote three hours' worth of chapters with nothing — then
+stamped the shapes version, so the reel never enters that queue again; "Summarise this one"
+refuses because an analysis exists; and nothing anywhere can derive them back. No error, no
+message. One press, over a notebook that already had them.
+
+**Fixed with `COALESCE`.** A new value replaces the old one; an absent one leaves it alone.
+Nothing a reading found is ever destroyed by a reading that found less.
+
+#### A long video in his own language was refused after the work was done
+
+`MAX_TRANSCRIPT_BODY_BYTES` is counted in **bytes**; `MAX_TRANSCRIPT_CHARS`, the limit it
+was sized to clear, is counted in **characters**. They are the same thing only for plain
+English. Python's `requests` writes JSON with `ensure_ascii=True`, so every character
+outside ASCII travels as a six-byte escape: a three-hour video in Hindi is about 770KB
+against a 700KB cap. His PC would transcribe it for hours, be told "that request is too
+large", report "could not reach ClipToAction" — and then do the whole thing twice more
+before retiring the video as failed.
+
+The comment above the old cap said it was "sized well clear" of the character limit, and the
+test that pinned it used English, so neither could see it. The cap is 4MB now — sized for
+the worst case, six bytes a character — and the test sends the body exactly as `requests`
+builds it, escapes and all, plus the arithmetic that must stay true whatever the test sends.
+What can be **stored** is unchanged.
+
+#### The account guard was one `await` too early
+
+D53's headline fix did not work. The check sat **before** `await response.json()`, and
+reading the body is itself a wait — on a phone pulling two hundred reels down it is the slow
+half of the request. A reviewer reproduced the full leak against the shipped code: Alice's
+summary drawn on Bob's home screen and written to his box on disk.
+
+Worse, the "second guard, so a new caller cannot reintroduce it by forgetting" was **dead
+code**: `storeOwner` is set synchronously inside `loadCache` as the account switches, so it
+always equalled the new account by the time any late reply could resume. Deleting it left
+the suite green. A backstop nobody can trigger is worse than none — the next person to read
+that paragraph believes they are covered.
+
+Both are real now: the check moved to after the body is in hand, and the second one sits in
+`applyDelta`, the door the data actually walks through. Turning either off fails a test.
+
+#### And a save that worked, shown to the next person as a failure
+
+The thrown error went straight to the screen, so Bob saw a red failure for Alice's save —
+which had succeeded — under a capture box still holding her link. The capture box is the
+product's front door (D17): a link left in it is a link the next person files into their own
+notebook by pressing Save. The box and the message lines are cleared on a switch now, and
+the error carries no words, so all twenty-five screens that answer a failure with
+`say(somewhere, error.message)` simply clear instead — one empty message rather than
+twenty-five edits.
+
+#### Smaller
+
+- `cleanItems` had started **losing** rows: a name that came back as the number `2024` is a
+  usable answer in the wrong wrapper, and dropping it lost something real. `readsAsWords`
+  now takes a string or a number and refuses an object, and chapters and claims use it too —
+  an object heading was still being kept and drawn as `[object Object]`.
+- The "connect an account" notice shared the fortnightly re-look's snooze key, so "not now"
+  on one hid the other for the day. It has its own key. (Its snooze was also added in D53's
+  commit without being written down. Deviation is fine here; silent deviation is not.)
+- The release order's own recovery advice was wrong: "duplicate column name means it was
+  already applied" is only true of a **fully** applied file, and `0010` has five statements.
+  Half of it creates the `relooks` table, whose absence takes `/v1/sync` down for everybody —
+  which on screen is indistinguishable from a lost notebook. The check it offered read one
+  table out of four. Both corrected, and the order gained the last three steps: merge
+  promptly, open the app once directly before sharing to it, then requeue.
+
+#### What was proven sound
+
+A database built at `main`'s schema with 210 old-shaped clips, migrated 0009–0014 and driven
+through the real Worker: every clip, source, analysis and transcript survived, `long_ok_by`
+stayed server-side, the queue answered, and an existing connector secret still worked. Old
+rows with no kind, items, version, chapters or creator are drawn, synced and read without
+being treated as broken. Nothing spends his allowance without a press. Nothing in this
+branch touches production (D36).
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Seven | 71 | 17 |
+| Eight | 5 | 0 |
+| Nine | 8 | 3 |
+
+**Eighty-four.** Round nine's three were all round eight's: a guard in the wrong place, a
+guard that could not fire, and a cleaner that had started throwing away good answers. The
+rule holds — the author cannot be the reviewer, and one pass would have shipped every one of
+them.

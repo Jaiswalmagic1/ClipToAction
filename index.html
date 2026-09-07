@@ -727,12 +727,7 @@ let focusTopicId = null;
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
 /**
- * Which account the notebook in memory belongs to.
- *
- * Not the same question as "who is signed in now", and the difference is somebody else's
- * private notes on your screen. Two of his Google accounts on one phone is the case
- * `cacheKey`, `seenKey` and `snoozeKey` were all made per-account for; a request that was
- * already in the air when the account changed was the one that was missed.
+ * Who is signed in, as a name that can be compared — and the reason that matters.
  *
  * Signing straight from one Google account into another fires the auth handler with the
  * new user and NO `null` in between, and returning focus to the page — which happens the
@@ -741,16 +736,14 @@ const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
  * her notes into Bob's store, draw them on his home screen, and `saveCache` would write
  * them to `cliptoaction-notebook-<bob>` on disk, where they stayed until he signed out.
  *
- * Two guards, because one is not enough: `api` refuses to hand back a reply that outlived
- * the account that asked for it, and `saveCache` refuses to write a store that is not the
- * signed-in account's. Either alone would do it; both mean a new caller cannot reintroduce
- * it by forgetting.
+ * Two of his Google accounts on one phone is the case `cacheKey`, `seenKey` and
+ * `snoozeKey` were all made per-account for. The request already in the air was the one
+ * that was missed. It is checked in two places now — `api`, once the whole reply is in
+ * hand, and `applyDelta`, which is the door the data actually walks through.
  */
-let storeOwner = null;
 const whoIsSignedIn = () => (user ? user.uid : null);
 
 function loadCache() {
-  storeOwner = whoIsSignedIn();
   try {
     const raw = localStorage.getItem(cacheKey());
     store = raw ? { ...structuredClone(EMPTY), ...JSON.parse(raw) } : structuredClone(EMPTY);
@@ -781,10 +774,6 @@ function loadCache() {
  * survives. Stale and whole beats current with pieces missing.
  */
 function saveCache() {
-  // The notebook in memory is not this account's. Writing it would put one person's clips
-  // and notes in another's box on disk — see storeOwner.
-  if (storeOwner !== whoIsSignedIn()) return;
-
   try {
     localStorage.setItem(cacheKey(), JSON.stringify(store));
     return;
@@ -821,7 +810,22 @@ function mergeRows(existing, incoming, keyOf) {
   return [...byKey.values()];
 }
 
-function applyDelta(delta) {
+/**
+ * Merges one batch of changes into the notebook in memory.
+ *
+ * `forAccount` is who ASKED for this batch. It is checked here as well as in `api`, and
+ * this is the copy that matters: this is the line where one person's clips, sources and
+ * notes actually enter another person's notebook, and a check standing on the door is
+ * worth more than one standing further up the corridor.
+ *
+ * The first attempt at a second guard was in `saveCache`, comparing `storeOwner` — and it
+ * was dead code. `storeOwner` is set synchronously inside `loadCache` as the account
+ * switches, so by the time any late reply could resume it already equalled the new
+ * account, and the condition could never be true. A backstop nobody can trigger is worse
+ * than no backstop: the next person to read it believes they are covered.
+ */
+function applyDelta(delta, forAccount = whoIsSignedIn()) {
+  if (forAccount !== whoIsSignedIn()) return;
   const byId = (row) => row.id;
   const bySource = (row) => row.source_id;
   store.clips = mergeRows(store.clips, delta.clips || [], byId);
@@ -872,20 +876,47 @@ async function api(path, options = {}) {
     throw new Error("you appear to be offline.");
   }
 
-  // The account changed while this was in the air. The reply belongs to whoever asked for
-  // it, and nobody is waiting for it any more — handing it back would merge one person's
-  // notebook into another's, on screen and on disk. See storeOwner.
-  if (whoIsSignedIn() !== asked) throw new Error("the account changed while that was loading.");
-
   let body = {};
   try { body = await response.json(); } catch { /* an empty or non-JSON body */ }
+
+  // The account changed while this was in the air. The reply belongs to whoever asked for
+  // it, and nobody is waiting for it any more — handing it back would merge one person's
+  // notebook into another's, on screen and on disk.
+  //
+  // AFTER reading the body, not before, and that is the whole of it. Reading the body is
+  // itself an await, and on a phone pulling two hundred reels down it is the SLOW half of
+  // the request — so a check that ran before it left the window it was written to close
+  // wide open. Checked here, nothing can yield between the check and the return.
+  if (whoIsSignedIn() !== asked) throw accountChanged();
+
   if (!response.ok) throw new Error(body.error || `Something went wrong (${response.status}).`);
   return body;
 }
 
+/**
+ * The one error that is nobody's fault and means nothing to the person reading the screen.
+ *
+ * It is marked rather than matched on its words, so a caller can tell "this answer was not
+ * for you" apart from "this failed" — the difference between a red failure on somebody
+ * else's save and quietly letting go of a reply nobody is waiting for.
+ */
+function accountChanged() {
+  // Deliberately wordless. Every screen in this app answers a failure with
+  // `say(somewhere, error.message)`, and `say` with no text CLEARS the box — so one empty
+  // message means all twenty-five of them quietly drop a reply that was not theirs,
+  // without twenty-five edits and without a red failure on the next person's screen for a
+  // save that actually worked. The name and the flag are there for anything that wants to
+  // tell this apart from a real failure.
+  const error = new Error("");
+  error.name = "AccountChanged";
+  error.accountChanged = true;
+  return error;
+}
+
 async function sync() {
+  const asked = whoIsSignedIn();
   const delta = await api(`/v1/sync?since=${store.since}`);
-  applyDelta(delta);
+  applyDelta(delta, asked);
 }
 
 // ---------------------------------------------------------------- small helpers
@@ -1334,7 +1365,8 @@ function workerNotice() {
 
 // Per account, like the notebook cache itself (`cacheKey`). Two of his Google accounts on
 // one phone are two different notebooks, and one's "not now" is not the other's.
-const snoozeKey = () => `cliptoaction-relook-snoozed-${user ? user.uid : "none"}`;
+const snoozeKey = (what = "relook") =>
+  `cliptoaction-${what}-snoozed-${user ? user.uid : "none"}`;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -1347,12 +1379,16 @@ const SNOOZE_MS = 24 * 60 * 60 * 1000;
  */
 const canSpend = () => Boolean(store.settings && store.settings.has_key);
 
-/** The same offer, turned into what it actually is for somebody with no key: a setting. */
+/**
+ * The same offer, turned into what it actually is for somebody with no key: a setting.
+ *
+ * Snoozed, and under its OWN key. Without a snooze it is a permanent, undismissable banner
+ * on Home and on top of every table — the "becoming furniture" this whole file keeps
+ * trying to avoid, just with no button on it. And sharing the re-look's key meant "not
+ * now" on one notice silently hid the other for the day as well.
+ */
 function needsAnAccount(what) {
-  // Snoozed like the offer it replaces. Without that it is a permanent, undismissable
-  // banner on Home and on top of every table — which is the "becoming furniture" this
-  // whole file keeps trying to avoid, just with no button on it.
-  if (relookSnoozed()) return null;
+  if (relookSnoozed("no-account")) return null;
 
   const notice = document.createElement("div");
   notice.className = "notice";
@@ -1367,23 +1403,23 @@ function needsAnAccount(what) {
   later.className = "secondary";
   later.textContent = "Not now";
   later.style.marginTop = "8px";
-  later.onclick = () => { snoozeRelook(); render(); };
+  later.onclick = () => { snoozeRelook("no-account"); render(); };
   notice.append(document.createElement("br"), later);
   return notice;
 }
 
 /** "Not now" means not today, on this device. It is a convenience, not a setting. */
-function relookSnoozed() {
+function relookSnoozed(what = "relook") {
   try {
-    return Number(localStorage.getItem(snoozeKey()) || 0) > Date.now();
+    return Number(localStorage.getItem(snoozeKey(what)) || 0) > Date.now();
   } catch {
     return false;
   }
 }
 
-function snoozeRelook() {
+function snoozeRelook(what = "relook") {
   try {
-    localStorage.setItem(snoozeKey(), String(Date.now() + SNOOZE_MS));
+    localStorage.setItem(snoozeKey(what), String(Date.now() + SNOOZE_MS));
   } catch {
     // Nothing is lost — the offer simply stays on screen until it is used.
   }
@@ -2058,7 +2094,7 @@ async function setItemDecision(row, select) {
   } catch (error) {
     // The two pages this can be used from have different places to put a message. A
     // failure with nowhere to appear is a silent failure (Golden Rule 29).
-    say("clipMsg", `Could not save that: ${error.message}`);
+    say("clipMsg", error.accountChanged ? "" : `Could not save that: ${error.message}`);
     select.value = row.status;
     select.disabled = false;
   }
@@ -4327,6 +4363,7 @@ $("signOut").onclick = () => {
     localStorage.removeItem(cacheKey());
     localStorage.removeItem(seenKey());
     localStorage.removeItem(snoozeKey());
+    localStorage.removeItem(snoozeKey("no-account"));
   } catch { /* nothing to remove */ }
   // The device copy has already gone by this point, so a sign-out that fails silently
   // would leave him signed in and looking at an empty notebook.
@@ -4347,15 +4384,23 @@ onAuthStateChanged(auth, async (account) => {
   // Everything else that is about looking at ONE person's notebook. A search still typed
   // in the box, a filter, a view and a sort order all carried over into the next account
   // and quietly showed it the wrong slice of itself.
+  //
+  // The capture box is the one that matters most and was the one missed first: it is the
+  // product's front door (D17), so a link left in it by the account before is a link the
+  // NEXT person files into their own notebook by pressing Save. The message lines go with
+  // it — "you appear to be offline" about somebody else's request, sitting under an empty
+  // box, is a sentence about nothing.
   query = "";
   filter = "all";
   grouping = "list";
   trackerSort = { column: "saved", ascending: false };
   focusTopicId = null;
   if ($("search")) $("search").value = "";
+  if ($("saveUrl")) $("saveUrl").value = "";
+  say("saveMsg", "");
+  say("syncMsg", "");
   applyChrome();
   if (!account) {
-    storeOwner = null;
     store = structuredClone(EMPTY);
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
     return;
@@ -4373,7 +4418,11 @@ onAuthStateChanged(auth, async (account) => {
     say("syncMsg", "");
   } catch (error) {
     // An offline or failing sync must never blank the notebook — the device copy stands.
-    say("syncMsg", `Showing your saved copy — ${error.message}`, "warn");
+    say(
+      "syncMsg",
+      error.accountChanged ? "" : `Showing your saved copy — ${error.message}`,
+      "warn"
+    );
   }
   render();
   startRefreshing();

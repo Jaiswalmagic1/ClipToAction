@@ -197,7 +197,18 @@ they are written out rather than left to be inferred.
    `Stop-ScheduledTask ClipToActionWorker` then `Start-ScheduledTask ClipToActionWorker`.
    This step is order-independent by design: `claim_batch` falls back to its pre-D42
    behaviour when the API sends no limits, so an old Worker and a new worker get along.
-4. **Merge to `main`**, which is what publishes the app (D16).
+4. **Merge to `main`**, which is what publishes the app (D16). Do it promptly after step 2
+   and not days later: between the two, GitHub Pages is still serving the OLD app against
+   the NEW Worker, and a video waiting on a length approval draws there as the bare word
+   `needs_ok` with no button to answer it. Nothing is lost and it corrects itself the
+   moment this step lands.
+5. **Open the app once, directly, before sharing anything to it.** The service worker
+   already on his phone is cache-first, so the very first open after step 4 may still be
+   served the old page while the new one installs; the old page consumes a pending share
+   into a list the new app does not read. One direct open settles it for good.
+6. **Then** requeue anything that was stuck, e.g. the three long videos that were retired
+   before D42 existed:
+   `UPDATE sources SET state='pending', attempts=0, error=NULL, error_detail=NULL WHERE id IN (...)`.
 
 ## AI providers
 
