@@ -14,11 +14,12 @@ import assert from "node:assert/strict";
 
 import worker from "../src/worker.js";
 import { validateAnalysis } from "../src/worker.js";
-import { cleanSections, cleanClaims, retryPause } from "../src/analyze.js";
+import { cleanSections, cleanClaims, cleanItems, retryPause } from "../src/analyze.js";
 import { cleanTopicName } from "../src/topics.js";
 import { validateLearning } from "../src/learnings.js";
 import { validateRelook } from "../src/relook.js";
 import { createTestEnv } from "./helpers/testenv.js";
+import { loadApp, syncPayload } from "./helpers/appharness.js";
 
 const SERVICE_TOKEN = "service-token-for-tests";
 retryPause.ms = 0;
@@ -144,6 +145,146 @@ describe("a look back that is not shaped like one", () => {
         act_now: [{ do: "b" }]
       }).length
     );
+  });
+});
+
+describe("tracker rows whose names are not names", () => {
+  test("two object-named rows do not become one row", () => {
+    // `itemKey` flattens a row's name to recognise it again, and `String({})` flattens to
+    // the single key "object object" — so two such rows on one video WERE the same row.
+    // He marks one "done" and the other says done as well: a decision about one thing,
+    // silently attached to another.
+    const kept = cleanItems("product", [
+      { name: { text: "Kundan set" }, cost: "120" },
+      { name: { text: "Pearl set" }, cost: "150" }
+    ]);
+    assert.deepEqual(kept, []);
+  });
+
+  test("a field that is an object is dropped, not drawn as [object Object]", () => {
+    const kept = cleanItems("tool", [
+      { name: "Canva", does: { line: "designs" }, price: "free", link: null }
+    ]);
+    assert.deepEqual(kept, [{ name: "Canva", price: "free", link: null }]);
+  });
+
+  test("a price that came back as a number is still a price", () => {
+    const kept = cleanItems("product", [{ name: "Kundan set", cost: 120, where: null }]);
+    assert.deepEqual(kept, [{ name: "Kundan set", cost: 120, where: null }]);
+  });
+});
+
+// ------------------------------------------------------------------ the read path
+
+describe("rows that were already stored before any of this was checked", () => {
+  // The Worker drops the wrong shapes on the way in now. Rows written BEFORE it did are
+  // sitting in the live database today — staging already holds analyses from the
+  // long-videos code — so every place that READS one has to survive them too.
+  let harness;
+  let amy;
+  let secret;
+  let clip;
+
+  before(async () => {
+    harness = await createTestEnv();
+    amy = await harness.mintToken("amy");
+
+    await harness.call(worker, "/v1/clips", {
+      method: "POST",
+      token: amy,
+      body: { url: "https://www.facebook.com/share/r/OLDBADROW/" }
+    });
+    const source = harness.database
+      .prepare("SELECT * FROM sources WHERE url_canonical LIKE ?")
+      .get("%OLDBADROW%");
+    harness.database.prepare("UPDATE sources SET state = 'downloading' WHERE id = ?").run(source.id);
+    await harness.call(worker, `/v1/sources/${source.id}/transcript`, {
+      method: "POST",
+      serviceToken: SERVICE_TOKEN,
+      body: { text: "[0:00:00] a long talk", lang: "en", engine: "test", duration_sec: 69 * 60 }
+    });
+
+    // Written straight into the table, the way the old code would have.
+    harness.database
+      .prepare(
+        `INSERT INTO analyses (source_id, user_id, provider, model, summary, key_points,
+                               learn_more, claims, sections, kind, items, created_at)
+         VALUES (?, '', 'gemini', 'test', 'An hour of talk.', ?, ?, ?, ?, 'tactic', ?, ?)
+         ON CONFLICT (source_id, user_id) DO UPDATE SET
+           key_points = excluded.key_points, learn_more = excluded.learn_more,
+           claims = excluded.claims, sections = excluded.sections, items = excluded.items`
+      )
+      .run(
+        source.id,
+        JSON.stringify([{ point: "an object where a line belongs" }]),
+        JSON.stringify([{ term: "another one" }]),
+        JSON.stringify(["a claim that is only a string"]),
+        JSON.stringify(["Opening", "Pricing"]),
+        JSON.stringify(["Switch on Sunday Pickup"]),
+        Date.now()
+      );
+
+    clip = harness.database
+      .prepare("SELECT * FROM clips WHERE user_id = ? AND source_id = ?")
+      .get("amy", source.id);
+
+    const made = await harness.call(worker, "/v1/connector", {
+      method: "POST",
+      token: amy,
+      body: { label: "Claude" }
+    });
+    secret = made.body.url.split("/mcp/")[1];
+  });
+
+  after(() => harness.restore());
+
+  test("the connector shows none of it as garbage", async () => {
+    const response = await worker.fetch(
+      new Request(`https://api.test/mcp/${secret}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "fetch", arguments: { id: clip.id } }
+        })
+      }),
+      harness.env
+    );
+    const found = JSON.parse(await response.text()).result.structuredContent;
+
+    // `.at` on a string is a real method, and truthy.
+    assert.ok(!found.text.includes("native code"), "a chapter printed as JS internals");
+    assert.ok(!found.text.includes("[object Object]"), "a point printed as [object Object]");
+    assert.ok(!found.text.includes("HOW IT RUNS"), "a heading with no chapters under it");
+    assert.ok(!found.text.includes("[unrated]"), "a claim with its own text missing");
+    // And what WAS right is still there.
+    assert.ok(found.text.includes("An hour of talk."));
+  });
+
+  test("and neither does the app", async () => {
+    const app = await loadApp(
+      syncPayload({
+        clips: [clip],
+        sources: [
+          harness.database.prepare("SELECT * FROM sources WHERE id = ?").get(clip.source_id)
+        ],
+        analyses: [
+          harness.database
+            .prepare("SELECT * FROM analyses WHERE source_id = ? AND user_id = ''")
+            .get(clip.source_id)
+        ]
+      }),
+      { hash: `#/clip/${clip.id}` }
+    );
+
+    const page = app.text("clipView");
+    assert.ok(page.length > 50, "the page drew nothing at all");
+    assert.ok(!page.includes("native code"));
+    assert.ok(!page.includes("[object Object]"));
+    assert.ok(page.includes("An hour of talk."));
+    app.restore();
   });
 });
 

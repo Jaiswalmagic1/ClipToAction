@@ -173,7 +173,9 @@ Each is additive — `ALTER TABLE ADD COLUMN` and `CREATE TABLE IF NOT EXISTS` �
 safe on a database holding real reels, and none of them rewrites a single existing row.
 They are **not** safe to run twice: SQLite has no `ADD COLUMN IF NOT EXISTS`, so a repeat
 fails with "duplicate column name". That is a loud, harmless failure; it means it was
-already applied.
+already applied. (`0014` is the exception — it only creates an index, and opens with a
+`DROP INDEX IF EXISTS` so that re-running it actually corrects an earlier draft's version
+of the same index rather than silently doing nothing.)
 
 To see which have landed:
 

@@ -337,7 +337,31 @@ export function cleanKind(raw) {
 export function cleanItems(kind, raw) {
   if (!KINDS_WITH_ROWS.includes(kind)) return null;
   if (!Array.isArray(raw) || !raw.length) return null;
-  return raw.filter((item) => item && typeof item === "object" && !Array.isArray(item));
+
+  const rows = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    // The NAME has to be text, and this is not tidiness.
+    //
+    // A row is recognised again by `itemKey`, which flattens its name — and `String({})` is
+    // "[object Object]", which flattens to the single key "object object". So two rows on
+    // one video whose names both came back as objects became THE SAME ROW: he marks one
+    // "done" and the other says done too. A decision he made about one thing, silently
+    // attached to another.
+    if (typeof item.name !== "string" || !item.name.trim()) continue;
+
+    // Every other field is a line of text, or a number, or nothing. Anything else was
+    // drawn into the table as "[object Object]".
+    const row = {};
+    for (const [field, value] of Object.entries(item)) {
+      // A null stays a null. Most of these fields are "as said, or null", and dropping the
+      // key instead would change the shape of every row that answered one honestly.
+      if (value === null || value === undefined) row[field] = null;
+      else if (typeof value === "string" || typeof value === "number") row[field] = value;
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 /**
@@ -377,6 +401,37 @@ export function cleanClaims(raw) {
       && !Array.isArray(entry)
       && String(entry.claim ?? "").trim()
   );
+}
+
+/**
+ * A list that is supposed to be plain lines of text — `key_points` and `learn_more`.
+ *
+ * The last two the model can get wrong and nobody was checking. Both are drawn with
+ * `String(...)` in the app and interpolated straight into the connector's page, so
+ * `key_points: [{point: "..."}]` printed `[object Object]` under "The main points" in both
+ * places. They are required fields, so this is not an edge nobody reaches.
+ */
+export function cleanLines(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((line) => typeof line === "string" && line.trim());
+}
+
+/**
+ * A field that is supposed to be one line of text, or nothing.
+ *
+ * `suggested_task` was the single field in an analysis with no type check anywhere, and it
+ * is bound straight to the database. An object went to D1 as a value it cannot store, which
+ * threw BEFORE the write — so a perfect summary, points, claims and topic were all thrown
+ * away, the shared source row was marked failed for every saver of that reel, and a pasted
+ * conversation came back as a bare 500 with nothing saying which field was wrong.
+ *
+ * It had no length either. 300,000 characters stored cleanly and synced to every device,
+ * with nothing on any screen ever rendering it.
+ */
+export function cleanOneLine(raw, limit) {
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  return text ? text.slice(0, limit) : null;
 }
 
 /** What a person may say about one tracker row. Labelled per kind by the app. */

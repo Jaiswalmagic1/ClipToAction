@@ -27,6 +27,8 @@ import {
   cleanItems,
   cleanSections,
   cleanClaims,
+  cleanLines,
+  cleanOneLine,
   KINDS_WITH_ROWS,
   itemKey,
   ITEM_STATUSES,
@@ -132,7 +134,11 @@ const LIMITS = {
   creator: 200,
   // Facebook hands back the whole caption as the title, and `titleOf` in the app already
   // cuts it down for display — but the stored value was unbounded.
-  title: 500
+  title: 500,
+  // One action. The prompt asks for a single concrete thing to do, and this was the one
+  // field in the whole analysis with no ceiling at all — 300,000 characters of it stored
+  // cleanly and synced to every device.
+  task: 2000
 };
 
 // A long video's analysis is a bigger object than a reel's, and the reel's ceilings would
@@ -275,20 +281,45 @@ async function saveClip(request, env, userId) {
     return fail(env, "You have saved a lot today. Try again tomorrow.", 429);
   }
 
-  const existing = await env.DB.prepare(`SELECT id FROM sources WHERE url_canonical = ?1`)
-    .bind(canonical)
-    .first();
+  // Look, insert, then look AGAIN — because between the look and the insert somebody else
+  // can save the same reel.
+  //
+  // `url_canonical` is UNIQUE, which is the whole point of the shared layer (D10): one row
+  // per video, one download, one transcript, however many people save it. Two people
+  // saving a brand-new reel in the same second both missed the SELECT, and the second
+  // INSERT hit that constraint and escaped as a bare 500 — the save simply lost, with
+  // "Something went wrong" and no hint that pressing again would work. It is a reel doing
+  // the rounds that gets saved twice at once, so this is likeliest exactly when the
+  // product is working.
+  //
+  // `findOrCreateTopic` in topics.js has done it this way, with a comment about this same
+  // race, since topics existed. This was the one place that had not.
+  let sourceId = (
+    await env.DB.prepare(`SELECT id FROM sources WHERE url_canonical = ?1`)
+      .bind(canonical)
+      .first()
+  )?.id;
+  // Whether this video was already known before this save — what the app is told, so it
+  // can say "already being read" rather than "queued".
+  const reused = Boolean(sourceId);
 
-  let sourceId = existing?.id;
   if (!sourceId) {
-    sourceId = newId();
     await env.DB.prepare(
       `INSERT INTO sources
          (id, url_canonical, url_original, platform, state, attempts, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?5)`
+       VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?5)
+       ON CONFLICT (url_canonical) DO NOTHING`
     )
-      .bind(sourceId, canonical, url, platformFromUrl(url), timestamp)
+      .bind(newId(), canonical, url, platformFromUrl(url), timestamp)
       .run();
+
+    // Whoever won, this reads the row that is actually there.
+    sourceId = (
+      await env.DB.prepare(`SELECT id FROM sources WHERE url_canonical = ?1`)
+        .bind(canonical)
+        .first()
+    )?.id;
+    if (!sourceId) return fail(env, "Could not save that link. Please try again.", 503);
   }
 
   // A second save of the same reel by the same user is a no-op, not a duplicate.
@@ -320,7 +351,7 @@ async function saveClip(request, env, userId) {
     // Unfiled, and the app offers to sort it. Never a reason to fail the save itself.
   }
 
-  return json(env, { clip, reused: Boolean(existing) }, 201);
+  return json(env, { clip, reused }, 201);
 }
 
 async function deltaSync(request, env, userId) {
@@ -1028,21 +1059,34 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
   // dropped HERE, once, rather than defended against at every place that reads it.
   const chapters = cleanSections(payload.sections);
   const claims = cleanClaims(payload.claims);
+  const points = cleanLines(payload.key_points);
+  const worthStudying = cleanLines(payload.learn_more);
+  // The last field with no guard on it. Anything that is not text becomes nothing, exactly
+  // as a missing one does — rather than throwing on the way to the database and taking a
+  // whole good analysis down with it. See cleanOneLine.
+  const task = cleanOneLine(payload.suggested_task, LIMITS.task);
 
-  // The AI sent rows and every one of them was thrown away — which is what happens when a
-  // tactic video comes back as `items: ["Sunday Pickup", "Open Box Delivery"]`, a list of
-  // strings where a list of objects was asked for.
+  // Anything the model asked for that came back and could not be used at all — which is
+  // what happens when a tactic video answers `items: ["Sunday Pickup", "Open Box"]`, a list
+  // of strings where a list of objects was asked for.
   //
   // That is NOT the same as a video with nothing to track, and it must not be recorded as
-  // though it were: stamping the current shapes version would take it out of the "read
-  // these again" queue for ever, leaving an empty table nothing can ever fill and no
-  // signal anywhere that it went wrong. So the version is left behind and the offer can
-  // pick it up again (D39).
-  const rowsWereMangled =
-    KINDS_WITH_ROWS.includes(kind)
-    && Array.isArray(payload.items)
-    && payload.items.length > 0
-    && !(rows && rows.length);
+  // though it were: an empty table nothing can ever fill, and no signal anywhere that it
+  // went wrong.
+  //
+  // It started as rows alone, and that was too narrow: a three-hour talk costs hours of his
+  // PC, and if its chapters came back as strings they were dropped to NULL — which is
+  // indistinguishable from "this video had none", so D33's one deliverable went missing for
+  // ever with nothing saying so and no way to ask again. Every list that was ASKED for and
+  // came back unusable counts now, and the reel is offered one more read because of it.
+  const droppedEverything = (asked, kept) =>
+    Array.isArray(asked) && asked.length > 0 && !(kept && kept.length);
+
+  const replyWasMangled =
+    (KINDS_WITH_ROWS.includes(kind) && droppedEverything(payload.items, rows))
+    || droppedEverything(payload.sections, chapters)
+    || droppedEverything(payload.claims, claims)
+    || droppedEverything(payload.key_points, points);
 
   const statements = [
     env.DB.prepare(
@@ -1061,10 +1105,10 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
       provider,
       model || null,
       String(payload.summary).trim(),
-      JSON.stringify(payload.key_points),
-      JSON.stringify(payload.learn_more),
+      JSON.stringify(points),
+      JSON.stringify(worthStudying),
       JSON.stringify(claims),
-      payload.suggested_task || null,
+      task,
       cleanTopicName(payload.topic) || null,
       cleanTopicName(payload.sub_topic) || null,
       // Null rather than "[]" when there are none, so a reel's row is exactly what it was
@@ -1082,7 +1126,7 @@ async function storeAnalysis(env, sourceId, ownerId, payload, provider, model, d
       // same reels for ever and spent four hundred calls on twelve of them — while the
       // sign says "asked, and what came back was not usable", so it is distinguishable in
       // the database and comes round again by itself the next time the shapes change.
-      rowsWereMangled ? -ITEM_SHAPES_VERSION : ITEM_SHAPES_VERSION,
+      replyWasMangled ? -ITEM_SHAPES_VERSION : ITEM_SHAPES_VERSION,
       timestamp
     )
   ];
@@ -1531,13 +1575,18 @@ async function acceptPastedAnalysis(request, env, userId, clipId) {
     );
   }
 
+  // The app sends which AI he pasted from. Anything that is not text is simply not
+  // recorded — `String({})` would have gone to the database as a value it cannot store and
+  // lost the whole pasted conversation to a bare 500.
+  const model = cleanOneLine(body.model, 120);
+
   const problems = await storeAnalysis(
     env,
     clip.source_id,
     userId,
     payload,
     "manual",
-    body.model || null,
+    model,
     clip.duration_sec
   );
   if (problems.length) {

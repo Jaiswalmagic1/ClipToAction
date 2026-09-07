@@ -2468,3 +2468,98 @@ reel gets in. It is checked now.
 **Seventy-one.** The rounds that changed the QUESTION found more than the rounds that
 repeated it. "Is this code correct" was exhausted by round five; "does the thing he asked
 for happen" found three more; "what if the model slips" found nine.
+
+---
+
+### D53 — Round eight: two things true at once
+**Date:** 2026-09-07
+**Amends:** D6, D10, D34, D52.
+
+Round seven asked what happens when the AI slips. This one asked what happens when **two
+things are true at the same time** — two accounts on one phone, two people saving the same
+reel in the same second — and at scale. Four things broke, and two of them put one person's
+data somewhere it did not belong.
+
+A 24 × 14 × 3 sweep of every hostile value in every analysis field, drawn on Home, in the
+notebook and on a clip page, produced **zero** render failures. D52's cleaning holds.
+
+#### A sync that answered after the account had changed
+
+The worst of the eight rounds. Signing straight from one Google account into another fires
+the app's auth handler with the new user and **no `null` in between** — the code already
+knew that and says so — and returning focus to the page, which happens the moment the
+account picker closes, starts a background refresh. So the first account's reply could land
+in the second account's notebook: merged into the store, **drawn on their home screen**, and
+written to `cliptoaction-notebook-<the other account>` on disk, where it stayed until they
+signed out. Clips, sources and his private notes.
+
+Two accounts on one phone is exactly the case `cacheKey`, `seenKey` and `snoozeKey` were all
+made per-account for. The request that was already in the air was the one that was missed.
+
+**Two guards, because one is not enough.** `api` refuses to hand back a reply that outlived
+the account that asked for it, and `saveCache` refuses to write a store that is not the
+signed-in account's. Either alone would close it; both mean a new caller cannot reopen it by
+forgetting. The search box, the filter, the view and the sort order are reset on a switch
+too — they carried over and showed the next account the wrong slice of itself.
+
+#### `suggested_task`, the one field nothing checked
+
+It is bound straight to D1, and it was the only field in an analysis with no type check
+anywhere. An object threw **before** the write:
+
+| Path | What happened |
+|---|---|
+| The Worker's own run | The shared source row was marked failed, for every saver of that reel, with `error_detail` null. A perfect summary, points, claims and topic all discarded, and nothing anywhere saying which field was wrong. |
+| A paste | Bare **500 "Something went wrong."** and his whole copied AI conversation gone. |
+
+It had no length either — 300,000 characters stored cleanly, synced to every device and
+written into every one's storage box, with nothing on any screen rendering it. Now it is one
+line of text or nothing, capped at 2000. `model` on the paste route had the same hole.
+
+#### Two people saving the same new reel in the same second
+
+`url_canonical` is UNIQUE — one row per video is the whole cost model (D10). Both requests
+missed the SELECT, the second INSERT hit the constraint, and it escaped as a bare 500: the
+save simply lost, with no hint that pressing again would work. A reel doing the rounds is
+exactly the one two people save at once. `findOrCreateTopic` has inserted `ON CONFLICT DO
+NOTHING` and re-read, with a comment about this same race, since topics existed; this was
+the one place that had not. The test injects the competing row at the exact moment rather
+than firing two requests and hoping — `Promise.all` passed with the bug still in.
+
+#### A decision about one thing, attached to another
+
+`cleanItems` checked that a row was an object and never checked its fields. A row whose
+`name` came back as an object flattened through `itemKey` to the single key `"object
+object"` — so **two such rows on one video were the same row**: mark one "done" and the
+other says done as well. Rows now need a name that is text, and a field that is not text or
+a number is dropped rather than drawn as `[object Object]`. Nulls stay null.
+
+#### Search, on a notebook ten times the size of his
+
+Every keystroke read every word of every video, with nested scans, so the work grew faster
+than the notebook did: 39 ms at his 210 clips, **948 ms at 2000**. Typing one word would
+have been several seconds of frozen screen, worse on a phone. Redrawn 150 ms after he stops
+typing now — one search a word instead of six.
+
+#### Written down, not chased
+
+`moveKey` does two PATCHes with no transaction, so a double-press can leave two keys on one
+position. A future timestamp reads "a minute ago". `confidence` reaches a CSS class name
+verbatim (`textContent` everywhere, so not an injection). A chapter whose `at` is an object
+prints `[object Object]` in the time chip — display only, and it cannot be stored any more.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One | 14 | — |
+| Two | 19 | 3 |
+| Three | 14 | 4 |
+| Four | 7 | 5 |
+| Five | 3 | 3 |
+| Six | 5 | 1 |
+| Seven | 9 | 1 |
+| Eight | 5 | 0 |
+
+**Seventy-six**, and round eight created none of its own. The pattern held to the end: the
+rounds that changed the QUESTION found things, and the rounds that repeated it did not.

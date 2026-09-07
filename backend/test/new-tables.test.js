@@ -32,6 +32,7 @@ import {
   cleanItems
 } from "../src/analyze.js";
 import { createTestEnv } from "./helpers/testenv.js";
+import { loadApp, syncPayload } from "./helpers/appharness.js";
 
 const SERVICE_TOKEN = "service-token-for-tests";
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -400,15 +401,48 @@ describe("a new table never spends an allowance by itself", () => {
     assert.equal(harness.providerCalls.length, before, "nothing more may be spent on it");
   });
 
-  test("and the app counts it the same way, or the offer never clears", () => {
-    // The app's own rule has to match, or Home shows a number that never falls beside a
-    // button that costs an allowance every press.
-    const app = readFileSync(join(repo, "index.html"), "utf8");
-    assert.match(
-      app,
-      /Math\.abs\(Number\(analysis\.shapes_version \|\| 1\)\) < SHAPES_VERSION/,
-      "the app reads the version straight, so a reel it could not use counts as behind for ever"
-    );
+  // Pinned by BEHAVIOUR, not by a regex over the source. The first version of this test
+  // matched the expression character for character, so a rename would have failed it for
+  // the wrong reason and a rewrite that kept the words would have passed while doing
+  // something else. The harness runs the real app; use it.
+  test("and the app counts it the same way, or the offer never clears", async () => {
+    const analysed = (version) => ({
+      source_id: "s1", user_id: "", provider: "gemini", model: "t",
+      summary: "It said some things.", key_points: "[]", learn_more: "[]", claims: "[]",
+      suggested_task: null, topic: null, sub_topic: null, sections: null,
+      kind: "tactic", items: null, shapes_version: version, created_at: Date.now()
+    });
+    const notebook = (version) =>
+      syncPayload({
+        clips: [{
+          id: "c1", user_id: "vish", source_id: "s1", status: "inbox", topic_id: null,
+          topic_set_by: null, relooked_at: null, created_at: Date.now(),
+          updated_at: Date.now(), deleted_at: null
+        }],
+        sources: [{
+          id: "s1", url_canonical: "https://x/1", url_original: "https://x/1",
+          platform: "Facebook", title: "A reel", creator: null, duration_sec: 45,
+          state: "analyzed", error: null, error_detail: null, attempts: 0,
+          created_at: Date.now(), updated_at: Date.now()
+        }],
+        analyses: [analysed(version)]
+      });
+
+    // Never asked: it must be offered.
+    const behind = await loadApp(notebook(null));
+    assert.ok(behind.text("homeView").includes("nothing in these tables yet"));
+    behind.restore();
+
+    // Asked, and what came back could not be used: it must NOT be offered again, or Home
+    // shows a number that never falls beside a button that costs an allowance every press.
+    const mangled = await loadApp(notebook(-ITEM_SHAPES_VERSION));
+    assert.ok(!mangled.text("homeView").includes("nothing in these tables yet"));
+    mangled.restore();
+
+    // Asked, and it honestly had nothing.
+    const done = await loadApp(notebook(ITEM_SHAPES_VERSION));
+    assert.ok(!done.text("homeView").includes("nothing in these tables yet"));
+    done.restore();
   });
 
   test("without a key nothing is attempted, and it says so", async () => {

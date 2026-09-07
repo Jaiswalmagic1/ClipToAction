@@ -265,6 +265,24 @@ const jsonList = (value) => {
   }
 };
 
+/**
+ * The entries of a list that is supposed to hold objects.
+ *
+ * The Worker drops the wrong shapes on the way in now — but rows written BEFORE it did are
+ * sitting in the database today, and this is a READ path. Without it a chapter stored as a
+ * string reached the AI as `[function at() { [native code] }]`, because `.at` on a string
+ * is a real method and a truthy one, and a claim stored as a string arrived as
+ * `[unrated] — ` with its own text gone.
+ */
+const objectsIn = (value) =>
+  jsonList(value).filter(
+    (entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+  );
+
+/** The entries of a list that is supposed to hold plain lines. */
+const linesIn = (value) =>
+  jsonList(value).filter((line) => typeof line === "string" && line.trim());
+
 const titleOf = (row) =>
   (row.summary ? row.summary.split(/(?<=[.!?])\s/)[0] : "").slice(0, 90)
   || `${row.platform || "Saved"} clip`;
@@ -439,10 +457,10 @@ async function runFetch(env, userId, args) {
   }
   if (clip.summary) lines.push("", "WHAT IT SAID:", clip.summary);
 
-  const points = jsonList(clip.key_points);
+  const points = linesIn(clip.key_points);
   if (points.length) lines.push("", "MAIN POINTS:", ...points.map((point) => `- ${point}`));
 
-  const claims = jsonList(clip.claims);
+  const claims = objectsIn(clip.claims);
   if (claims.length) {
     lines.push("", "CLAIMS IT MADE, AND HOW MUCH THEY WERE TRUSTED:");
     for (const entry of claims) {
@@ -450,13 +468,13 @@ async function runFetch(env, userId, args) {
     }
   }
 
-  const learn = jsonList(clip.learn_more);
+  const learn = linesIn(clip.learn_more);
   if (learn.length) lines.push("", "WORTH STUDYING:", ...learn.map((item) => `- ${item}`));
 
   // A long video's chapters, with the times written into them (D33). Without these an
   // hour-long talk reaches the AI as a summary and an undifferentiated wall of speech, and
   // "where did they talk about pricing" has no answer but re-reading the whole thing.
-  const chapters = jsonList(clip.sections);
+  const chapters = objectsIn(clip.sections);
   if (chapters.length) {
     lines.push("", "HOW IT RUNS, IN ORDER:");
     for (const chapter of chapters) {
@@ -468,7 +486,7 @@ async function runFetch(env, userId, args) {
   // The rows a product or tool video carries (D34). Handed over as named facts rather
   // than as prose, so the AI can be asked "which of these is under thirty rupees" and
   // answer from the notebook instead of re-reading the transcript and guessing.
-  const rows = jsonList(clip.items);
+  const rows = objectsIn(clip.items);
   if (rows.length) {
     lines.push("", {
       product: "THINGS IT SHOWED:",

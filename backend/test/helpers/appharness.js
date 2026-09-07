@@ -198,7 +198,10 @@ export async function loadApp(
     failAfter = null,
     quotaChars = null,
     referrer = "",
-    seed = []
+    seed = [],
+    // Who the app signs in as first. Given as a name, because a test that switches accounts
+    // reads better than one that switches uids.
+    who = "vish"
   } = {}
 ) {
   const html = readFileSync(join(repo, "index.html"), "utf8");
@@ -332,16 +335,33 @@ export async function loadApp(
   const renderCount = { value: 0 };
 
   const calls = [];
+  // Who is signed in RIGHT NOW, so a sync given as a function can answer with that
+  // person's notebook — and so a reply already in the air still carries the notebook of
+  // whoever asked for it.
+  let signedInAs = who;
+  // Requests the test is holding open. This is the only way to reproduce the window that
+  // matters: a reply that arrives after the account it belongs to has gone. Only the next
+  // few are held, never everything — the account that signs in NEXT has to be able to load
+  // its own notebook while the first one's reply is still in the air.
+  let held = null;
+  let holdCount = 0;
   // `failAfter` makes every request past that many fail the way a lost connection does —
   // `fetch` rejecting. Without it no error path in the app is ever executed by a test, and
   // the messages Golden Rule 29 exists to guarantee are all unproven.
   globalThis.fetch = async (url) => {
     calls.push(String(url));
     if (failAfter !== null && calls.length > failAfter) throw new TypeError("Failed to fetch");
+    // Decided NOW, before any waiting — a reply carries the notebook of whoever asked for
+    // it, which is exactly what makes a late one dangerous.
+    const answer = typeof sync === "function" ? sync(signedInAs) : sync;
+    if (held && holdCount > 0) {
+      holdCount -= 1;
+      await held.promise;
+    }
     return {
       ok: true,
       status: 200,
-      json: async () => (String(url).includes("/v1/sync") ? sync : { ok: true })
+      json: async () => (String(url).includes("/v1/sync") ? answer : { ok: true })
     };
   };
 
@@ -369,7 +389,14 @@ export async function loadApp(
   await import(pathToFileURL(file).href);
 
   // The real page signs somebody in; here the test does it, through the app's own handler.
-  await globalThis.__signIn({ uid: "vish", email: "vish@example.com", getIdToken: async () => "t" });
+  const signIn = async (uid) => {
+    signedInAs = uid;
+    await globalThis.__signIn({
+      uid, email: `${uid}@example.com`, getIdToken: async () => "t"
+    });
+    await new Promise((done) => setTimeout(done, 0));
+  };
+  await signIn(who);
   // The handler syncs and re-renders after awaiting; let those microtasks land.
   await new Promise((done) => setTimeout(done, 0));
 
@@ -392,6 +419,19 @@ export async function loadApp(
       const button = tabs.children.find((child) => child.dataset.tab === which);
       if (!button) throw new Error(`no ${which} tab`);
       tabs.onclick({ target: button });
+    },
+    /** Signs a different account in, the way switching Google accounts does — no sign-out. */
+    signInAs: signIn,
+    /** Holds the next `many` requests open. Returns the release. */
+    hold(many = 1) {
+      let open;
+      held = { promise: new Promise((done) => { open = done; }) };
+      holdCount = many;
+      return () => { held = null; holdCount = 0; open(); };
+    },
+    /** Fires a window event the app listens for, e.g. returning to the page. */
+    fire(name) {
+      for (const [listening, handler] of listeners) if (listening === name) handler();
     },
     $: (id) => document.getElementById(id),
     text: (id) => document.getElementById(id).textContent,

@@ -726,7 +726,31 @@ let focusTopicId = null;
 
 const cacheKey = () => `cliptoaction-notebook-${user ? user.uid : "none"}`;
 
+/**
+ * Which account the notebook in memory belongs to.
+ *
+ * Not the same question as "who is signed in now", and the difference is somebody else's
+ * private notes on your screen. Two of his Google accounts on one phone is the case
+ * `cacheKey`, `seenKey` and `snoozeKey` were all made per-account for; a request that was
+ * already in the air when the account changed was the one that was missed.
+ *
+ * Signing straight from one Google account into another fires the auth handler with the
+ * new user and NO `null` in between, and returning focus to the page — which happens the
+ * moment the account picker closes — kicks off a background refresh. So Alice's sync could
+ * answer after Bob had signed in, and `applyDelta` would merge her clips, her sources and
+ * her notes into Bob's store, draw them on his home screen, and `saveCache` would write
+ * them to `cliptoaction-notebook-<bob>` on disk, where they stayed until he signed out.
+ *
+ * Two guards, because one is not enough: `api` refuses to hand back a reply that outlived
+ * the account that asked for it, and `saveCache` refuses to write a store that is not the
+ * signed-in account's. Either alone would do it; both mean a new caller cannot reintroduce
+ * it by forgetting.
+ */
+let storeOwner = null;
+const whoIsSignedIn = () => (user ? user.uid : null);
+
 function loadCache() {
+  storeOwner = whoIsSignedIn();
   try {
     const raw = localStorage.getItem(cacheKey());
     store = raw ? { ...structuredClone(EMPTY), ...JSON.parse(raw) } : structuredClone(EMPTY);
@@ -757,6 +781,10 @@ function loadCache() {
  * survives. Stale and whole beats current with pieces missing.
  */
 function saveCache() {
+  // The notebook in memory is not this account's. Writing it would put one person's clips
+  // and notes in another's box on disk — see storeOwner.
+  if (storeOwner !== whoIsSignedIn()) return;
+
   try {
     localStorage.setItem(cacheKey(), JSON.stringify(store));
     return;
@@ -825,6 +853,7 @@ function applyDelta(delta) {
 // ---------------------------------------------------------------- talking to the API
 async function api(path, options = {}) {
   if (!user) throw new Error("Sign in first.");
+  const asked = whoIsSignedIn();
   const token = await user.getIdToken();
 
   let response;
@@ -842,6 +871,11 @@ async function api(path, options = {}) {
     // that are "Failed to fetch", which means nothing to anyone reading the screen.
     throw new Error("you appear to be offline.");
   }
+
+  // The account changed while this was in the air. The reply belongs to whoever asked for
+  // it, and nobody is waiting for it any more — handing it back would merge one person's
+  // notebook into another's, on screen and on disk. See storeOwner.
+  if (whoIsSignedIn() !== asked) throw new Error("the account changed while that was loading.");
 
   let body = {};
   try { body = await response.json(); } catch { /* an empty or non-JSON body */ }
@@ -1315,6 +1349,11 @@ const canSpend = () => Boolean(store.settings && store.settings.has_key);
 
 /** The same offer, turned into what it actually is for somebody with no key: a setting. */
 function needsAnAccount(what) {
+  // Snoozed like the offer it replaces. Without that it is a permanent, undismissable
+  // banner on Home and on top of every table — which is the "becoming furniture" this
+  // whole file keeps trying to avoid, just with no button on it.
+  if (relookSnoozed()) return null;
+
   const notice = document.createElement("div");
   notice.className = "notice";
   notice.append(document.createTextNode(`${what} `));
@@ -1322,7 +1361,14 @@ function needsAnAccount(what) {
   link.href = "#/settings";
   link.textContent = "Connect one in Settings";
   notice.append(link);
-  notice.append(document.createTextNode(" — or use copy and paste, which needs no account."));
+  notice.append(document.createTextNode(" — or use copy and paste, which needs no account. "));
+
+  const later = document.createElement("button");
+  later.className = "secondary";
+  later.textContent = "Not now";
+  later.style.marginTop = "8px";
+  later.onclick = () => { snoozeRelook(); render(); };
+  notice.append(document.createElement("br"), later);
   return notice;
 }
 
@@ -2868,7 +2914,12 @@ function renderClip(clipId) {
       panel.append(rowsHeading, trackerTable(rows, rowSpec, clip));
     }
 
-    const points = jsonList(analysis.key_points);
+    // Plain lines. The Worker drops anything else on the way in now, but a row written
+    // before it did could hold `{point: "..."}`, which `String(...)` renders as
+    // "[object Object]" under "The main points".
+    const points = jsonList(analysis.key_points).filter(
+      (line) => typeof line === "string" && line.trim()
+    );
     if (points.length) {
       const pointsHeading = document.createElement("h3");
       pointsHeading.textContent = "The main points";
@@ -2905,7 +2956,9 @@ function renderClip(clipId) {
       }
     }
 
-    const learn = jsonList(analysis.learn_more);
+    const learn = jsonList(analysis.learn_more).filter(
+      (line) => typeof line === "string" && line.trim()
+    );
     if (learn.length) {
       const learnHeading = document.createElement("h3");
       learnHeading.textContent = "Things to look into";
@@ -4224,7 +4277,21 @@ $("guideBack").onclick = () => { location.hash = ""; };  // Home, and it is reac
 $("home").onclick = () => { showTab("home"); };
 
 // ---------------------------------------------------------------- search and filters
-$("search").oninput = () => { query = $("search").value.trim().toLowerCase(); renderList(); };
+// Redrawn a beat after he stops typing, not on every letter.
+//
+// Searching reads every word of every video: at his 210 clips a keystroke costs about 40ms
+// and nobody notices, but the work grows faster than the notebook does — at 2000 clips one
+// letter is close to a second, so typing "meesho" is several seconds of a frozen screen,
+// and worse on a phone than on the machine that was measured. The pause is short enough to
+// feel immediate and long enough that a word costs one search instead of six.
+let searchTimer = null;
+$("search").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    query = $("search").value.trim().toLowerCase();
+    renderList();
+  }, 150);
+};
 
 $("filters").onclick = (event) => {
   const button = event.target.closest("button");
@@ -4277,8 +4344,18 @@ onAuthStateChanged(auth, async (account) => {
   // last looked — and "what's new" was computed against somebody else's clock for the rest
   // of the session.
   seenBefore = null;
+  // Everything else that is about looking at ONE person's notebook. A search still typed
+  // in the box, a filter, a view and a sort order all carried over into the next account
+  // and quietly showed it the wrong slice of itself.
+  query = "";
+  filter = "all";
+  grouping = "list";
+  trackerSort = { column: "saved", ascending: false };
+  focusTopicId = null;
+  if ($("search")) $("search").value = "";
   applyChrome();
   if (!account) {
+    storeOwner = null;
     store = structuredClone(EMPTY);
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
     return;
