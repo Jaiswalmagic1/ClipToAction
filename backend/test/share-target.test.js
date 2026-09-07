@@ -15,6 +15,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
+import { loadApp, syncPayload } from "./helpers/appharness.js";
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const page = readFileSync(join(repo, "share-target.html"), "utf8");
 const script = /<script>([\s\S]*?)<\/script>/.exec(page)[1];
@@ -130,5 +132,62 @@ describe("the page the share sheet opens", () => {
     assert.equal(done.went, "index.html");
     assert.equal(done.queued.length, 1);
     assert.match(done.queued[0].url, /AFTER/);
+  });
+});
+
+describe("the writer and the reader, joined", () => {
+  // NOTHING crossed this join. `share-target.html` writes a key and `index.html` reads one,
+  // and the two agree only because two separate test files happen to spell the same string.
+  // Renaming the key in the writer AND its own tests, leaving the reader alone, kept all 620
+  // green — every shared reel going into a box nothing reads, which is precisely the bug the
+  // queue exists to fix, reintroducible in silence.
+  //
+  // So: run the real page, take the storage it actually produced, and start the real app on
+  // it. Neither half is told what the other calls anything.
+
+  test("a reel shared through the page is saved by the app", async () => {
+    const done = share("?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FJOIN%2F");
+    const app = await loadApp(syncPayload({}), { seed: [...done.store.entries()] });
+    for (let n = 0; n < 4; n += 1) await new Promise((wait) => setTimeout(wait, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 1, `the app saved ${saved.length} reels: ${saved.join(", ")}`);
+    assert.match(saved[0], /JOIN/);
+    app.restore();
+  });
+
+  test("and three shared in a row are all saved, in the order he shared them", async () => {
+    const store = new Map();
+    share("?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FFIRST%2F", { store });
+    share("?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FSECOND%2F", { store });
+    share("?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FTHIRD%2F", { store });
+
+    const app = await loadApp(syncPayload({}), { seed: [...store.entries()] });
+    for (let n = 0; n < 8; n += 1) await new Promise((wait) => setTimeout(wait, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 3, `${saved.length} of three were saved: ${saved.join(", ")}`);
+    assert.match(saved[0], /FIRST/, `out of order: ${saved.join(", ")}`);
+    assert.match(saved[2], /THIRD/, `out of order: ${saved.join(", ")}`);
+    app.restore();
+  });
+
+  test("and a link somebody SENT him is not saved by the app either", async () => {
+    // The page routes it to the address rather than storage; the app has to honour that.
+    const done = share("?url=https%3A%2F%2Fevil.example%2Freel%2FSENT%2F", {
+      referrer: "https://somewhere.example/messages"
+    });
+    const hash = done.went.includes("#") ? `#${done.went.split("#")[1]}` : "";
+    const app = await loadApp(syncPayload({}), {
+      seed: [...done.store.entries()],
+      hash,
+      referrer: "https://app.test/share-target.html"
+    });
+    for (let n = 0; n < 4; n += 1) await new Promise((wait) => setTimeout(wait, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(saved.length, 0, `a link somebody sent saved itself: ${saved.join(", ")}`);
+    assert.match(app.text("saveMsg"), /Press Save/i, app.text("saveMsg"));
+    app.restore();
   });
 });

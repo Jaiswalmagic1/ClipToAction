@@ -236,11 +236,68 @@ describe("what search promises, proved one claim at a time", () => {
     // And the scaffolding must NOT be in there. Tokenised whole, every reel's words gained
     // `https`, `www`, `com`, `instagram` and `reel` — and since every word must appear, a
     // question with "reel" or "instagram" in it stopped narrowing anything at all.
+    //
+    // Asserted as "only the reels that say it in their own words", not as "none at all":
+    // the second is a fact about the fixture, and would go red the day somebody adds a reel
+    // that is genuinely about Instagram.
+    await reel("ABOUTIG", {
+      platformTitle: "How to grow a jewellery shop on Instagram",
+      summary: "A seller on building a following.",
+      transcript: "he talks about posting every day",
+      daysAgo: 11
+    });
     const scaffolding = await call("search", { query: "instagram" });
     assert.equal(
       scaffolding.total,
-      0,
-      `the platform's own name matched ${scaffolding.total} reels`
+      1,
+      `the platform's own name matched ${scaffolding.total} reels — it should match only`
+        + " the one that is actually about it"
+    );
+    assert.match(scaffolding.results[0].title, /grow a jewellery shop/);
+  });
+
+  test("and a reel's own address, pasted in, finds it", async () => {
+    // A URL is the one identifier a person is actually holding. The stored link has its
+    // scaffolding stripped, and nothing stripped it from the QUERY — so every word had to
+    // appear, `https` and `com` appeared nowhere any more, and pasting a reel's address
+    // returned nothing while the app's own search box still found it.
+    const found = await call("search", { query: "https://www.instagram.com/reel/ZX9QW/" });
+    assert.equal(found.total, 1, `pasting a reel's address matched ${found.total} reels`);
+    assert.match(found.results[0].url, /ZX9QW/);
+  });
+
+  test("and an emoji in the question does not silence the whole search", async () => {
+    // Every word has to appear, and a variation selector is a Mark — so `❤️` became a
+    // "word" made of nothing but it, which no reel could contain. One emoji anywhere in the
+    // question turned a search that worked into silence, under a note advising fewer words.
+    const plain = await call("search", { query: "kundan" });
+    const withEmoji = await call("search", { query: "kundan ❤️" });
+    assert.equal(
+      withEmoji.total,
+      plain.total,
+      `an emoji changed the answer from ${plain.total} to ${withEmoji.total}`
+    );
+    const mixed = await call("search", { query: "kundan '''" });
+    assert.equal(mixed.total, plain.total, "an apostrophe changed the answer");
+  });
+
+  test("and one Hindi word spelled two ways is one word", async () => {
+    // Hindi has letters that exist twice over — क़ is one character, or क plus a nukta —
+    // and two keyboards produce the two. Without normalising, a reel titled with one
+    // spelling cannot be found by the other.
+    await reel("NUKTA", {
+      platformTitle: "क़ीमत कैसे तय करें",
+      summary: "Pricing, again.",
+      transcript: "क़ीमत तय करने का तरीका",
+      daysAgo: 12
+    });
+    const oneWay = await call("search", { query: "क़ीमत" });
+    const other = await call("search", { query: "क़ीमत" });
+    assert.equal(oneWay.total, 1, "the reel was not found by the spelling it was written in");
+    assert.equal(
+      other.total,
+      oneWay.total,
+      "the same word spelled the other way found a different number of reels"
     );
   });
 

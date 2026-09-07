@@ -553,6 +553,11 @@ function learningWords(learning) {
  */
 const wordsOf = (text) =>
   String(text || "")
+    // One spelling per word. Hindi has letters that exist twice over — क़ can be written as
+    // one character or as क followed by a nukta — and two keyboards produce the two. Without
+    // this they are different strings, so a reel titled with one spelling cannot be found by
+    // the other. Normalising both sides lands them on the same word.
+    .normalize("NFC")
     .toLowerCase()
     .split(/[^\p{L}\p{N}\p{M}']+/u)
     .filter(Boolean);
@@ -650,17 +655,27 @@ const STATUS_WORDS = { keeping: "keep", saved: "keep", archive: "archived", inbo
 
 async function runSearch(env, userId, args) {
   const query = String(args?.query || "").trim().slice(0, MAX_QUERY_LENGTH);
-  const wanted = wordsOf(query);
+  // Only words with something in them. A "word" made of nothing but apostrophes or a
+  // variation selector is not one, and since EVERY word has to appear for a match, one of
+  // them anywhere in the question silenced the whole search: `meesho` found the reel,
+  // `meesho ❤️` found nothing, with a note advising him to use fewer words. Dropping them
+  // here rather than testing for them later closes both the pure case and the mixed one.
+  const asked = wordsOf(query);
+  const wanted = asked.filter((word) => /[\p{L}\p{N}]/u.test(word));
+  // The address of a reel is a perfectly ordinary thing to paste into a chat — often the
+  // only identifier a person is actually holding. The stored link has its scaffolding
+  // stripped (see `shortcodeOf`), so a query that still carries `https`, `www`, `com` and
+  // the rest asked for words no reel has any more and found nothing at all, while the app's
+  // own search box found it.
+  const looksLikeAddress = /https?:\/\//i.test(query);
+  const asWords = looksLikeAddress
+    ? wanted.filter((word) => !ADDRESS_NOISE.has(word))
+    : wanted;
   // A query was asked but nothing readable came out of it — punctuation, or symbols in a
   // script this cannot tokenise. That is NOT the same as asking nothing, which means "show
   // me what is in my notebook". Conflating them returned every reel, scored zero, reported
   // as matches, with nothing in the reply to say the words had not been read.
-  // `wanted.length === 0` is not enough on its own: an apostrophe is kept inside a word
-  // (don't, seller's), so a query of nothing but apostrophes tokenises to one "word" made
-  // of them and returns silence with no explanation — the failure this branch exists to
-  // close, on a narrow input. A word has to contain a letter or a number to be one.
-  const hasSubstance = wanted.some((word) => /[\p{L}\p{N}]/u.test(word));
-  const unreadable = query.length > 0 && !hasSubstance;
+  const unreadable = query.length > 0 && asWords.length === 0;
 
   const filters = {
     kind: String(args?.kind || "").trim().toLowerCase(),
@@ -722,7 +737,7 @@ async function runSearch(env, userId, args) {
 
     const parts = searchableParts(clip, notes, learnings);
 
-    if (!wanted.length) {
+    if (!asWords.length) {
       // No words, just filters — or nothing at all, which is "what is in my notebook".
       // `askedNothing`, not `!wanted.length`: a query of pure punctuation reduces to no
       // words while plainly being a question, and answering it with the entire notebook is
@@ -738,7 +753,7 @@ async function runSearch(env, userId, args) {
 
     for (const [field, weight] of FIELD_WEIGHTS) {
       const words = new Set(wordsOf(parts[field]));
-      for (const word of wanted) {
+      for (const word of asWords) {
         if (!words.has(word)) continue;
         found.add(word);
         score += weight;
@@ -755,7 +770,7 @@ async function runSearch(env, userId, args) {
 
     // Every word has to appear SOMEWHERE. Two words that each match a different reel are
     // not a match; two that match this one, in different fields, are.
-    if (found.size < wanted.length) continue;
+    if (found.size < asWords.length) continue;
 
     scored.push({
       clip,
@@ -803,7 +818,7 @@ async function runSearch(env, userId, args) {
         + " never widens it. You can also filter by folder, creator, kind, status or"
         + " saved_after."
       : "",
-    !unreadable && wanted.length > 1 && scored.length === 0
+    !unreadable && asWords.length > 1 && scored.length === 0
       ? "Nothing matched all of those words at once. Every word has to appear somewhere in"
         + " the same reel, so try again with fewer — the two or three that carry the"
         + " meaning, without the words a sentence needs to be a sentence."

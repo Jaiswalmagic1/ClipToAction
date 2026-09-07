@@ -130,9 +130,10 @@ describe("a reel shared from the share sheet", () => {
     });
     await new Promise((done) => setTimeout(done, 0));
 
-    assert.ok(
-      app.calls.some((one) => one.includes("/v1/clips")),
-      "a reel shared before the release was never saved"
+    assert.match(
+      app.$("saveUrl").value,
+      /OLD/,
+      "a reel shared before the release was not offered at all"
     );
     assert.equal(
       app.localStore.get("cliptoaction-pending-share"),
@@ -142,20 +143,76 @@ describe("a reel shared from the share sheet", () => {
     app.restore();
   });
 
-  test("and it goes in FIRST, ahead of anything shared since", async () => {
+  test("but it is ASKED about, never saved by itself", async () => {
+    // THE SECURITY HALF, and it is not a detail. The share target that is live today has no
+    // referrer check at all — it writes that slot for anything, including
+    // `.../share-target.html?url=<anything>` sent to him in a message. The whole ask route
+    // exists to stop a stranger's link saving itself; carrying the old slot over as trusted
+    // would launder exactly that. His PC would download and transcribe a stranger's video,
+    // a day of an AI key would go on it, and its content would land in the notebook his AI
+    // reads.
+    const app = await loadApp(syncPayload({}), {
+      seed: [[
+        "cliptoaction-pending-share",
+        JSON.stringify({ title: "", text: "", url: "https://evil.example/reel/SENT/" })
+      ]]
+    });
+    for (let n = 0; n < 4; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.equal(
+      saved.length,
+      0,
+      `a link of unknown origin saved itself with no press: ${saved.join(", ")}`
+    );
+    assert.match(app.text("saveMsg"), /Press Save/i, app.text("saveMsg"));
+    assert.equal(
+      app.localStore.get(QUEUE),
+      undefined,
+      "it stayed queued and will be offered again on every open"
+    );
+    app.restore();
+  });
+
+  test("and the drain does not save it one line later either", async () => {
+    // The branch above refuses to save it; the drain that runs afterwards would have gone
+    // straight through the queue and saved it anyway.
     const app = await loadApp(syncPayload({}), {
       seed: [
         ["cliptoaction-pending-share",
-          JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/OLD/" })],
-        [QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/NEW/", 9)])]
+          JSON.stringify({ title: "", text: "", url: "https://evil.example/reel/SENT/" })],
+        [QUEUE, JSON.stringify([shared("https://www.instagram.com/reel/HIS/", 9)])]
       ]
     });
-    await new Promise((done) => setTimeout(done, 0));
-    await new Promise((done) => setTimeout(done, 0));
+    for (let n = 0; n < 6; n += 1) await new Promise((done) => setTimeout(done, 0));
 
     const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
-    assert.ok(saved.length >= 2, `only ${saved.length} were saved: ${saved.join(", ")}`);
-    assert.match(saved[0], /OLD/, `saved out of order: ${saved.join(", ")}`);
+    assert.ok(
+      !saved.some((one) => one.includes("SENT")),
+      `the drain saved the unknown link: ${saved.join(", ")}`
+    );
+    // And his own share, which was behind it, still goes in.
+    assert.ok(saved.some((one) => one.includes("HIS")), `his own reel was not saved: ${saved.join(", ")}`);
+    app.restore();
+  });
+
+  test("a full storage box does not delete the reel it cannot carry over", async () => {
+    // The carry-over removed the old key and THEN wrote the queue. When the write threw —
+    // a full box, which is the very condition a queue exists to survive — the reel was gone
+    // from the only place it existed, and nothing was said. D71's own failure, inside the
+    // function written to prevent it.
+    const app = await loadApp(syncPayload({}), {
+      quotaChars: 120,
+      seed: [[
+        "cliptoaction-pending-share",
+        JSON.stringify({ title: "", text: "", url: "https://www.instagram.com/reel/FULL/" })
+      ]]
+    });
+    await new Promise((done) => setTimeout(done, 0));
+
+    const left = app.localStore.get("cliptoaction-pending-share");
+    assert.ok(left, "the reel was deleted by a storage box it could not be moved into");
+    assert.match(left, /FULL/, left);
     app.restore();
   });
 
@@ -235,6 +292,86 @@ describe("a reel shared from the share sheet", () => {
     app.restore();
   });
 
+  test("an unknown link BEHIND his own is not saved by the drain either", async () => {
+    // The branch that handles the head of the queue refuses to save it. The drain, which
+    // runs straight afterwards and walks the rest, would have saved it anyway — so an
+    // unknown link one place further down went in with no press at all.
+    const app = await loadApp(syncPayload({}), {
+      seed: [[QUEUE, JSON.stringify([
+        shared("https://www.instagram.com/reel/MINE/", 1),
+        { title: "", text: "", url: "https://evil.example/reel/BEHIND/", at: 2, ask: true },
+        shared("https://www.instagram.com/reel/ALSOMINE/", 3)
+      ])]]
+    });
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const saved = app.bodiesTo("/v1/clips").map((one) => one.url);
+    assert.ok(
+      !saved.some((one) => one.includes("BEHIND")),
+      `the drain saved an unknown link: ${saved.join(", ")}`
+    );
+    assert.equal(saved.length, 2, `${saved.length} saved: ${saved.join(", ")}`);
+    assert.equal(app.localStore.get(QUEUE), undefined, "something was left queued");
+    app.restore();
+  });
+
+  test("a drain that fails partway keeps what it has not saved", async () => {
+    // `if (!took) return;` — without it, a share that never reached the API is dropped
+    // anyway, which is D70's whole failure repeated on the drain path.
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        // sign-in sync, POST one, sync, POST two -> the second POST is the one that fails.
+        if (requests === 4) throw new TypeError("Failed to fetch");
+        return syncPayload({});
+      },
+      {
+        seed: [[QUEUE, JSON.stringify([
+          shared("https://www.instagram.com/reel/GOESIN/", 1),
+          shared("https://www.instagram.com/reel/STAYS/", 2)
+        ])]]
+      }
+    );
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const left = app.localStore.get(QUEUE) || "";
+    assert.match(left, /STAYS/, `the share that never reached the API was dropped: ${left}`);
+    assert.ok(!left.includes("GOESIN"), `a saved reel is still queued: ${left}`);
+    app.restore();
+  });
+
+  test("dropping one share does not drop a different one that shares its address", async () => {
+    // `dropShare` matches on when it was shared, its address AND its text. Matching on the
+    // address alone would drop a second, later share of the same reel that had not been
+    // saved yet — and the same reel shared twice with different text is two entries.
+    let requests = 0;
+    const app = await loadApp(
+      () => {
+        requests += 1;
+        // sign-in sync, POST one, sync, POST two -> the second POST is the one that fails,
+        // so the second entry is still waiting and must not have been dropped with the first.
+        if (requests === 4) throw new TypeError("Failed to fetch");
+        return syncPayload({});
+      },
+      {
+        seed: [[QUEUE, JSON.stringify([
+          { title: "", text: "have a look", url: "https://www.instagram.com/reel/SAME/", at: 1 },
+          { title: "", text: "this one too", url: "https://www.instagram.com/reel/SAME/", at: 2 }
+        ])]]
+      }
+    );
+    for (let n = 0; n < 8; n += 1) await new Promise((done) => setTimeout(done, 0));
+
+    const left = app.localStore.get(QUEUE) || "";
+    assert.match(
+      left,
+      /this one too/,
+      `the second share of the same reel was dropped without being saved: ${left}`
+    );
+    app.restore();
+  });
+
   test("a queue that is not a list does not take the app down with it", async () => {
     const app = await loadApp(syncPayload({}), { seed: [[QUEUE, "{ not json"]] });
     await new Promise((done) => setTimeout(done, 0));
@@ -253,13 +390,29 @@ describe("a patchy connection, on the screens where it costs something", () => {
     // ever be shown, and would have pasted that into his AI app.
     const app = await loadApp(syncPayload({}));
     await new Promise((done) => setTimeout(done, 0));
+
+    // A GOOD reply first, so the test is decided by what the app does with a bad one rather
+    // than by the harness's default having no address in it. Without this the whole
+    // `answerWith` block could be deleted and the test still passed.
+    let truncate = false;
     app.answerWith((url, options) => {
-      if (String(url).includes("/v1/connector") && options?.method === "POST") {
-        return { ok: true, status: 200, json: async () => ({}) };
-      }
-      return null;
+      if (!String(url).includes("/v1/connector") || options?.method !== "POST") return null;
+      // The responder hands back the BODY, which the harness then wraps. Returning a
+      // falsy body means "answer this the default way", so a truncated reply is `{ ok: true }`
+      // with no `url` on it — which is exactly what the app sees in the real failure.
+      return truncate
+        ? { ok: true }
+        : { ok: true, url: "https://api.test/mcp/realsecret" };
     });
 
+    await app.$("makeConnector").onclick();
+    assert.match(
+      app.text("connectorMsg"),
+      /only time it will be shown/,
+      "a good reply did not draw the address at all — this test would prove nothing"
+    );
+
+    truncate = true;
     await app.$("makeConnector").onclick();
     const said = app.text("connectorMsg");
     assert.ok(

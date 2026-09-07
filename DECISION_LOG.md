@@ -4426,3 +4426,113 @@ that staging is the live system his app points at.
 
 **Two hundred and forty-seven.** Ten rounds running, the regression half has found only its
 predecessor's faults.
+
+---
+
+### D73 — Round twenty-one: the carry-over was laundering a stranger's link
+**Date:** 2026-09-08
+**Amends:** D69, D70, D71, D72.
+
+Thirty-one mutations against the two commits before this one. Six findings, and the worst is
+a security hole opened by the fix for a data-loss bug — the pattern these rounds keep finding,
+now at its sharpest.
+
+#### An unknown link was being promoted to a trusted one
+
+The share target **that is live today** is ten lines with **no referrer check at all**. It
+writes `cliptoaction-pending-share` for anything, including
+`.../share-target.html?url=<anything>` sent to him in a message. That address is public and
+guessable, which is why D50 built the referrer test and the `#/share-ask/` route in the first
+place.
+
+D71 then carried that slot over into the new queue **at the front, as his own** — where the
+app saves it with no press. So the one storage location that carries no evidence of where its
+contents came from was being laundered into the one that means "he chose this": his PC would
+download and transcribe a stranger's video, a day of an AI key would go on it, and its
+content would land in the notebook his AI reads. The commit's own test asserted that the
+auto-save happened.
+
+**A carried-over share is now asked about, never saved.** It goes in the box under "somebody
+shared this link with you", exactly like a link that arrived in the address.
+
+And the drain would have saved it one line later anyway. The branch at the head of the queue
+refused it; `drainShares` walked the rest and had no such rule, so an unknown link one place
+further down went in with no press regardless. Both halves now honour the mark.
+
+#### And the carry-over deleted the reel when the box was full
+
+It removed the old key and *then* wrote the queue. When that write threw — a full storage box,
+which is the exact condition a queue exists to survive — the reel was gone from the only place
+it existed, and **nothing was said on screen at all.** D71's own failure, inside the function
+written to prevent it. The queue is written first and the old key removed only once that write
+has landed; if it cannot, the reel stays where it is and the next open tries again.
+
+#### Pasting a reel's own address into the connector found nothing
+
+D72 stripped `https`, `www`, `com`, `instagram` and `reel` from the stored link — correctly,
+because every word must appear and those five were in every reel. Nothing stripped them from
+the **query**. So pasting a reel's address asked for words no reel had any more and returned
+zero, while the app's own search box still found it: the `ownRows` promise broken again, in
+the opposite direction, and a URL is the one identifier a person actually holds.
+
+#### One emoji anywhere in a question silenced the whole search
+
+A variation selector (U+FE0F) is a Mark, so `❤️` became a "word" made of nothing but it — and
+every word must appear. Measured: `meesho` found the reel; `meesho ❤️` found nothing, under a
+note advising him to use fewer words. The guard added for the pure case only fired when
+**every** word was substance-less. Words with nothing in them are dropped from the question
+now, which closes the pure case and the mixed one together.
+
+#### And one Hindi word spelled two ways was two words
+
+`क़` exists as one character and as `क` plus a nukta, and two keyboards produce the two. A
+reel titled with one spelling could not be found by the other. Both sides are normalised now.
+
+#### Nothing crossed the join between the writer and the reader
+
+`share-target.html` writes a key; `index.html` reads one. **Renaming that key in the writer
+and its own tests, leaving the reader alone, kept all 620 tests green** — every shared reel
+going into a box nothing reads, which is exactly the bug the queue exists to fix,
+reintroducible in silence. The two halves agreed only because two separate test files happen
+to spell the same string. There are three tests now that run the real page and start the real
+app on the storage it actually produced; renaming the key fails seven of them.
+
+#### Four claims that were correct and unheld, and one test that proved nothing
+
+- `drainShares` keeping a share whose save failed — the headline of D70, on the drain path.
+- `dropShare`'s three-part identity, so the same reel shared twice is two entries.
+- The drain's refusal to save an unknown link.
+- And the connector test named *"not shown as `undefined`"* **passed with its own responder
+  deleted entirely**: the harness's default reply has no address in it either, so the
+  assertion was decided by the fixture. It asks for a good reply first now, and fails if that
+  does not draw the address.
+
+Also corrected: the `search "instagram"` assertion was `total === 0`, a fact about the
+fixture that would go red the day a reel is genuinely about Instagram. It asserts "only the
+reels that say it in their own words", against a fixture that now contains one.
+
+#### What round twenty-one established as sound
+
+The tokeniser across Devanagari (matra, nukta, halant, digits), Arabic, Tamil, Hebrew niqqud,
+Thai, Korean, Latin combining forms, ZWJ and skin-tone emoji sequences, and mixed scripts —
+under-matches only, nothing matches that should not. `ADDRESS_NOISE` against real shortcode
+shapes, with no collision, and a creator called "reel" still findable. `saveLink`'s return in
+all four combinations of the save and the refresh succeeding or failing. The share races the
+brief named: two entries for one reel, a share arriving mid-drain, overlapping drains.
+
+#### Still nobody has stood here
+
+The upgrade sequence on a **real phone** — the old cached page against the new one, and which
+key holds what. Three rounds have now reasoned about it and none has run it. And every quota
+result in this round is the harness's model of a full storage box, not a browser's.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Twenty | 247 | 94 |
+| Twenty-one (regression) | 10 | 10 |
+
+**Two hundred and fifty-seven.** Eleven rounds running, the regression half has found only its
+predecessor's faults — and this is the first time one of those faults was a security hole
+rather than a bug.

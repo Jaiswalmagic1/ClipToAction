@@ -4112,7 +4112,9 @@ function pendingShare() {
     dropShare(share);
     return { url: "", own: false, notALink: true, more: waiting.length - 1 };
   }
-  return { url: found[0], own: true, share, more: waiting.length - 1 };
+  // `ask` marks a share whose provenance is not known — see carryOverOldShare. It goes in
+  // the box for him to press Save on, exactly like a link somebody sent.
+  return { url: found[0], own: !share.ask, share, more: waiting.length - 1 };
 }
 
 /** Everything the share target has handed over and the API has not yet taken. */
@@ -4139,7 +4141,20 @@ function queuedShares() {
  * one reads a queue under a different name. Without this, a reel shared in the minutes
  * before the release lands is on his phone, in his storage, and read by nothing ever again:
  * a lost reel caused entirely by the upgrade, which is the one thing that must not happen
- * (D36). Moved across once, then the old key is gone for good.
+ * (D36).
+ *
+ * IT IS CARRIED OVER TO BE ASKED ABOUT, NOT SAVED. The share target that is live today has
+ * no referrer check — it writes that slot for anything at all, including
+ * `.../share-target.html?url=<anything>` sent to him in a message. The whole `#/share-ask/`
+ * route and the referrer test exist to stop a stranger's link saving itself; the old slot
+ * carries no evidence of where it came from, so promoting it to trusted would launder
+ * exactly the thing those were built to catch — his PC downloading and transcribing a
+ * stranger's video, a day of an AI key spent on it, and its content in the notebook his AI
+ * reads. It goes in the box with "somebody shared this with you", and he presses Save.
+ *
+ * The order matters too: the queue is written FIRST and the old key removed only once that
+ * write has actually landed. Removing it first meant a full storage box — which is the very
+ * condition a queue exists to survive — deleted the reel and said nothing.
  */
 function carryOverOldShare() {
   let raw = null;
@@ -4149,20 +4164,35 @@ function carryOverOldShare() {
     return;
   }
   if (!raw) return;
+
+  let share = null;
   try {
-    const share = JSON.parse(raw);
-    if (share && typeof share === "object") {
-      const waiting = JSON.parse(localStorage.getItem("cliptoaction-pending-shares") || "[]");
-      const queue = Array.isArray(waiting) ? waiting : [];
-      // At the FRONT: it was shared before everything else here.
-      queue.unshift({ ...share, at: share.at || 0 });
-      localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(queue));
-    }
-    localStorage.removeItem("cliptoaction-pending-share");
+    share = JSON.parse(raw);
   } catch {
-    // Unreadable, and it cannot be saved. Remove it rather than reading it every open.
+    // Not readable, so it can never be saved. Remove it rather than reading it every open.
     try { localStorage.removeItem("cliptoaction-pending-share"); } catch { /* gone */ }
+    return;
   }
+  if (!share || typeof share !== "object") {
+    try { localStorage.removeItem("cliptoaction-pending-share"); } catch { /* gone */ }
+    return;
+  }
+
+  try {
+    const waiting = JSON.parse(localStorage.getItem("cliptoaction-pending-shares") || "[]");
+    const queue = Array.isArray(waiting) ? waiting : [];
+    // At the FRONT: it was shared before everything else here. `ask` is what stops it
+    // saving itself — see the note above.
+    queue.unshift({ ...share, at: share.at || 0, ask: true });
+    localStorage.setItem("cliptoaction-pending-shares", JSON.stringify(queue));
+  } catch {
+    // The box is full, or site data is blocked. LEAVE the old key where it is: it is the
+    // only copy of that reel, and the next open — after he has cleared something, or on a
+    // device that allows storage — will carry it across. Deleting it here was a reel lost
+    // by the upgrade, inside the function written to stop reels being lost by the upgrade.
+    return;
+  }
+  try { localStorage.removeItem("cliptoaction-pending-share"); } catch { /* gone */ }
 }
 
 /** One share, gone from the queue — called only when it no longer needs to be saved. */
@@ -4838,12 +4868,30 @@ onAuthStateChanged(auth, async (account) => {
         + " this with a connection.",
         "warn"
       );
+    } else {
+      // The ADDRESS route: the share target could not use storage, so the link travelled in
+      // the address instead — and the address has already been wiped. There is nowhere to
+      // keep it, so the box in front of him is the only copy, and he has to be told that
+      // rather than left with two identical "you appear to be offline" sentences and no
+      // idea a reel is at risk.
+      say(
+        "saveMsg",
+        "Could not save that — and this device will not let the app remember it. The link"
+        + " is in the box above: keep this page open and press Save when you are back"
+        + " online, or it will be lost.",
+        "warn"
+      );
     }
     // Three reels shared one after another used to leave one. Whatever is still queued is
     // saved now, oldest first, and anything that fails stays queued.
     if (took) await drainShares();
   } else if (shared.url) {
     say("saveMsg", "Somebody shared this link with you. Press Save if you want it.", "warn");
+    // Out of the queue now that it is in the box in front of him, or it comes back under
+    // the same sentence on every future open. This is the same treatment the address route
+    // has always given a link somebody sent.
+    dropShare(shared.share);
+    if (shared.more > 0) await drainShares();
   } else if (shared.broken) {
     say("saveMsg", "Something was shared but the link could not be read. Paste it here.");
   } else if (shared.notALink) {
@@ -4873,6 +4921,16 @@ onAuthStateChanged(auth, async (account) => {
  */
 async function drainShares() {
   for (const share of queuedShares()) {
+    // A share whose provenance is not known never saves itself — see carryOverOldShare.
+    // Without this the drain would do exactly what the branch above refuses to do, one
+    // line later, and a link somebody sent him would go in with no press after all.
+    if (share.ask) {
+      say("saveMsg", "Somebody shared a link with you. Press Save if you want it.", "warn");
+      $("saveUrl").value = `${share.url || ""} ${share.text || ""}`
+        .match(/https?:\/\/\S+/)?.[0] || $("saveUrl").value;
+      dropShare(share);
+      continue;
+    }
     const found = `${share.url || ""} ${share.text || ""}`.match(/https?:\/\/\S+/);
     if (!found) {
       dropShare(share);
