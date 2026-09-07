@@ -169,7 +169,20 @@ export function learningColumns(payload) {
   const columns = {};
   for (const field of LEARNING_LISTS) {
     const value = payload[field];
-    columns[field] = JSON.stringify(Array.isArray(value) ? value : []);
+    const list = Array.isArray(value) ? value : [];
+    // A verdict is one of three words, and it is stored as one of those three words.
+    // `validateLearning` compares case-insensitively — rightly, a model writing "True" has
+    // answered the question — but the value went into the row exactly as it arrived, so
+    // "True" became a fourth verdict that nothing else in this product recognises, read
+    // back on every future fetch.
+    columns[field] = JSON.stringify(
+      field === "verdicts"
+        ? list.map((entry) =>
+          entry && typeof entry === "object"
+            ? { ...entry, verdict: String(entry.verdict ?? "").trim().toLowerCase() }
+            : entry)
+        : list
+    );
   }
   columns.learned_with =
     String(payload.learned_with || "").trim().slice(0, LIMITS.learnedWith) || null;

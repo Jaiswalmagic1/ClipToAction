@@ -3811,3 +3811,92 @@ refreshes a person can see; both are builds, not review-round edits.
 **A hundred and ninety-nine.** Seven rounds running, the regression half has found mostly its
 predecessor's faults — and this one caught the same shape twice over: a number measured on
 one thing and applied to another, and a guard whose test never reached the case it guards.
+
+---
+
+### D66 — Round seventeen: sitting where the AI sits
+**Date:** 2026-09-07
+**Amends:** D27, D29, D33, D34, D42.
+
+Round ten attacked the connector for security and it held. Nobody had ever asked the other
+question: **does it actually work?** Of seven things a person would plainly ask their AI
+about their own notebook, two were answered well, two only by luck, and three not at all.
+
+The protocol layer came back correct — the handshake, the versions, the error codes, the
+notification with no body, a strict client's expectations. The **tool surface** was the
+problem.
+
+#### "What did I save about Meesho pricing" returned twenty reels, none of them the answer
+
+Two faults compounding. The match was `haystack.includes(query)` — a run of characters, so
+"pricing on Meesho" found nothing and a question mark on the end found nothing. And the loop
+`break`s at twenty **before it has looked at the rest of the notebook**, so what came back
+was the twenty NEWEST matches rather than the best ones. On a notebook with any filler in it,
+that is twenty reels that answer nothing — reported with `isError: false`, no count, and no
+hint that anything was left out.
+
+Now: every word must appear somewhere, not next to each other; matches are scored by WHERE
+they were found (a word in the title is what somebody meant; the same word buried in an hour
+of speech usually is not), sorted, and only then cut; and the reply carries `total`,
+`showing`, `matched_in` and a sentence saying how many there were.
+
+#### There was no way to ask what is in the notebook at all
+
+An empty query returned an empty list — which reads as an empty notebook. No dates in the
+haystack, no folder, creator, kind or status filter, no way to say "since Monday". "What did
+I save last week", "what tools have I collected", "what have I put in the done pile" were all
+unanswerable, and a creator only findable by typing their handle exactly.
+
+`search` takes `folder`, `creator`, `kind`, `status`, `saved_after` and `saved_before` now,
+each usable on its own, and no query at all means the most recent reels.
+
+#### The tracker's whole point was invisible to it
+
+`item_status` appeared nowhere in the connector. So "what have I said I'd try and not done" —
+the question D34 built the trackers for — had no answer, and the AI would cheerfully tell him
+to go and order the thing he had already marked done. Each row now carries what he decided
+about it, in words: *wants to do this*, *is doing this*, *has done this*, *decided against*.
+
+#### A broken reel and a reel waiting on him both looked like an empty one
+
+`state` and `error` were never selected, so a failed download and a long video parked waiting
+for his go-ahead (D42) both came back as an ordinary reel that happened to say nothing — and
+`metadata.status` said `inbox`, which reads as fine. That is Golden Rule 29 on the one
+surface an AI reads. Both now say what they are, in the reply and in the search results.
+
+#### And three more
+
+- **A `fetch` could return most of a megabyte.** D42 allows 400,000 characters and the reply
+  carries the text twice, once escaped inside itself — about two hundred thousand tokens for
+  a six-hour video. Every AI app cuts that somewhere on its own side, silently. It is cut
+  here at 40,000 with a line saying so and pointing at the chapters, which always survive.
+- **The folder it reported was the AI's original proposal**, shared by everyone who saved the
+  reel — not the folder he actually has it in, which is his own (D27) and is what survives a
+  tidy (D34). It named folders that no longer existed. It reads his filing now, and says
+  plainly when a reel is not filed yet.
+- **`save_learning` was dishonest in both directions**: the schema required only `clip_id`
+  while an empty learning is refused, and a verdict of "True" was stored as "True" — a fourth
+  word in a three-word vocabulary, read back on every future fetch. The description says what
+  is really required, and a verdict is stored in the notebook's own words.
+
+#### Also fixed while there
+
+`fetch` read the ENTIRE notebook — every clip with every transcript — and then picked one out
+of it in JavaScript. It reads one row.
+
+#### Written down, not fixed
+
+`search` still reads the whole notebook to rank it, which is what ranking honestly costs at
+this size; D59's measurements stand. And two stray test files a reviewer left behind in the
+working tree were deleted.
+
+#### The count
+
+| Round | Found | Of which created by the previous round's fixes |
+|---|---|---|
+| One–Sixteen | 199 | 74 |
+| Seventeen (the connector in use) | 9 | 0 |
+
+**Two hundred and eight.** Another round that changed where it stood rather than how hard it
+looked, and another that created nothing of its own — the fourth time that has happened, and
+every one of those four asked about a part of the product from the outside.
