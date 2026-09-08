@@ -15,7 +15,7 @@ Multi-user, publishable, and free to run. The reel is a seed, not the destinatio
 1. `DECISION_LOG.md` — **the binding building rules.** Every entry is a rule this project
    is built to. Read it before proposing anything.
 2. `DECISIONS.md` — the one-line index, plus what is still open and what is built.
-3. `C:\Users\jaisw\.claude\projects\D--ClipToAction\memory\` — `active.md` for open work
+3. `C:\Users\jaisw\.claude\projects\D--Kartaan-ClipToAction\memory\` — `active.md` for open work
    and the next entry point, `context.md` for architecture, accounts and capacity figures.
 
 If a change you are about to make conflicts with `DECISION_LOG.md`, **stop.** Deviation is
