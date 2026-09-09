@@ -80,7 +80,7 @@ export function safeDetail(status, body) {
 }
 
 /** Reads a failed reply's body without ever letting a parse failure hide the real error. */
-async function detailFrom(response) {
+export async function detailFrom(response) {
   try {
     return safeDetail(response.status, await response.json());
   } catch {
@@ -88,7 +88,7 @@ async function detailFrom(response) {
   }
 }
 
-function classify(status) {
+export function classify(status) {
   if (status === 401 || status === 403) return "the connected AI key was rejected";
   // Documented by Anthropic as 402 billing_error, and by Gemini as a 400 the caller cannot
   // fix by retrying. Buried in "refused the request" it looked like a fault in the reel.
@@ -765,7 +765,7 @@ function agreedItCannot(failedOn, provider) {
   return false;
 }
 
-async function spendKeys(env, candidates, attempt) {
+export async function spendKeys(env, candidates, attempt) {
   if (!candidates.length) return null;
 
   let exhausted = 0;

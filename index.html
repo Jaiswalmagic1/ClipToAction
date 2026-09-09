@@ -702,6 +702,13 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("service-worker.js").catch(() => {});
 }
 
+// The platforms a video can be WATCHED on rather than only heard (D78). One name, and it
+// is deliberately not "everything except Instagram": a YouTube link can be handed to the
+// model as an address and it fetches the video itself, which no other platform here has a
+// path for. The Worker refuses anything else by name and in a sentence, so this list going
+// stale hides the button but can never save the wrong thing.
+const WATCHABLE = ["YouTube"];
+
 // ---------------------------------------------------------------- local notebook
 // D6 requires delta sync: the whole notebook is kept on the device and only what changed
 // is asked for. `since` is the server's own clock from the last sync, never this device's.
@@ -2942,6 +2949,78 @@ function topicSection(clip) {
   return section;
 }
 
+// ---------------------------------------------------------------- watching it (D78)
+/**
+ * Watch this one instead of waiting for it to be written down.
+ *
+ * A choice, one reel at a time. There is no setting that turns this on for the notebook,
+ * and there is deliberately no way to make one: every other reel carries on being
+ * downloaded and written down from its sound (D4, D28).
+ *
+ * Why it is worth a press: his reels put prices, shop names, websites and minimum order
+ * quantities ON THE SCREEN and never say them out loud, so the product tables come back
+ * with the name filled in and the money empty. Something that can see the frame reads them
+ * off it.
+ *
+ * The whole cost of pressing is written out ABOVE the button, not hidden in a tooltip
+ * nobody hovers: it is free only while Google is trying it out, it is capped at eight hours
+ * of YouTube a day, and Google's own page says the price and the limits are likely to
+ * change. Those words are here and nowhere else, so there is no second copy to go stale.
+ */
+function watchSection(clip, source) {
+  const section = document.createElement("div");
+
+  const heading = document.createElement("div");
+  heading.className = "notice";
+  heading.textContent = "This one has not been written down yet. You can have it watched "
+    + "instead — reels usually show the price and the shop on screen without ever saying "
+    + "them, and only watching can read those.";
+  section.append(heading);
+
+  const cost = document.createElement("p");
+  cost.className = "muted";
+  cost.textContent = "Free while Google is trying this out, and capped at 8 hours of "
+    + "YouTube a day. Google says the price and the limits are likely to change. It uses "
+    + "the AI account of whoever saved this reel first, and the video is never downloaded "
+    + "to the PC.";
+  section.append(cost);
+
+  const unknownLength = !source.duration_sec;
+  if (unknownLength) {
+    const warn = document.createElement("p");
+    warn.className = "muted";
+    // D42 protects him from a very long video by telling him what it costs BEFORE
+    // anything starts. Nothing has been downloaded here, so nothing knows how long this
+    // video is -- and the honest version of that protection is to say so and let the
+    // press be the yes.
+    warn.textContent = "Nothing has been fetched yet, so how long this video is is not "
+      + "known. A long one can use a large share of the day's 8 hours in one go.";
+    section.append(warn);
+  }
+
+  const button = document.createElement("button");
+  button.textContent = "Watch it instead";
+  button.onclick = async () => {
+    button.disabled = true;
+    say("watchMsg", "Watching it — this takes longer than reading words.", "ok");
+    try {
+      await api(`/v1/clips/${clip.id}/watch`, { method: "POST" });
+      await sync();
+      render();
+    } catch (error) {
+      say("watchMsg", error.message);
+      button.disabled = false;
+    }
+  };
+  section.append(button);
+
+  const message = document.createElement("div");
+  message.id = "watchMsg";
+  section.append(message);
+
+  return section;
+}
+
 // ---------------------------------------------------------------- doing it by hand (D9)
 /**
  * The copy-and-paste tier, which is what lets someone use this without ever connecting an
@@ -3574,8 +3653,15 @@ function renderClip(clipId) {
     credit.textContent =
       `Summarised by ${analysis.provider}${analysis.model ? ` (${analysis.model})` : ""}.`;
     panel.append(credit);
-  } else if (transcript) {
-    panel.append(byHandSection(clip));
+  } else {
+    // Two ways to read a reel that has no summary yet, and they are offered for different
+    // reasons. Watching (D78) needs no transcript at all -- that is the point of it -- so
+    // it is offered the moment the reel is saved. Doing it by hand (D9) needs the words,
+    // so it waits for them.
+    if (source && WATCHABLE.includes(source.platform)) {
+      panel.append(watchSection(clip, source));
+    }
+    if (transcript) panel.append(byHandSection(clip));
   }
 
   if (transcript) {

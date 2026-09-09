@@ -4973,3 +4973,138 @@ said "a real phone" and none has used one.**
 | Twenty-five (regression) | 11 | 10 |
 
 **Two hundred and ninety-eight.** 685 backend tests and 85 PC-worker tests.
+
+---
+
+### D78 — A reel may be WATCHED, not only heard. His words: "yes, watch the reels"
+
+**Date:** 2026-09-09
+**Amends:** D4 (download the video, transcribe the audio) and D28 (whisper always
+translates, model floor `small`). **It supersedes neither.** Writing down the sound stays
+the default, stays free, and is what every reel still gets. D78 adds a SECOND way of
+reading one video, chosen one reel at a time.
+
+**Asked "May a reel be watched instead of only heard?", Jaiswal answered: "yes, watch the
+reels."** He was also explicit that this is an EXTENSION, not a replacement — the phone app
+and the share-to-save path are untouched — and that it is **video only**: no PDFs, no
+articles, no web pages.
+
+#### Why. It is not speed, and it is not novelty — it is the empty half of his tables.
+
+His product rows have 64 entries and the money columns are mostly blank: **cost is filled
+23% of the time, sell-for 11%, minimum order 6%.** Not because the analysis is bad. Because
+the reel never SAID the number. Reels put prices, shop names, websites, minimum order
+quantities and phone numbers ON THE SCREEN and talk over them. Whisper can only ever hear,
+so `KIND_RULES` says "as said" and "as said" is all there was. Something that can see the
+frame reads them off it.
+
+**The test of this decision is whether those cells start filling.** Not whether the call
+returns 200.
+
+#### What was decided
+
+| | |
+|---|---|
+| **How it is chosen** | One press, on one reel, on that reel's own page: "Watch it instead". There is no setting that turns it on for the notebook and there deliberately is not one. Every other reel is downloaded and written down exactly as before |
+| **Which reels** | **YouTube only, today.** A YouTube link is handed to the model AS AN ADDRESS and the model fetches the video. Nothing else here has that path — see "what was NOT built" |
+| **What is sent** | The CANONICAL address (D19, D55), never the string that was pasted. Two parsers reading one string differently is how an approved host became a different fetched host |
+| **Which key** | A Gemini key. Being handed a video address is a Gemini feature; a key of another provider is skipped, not failed, and is not marked — it stays good for the text path it was connected for |
+| **Whose key** | **D10 and D35, untouched.** The savers of the reel, oldest save first, each one's own list in their own order. No new payer rule was invented. The presser does not pay merely for pressing |
+| **What comes back** | The same JSON shape a heard reel produces, character for character, so it goes through the same `storeAnalysis` validation — every one of D52's nine findings applies to a watched reply unchanged |
+
+#### The argument that is NOT about speed: the download is the part that breaks a rule
+
+D4 recorded, and he accepted, that downloading Instagram and Facebook reels is against
+those platforms' terms of service. **The YouTube path removes the download entirely.**
+Nothing is fetched by us and nothing is fetched by his PC — the model goes and gets the
+video itself. That is a real reason for this change and it is written here so a later
+session does not read it as merely "it is quicker".
+
+The mechanism is two columns, `sources.read_by` and `read_by_at`. While `read_by` is set to
+`'watch'` the PC is not offered that source at all — the queue's SELECT and its conditional
+claim both refuse it — so the reel is never fetched. **It is put back to NULL the instant a
+watch fails**, so a reel can never be stranded between the two routes with nothing on screen
+saying so (Golden Rule 29).
+
+`read_by_at` is the clock on that, and it was added by this build's own review rather than
+found later. A watch runs inside ONE request. If that request never finishes — the
+platform's own ceiling on a long call, a deploy landing mid-flight — nothing is left to
+clear `read_by`, and the reel sits out of BOTH routes for ever: no download, no summary,
+nothing on any screen. That is D56's family exactly. Ten minutes past the choice, the PC
+takes it back.
+
+#### The eight hours, and "free for now", are part of the decision
+
+Google's own page says the YouTube feature "is in preview and is available at no charge",
+that "for the free tier, you can't upload more than 8 hours of YouTube video per day", and
+that **"pricing and rate limits are likely to change"**. Read 2026-09-09, Golden Rule 1.
+
+Two things follow, and both are built:
+
+1. **He is told before he presses, not after.** The sentence sits beside the button: free
+   while Google is trying it out, capped at 8 hours of YouTube a day, and the price and the
+   limits are likely to change. Beside the button, not in a tooltip — Golden Rule 28.
+2. **Hitting the limit reaches the screen.** A 429 is a spent allowance, so D35's rotation
+   correctly marks that key and moves on — and once every key is marked, `spendKeys` reports
+   its own summary, "all your keys are out of allowance". That is the right sentence for a
+   text analysis and the wrong one here: it sends him to look at keys that have nothing
+   wrong with them. The reason is put back on where the run ends, and it names the eight
+   hours. It is also written against the key itself, so Settings says why it is asleep.
+
+#### What was deliberately NOT built, and why
+
+- **Instagram, Facebook, LinkedIn and X.** Google's docs do allow a video FILE — under
+  100 MB inline, or up to 2 GB through the File API — but D11 says a user's key never leaves
+  the Worker, so the bytes would have to travel PC to Worker to Google. That needs the PC
+  worker to keep the video rather than the audio, a new route that carries tens of megabytes
+  through a 128MB Worker, and a decision about where those bytes rest. **It is its own
+  build and its own decision.** Refused here in a sentence he can read, never a dead button.
+- **Re-reading a reel that already has a summary.** The 202 reels already analysed are
+  exactly the ones with empty money columns, and watching them is where the value is. But
+  the shared row is read by everyone who saved the reel, and D39 and D76 are both about what
+  happens when a second reading overwrites a first. Filling in rows that already exist is a
+  merge, not a write. **Its own piece, and the obvious next one.**
+- **Chapters for a long video (D33).** The long prompt asks for times COPIED out of the
+  transcript, and a watched reel has no transcript. Watching uses the short prompt only.
+- **A cap counted on our side.** Google does not document when its day rolls over, and
+  nothing knows how long a YouTube video is until something has fetched it. A counter built
+  on either would be a guessed number shown as a fact. Google's own refusal is the signal,
+  and it is now surfaced properly.
+
+#### What it costs to give up the sound
+
+A reel that is watched is not downloaded, so it has no transcript. It is still searchable
+by its summary, points and rows, and it still files itself into folders — but "Everything
+that was said" is empty for it, and the learning loop (D29), which builds its question from
+the transcript, will say there is none. That is the trade, he makes it per reel, and it is
+written here so nobody reads it later as a bug.
+
+#### D42 is not amended, and here is why
+
+D42 stops a very long video before it starts, because it costs hours of his PC and can
+spend a day of a key. Watching costs **no PC time at all** — that half does not apply. The
+allowance half does, and nothing can know a video's length before something fetches it. So
+the honest version of D42's protection is D42's own mechanism: **tell him what it costs
+before anything starts, and let the press be the yes.** The page says, in words, that
+nothing has been fetched so the length is not known, and that a long one can use a large
+share of the day's eight hours. That sentence has a test.
+
+#### Built, and proved by mutation
+
+`backend/src/watch.js` (new), `backend/src/worker.js` (`POST /v1/clips/:id/watch`, and the
+two queue guards), `backend/migrations/0017_read_by.sql`, `index.html` (the offer and what
+it costs), `backend/test/watch.test.js` — 25 checks, taking the backend suite to **710**.
+
+**Fourteen claims, fourteen mutations, fourteen named checks red.** Each fault was put back
+on purpose and the check written for that claim is the one that failed. Two of them went
+green on the first attempt and were fixed rather than recorded:
+
+| The claim | Why the first version of its test could not fail |
+|---|---|
+| "the PC is never handed a reel being watched" | two guards hold it and either one alone is enough, so mutating one left it green. Both go now, and the test says why |
+| "the first saver's key pays, not the presser's" | the presser had no key of his own, so "the presser pays" and "the first saver pays" produced the same answer. He has his own key now, and reversing the saver order goes red |
+
+**Request and response shapes read from Google's own pages on the day** — the endpoint, the
+`input` list, the `uri` field, the `model_output` step, the limits and the preview warning.
+`temperature` and `media_resolution` are NOT sent, because their placement on this API is
+not stated in what those pages show. `backend/README.md` records which is which (D13).

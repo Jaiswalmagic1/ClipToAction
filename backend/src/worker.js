@@ -20,6 +20,7 @@ import {
   asItWasUnderstood
 } from "./canonical.js";
 import { forDisplay } from "./keys.js";
+import { watchSource, whyNotWatchable } from "./watch.js";
 import { pastTheDayFor, MAX_NOTES_PER_DAY, MAX_LEARNINGS_PER_DAY } from "./limits.js";
 import {
   promptFor,
@@ -248,6 +249,19 @@ const MAX_FREE_RELEASES = 3;
 // statement being built, because the two queries below number theirs differently.
 const readySql = (clock) =>
   `(attempts = 0 OR COALESCE(claimed_at, 0) + ${RETRY_PAUSE_MS} < ${clock})`;
+
+// How long a watch may hold a reel away from the PC (D78).
+//
+// A watch is one request, start to finish, so the only way `read_by` is left set is that
+// the request never finished -- the platform cut it off, or a deploy landed mid-call. Then
+// nothing clears it, and the reel is out of BOTH routes for ever: no download, no summary,
+// nothing on screen. Ten minutes is far longer than watching a reel takes and far shorter
+// than a person would wait before deciding the app is broken.
+const WATCH_LEASE_MS = 10 * 60 * 1000;
+
+/** Whether this source is currently being watched, and so is not the PC's work. */
+const notBeingWatched = (clock) =>
+  `(read_by IS NULL OR COALESCE(read_by_at, 0) + ${WATCH_LEASE_MS} < ${clock})`;
 
 const LEASE_SQL =
   "(CASE"
@@ -960,6 +974,10 @@ async function claimQueue(request, env) {
             CASE WHEN long_ok_at IS NULL THEN 0 ELSE 1 END AS long_ok
      FROM sources
      WHERE attempts < ?3
+       -- D78. A reel somebody chose to have WATCHED is not the PC's work. This is what
+       -- makes "nothing is downloaded" true rather than merely quicker -- and it is put
+       -- back to NULL the instant a watch fails, so the reel returns to this queue.
+       AND ${notBeingWatched("?2")}
        AND ((state = 'pending' AND ${readySql("?2")})
             OR (state = 'downloading'
                 AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?2))
@@ -978,6 +996,7 @@ async function claimQueue(request, env) {
       `UPDATE sources
        SET state = 'downloading', attempts = attempts + 1, claimed_at = ?1, updated_at = ?1
        WHERE id = ?2
+         AND ${notBeingWatched("?1")}
          AND ((state = 'pending' AND ${readySql("?1")})
               OR (state = 'downloading'
                   AND COALESCE(claimed_at, 0) + ${LEASE_SQL} < ?1))`
@@ -1899,6 +1918,97 @@ async function summariseOnDemand(request, env, userId, clipId) {
   }
 }
 
+/**
+ * Watch one reel instead of hearing it, because he chose it for THIS reel (D78).
+ *
+ * A choice, never a switch. There is no setting anywhere that makes this the way the
+ * notebook reads videos — it is one press, on one clip, and every other reel carries on
+ * being downloaded and written down exactly as D4 and D28 say.
+ *
+ * The order of what happens here is the whole design:
+ *
+ *   1. It must be a YouTube link. Nothing else has a path where the model can be handed an
+ *      address, and the refusal is a sentence he can read rather than a disabled button.
+ *   2. It must not already have a summary — same as "Summarise it now", and for the same
+ *      reason: the shared row is read by everybody who saved the reel.
+ *   3. `read_by` is set BEFORE the call, which takes the reel out of the PC's queue. That
+ *      is what makes "no download at all" true: nothing is ever fetched from YouTube, so
+ *      the one part of this product that breaks a platform's rules does not happen for this
+ *      reel (D4).
+ *   4. The answer goes through `storeAnalysis`, so it meets the same validation a heard
+ *      reply does — every one of D52's nine findings applies to a watched reply unchanged.
+ *   5. ANY failure puts `read_by` back to NULL. A reel that could not be watched must fall
+ *      straight back into the ordinary queue and be downloaded, or it would be stranded
+ *      between the two routes with nothing on screen saying so (Golden Rule 29).
+ *
+ * Whose allowance is spent is D10 and D35 untouched — see watchSource. Nothing is written
+ * to `sources.error` here, exactly as "Summarise it now" does not: one person's key failing
+ * is not a fact about the reel, and the person who pressed the button is watching.
+ */
+async function watchOnDemand(request, env, userId, clipId) {
+  const row = await env.DB.prepare(
+    `SELECT c.source_id, s.platform, s.url_canonical, s.duration_sec FROM clips c
+     JOIN sources s ON s.id = c.source_id
+     WHERE c.id = ?1 AND c.user_id = ?2`
+  )
+    .bind(clipId, userId)
+    .first();
+  if (!row) return fail(env, "That clip is not in your notebook.", 404);
+
+  const no = whyNotWatchable(row);
+  if (no) return fail(env, no);
+
+  const already = await env.DB.prepare(
+    `SELECT 1 AS found FROM analyses WHERE source_id = ?1 AND user_id = ?2`
+  )
+    .bind(row.source_id, SHARED)
+    .first();
+  if (already) return json(env, { ok: true, already: true });
+
+  const putBack = () =>
+    env.DB.prepare(
+      `UPDATE sources SET read_by = NULL, read_by_at = NULL, updated_at = ?1 WHERE id = ?2`
+    )
+      .bind(now(), row.source_id)
+      .run();
+
+  await env.DB.prepare(
+    `UPDATE sources SET read_by = 'watch', read_by_at = ?1, updated_at = ?1 WHERE id = ?2`
+  )
+    .bind(now(), row.source_id)
+    .run();
+
+  try {
+    // The canonical address, never the one that was pasted (D19, D55).
+    const analysis = await watchSource(env, row.source_id, row.url_canonical);
+    if (!analysis) {
+      await putBack();
+      return fail(
+        env,
+        "Watching needs a Google Gemini key, and nobody who saved this reel has one "
+        + "connected. Add one in Settings, or leave it to be written down from its sound."
+      );
+    }
+
+    const problems = await storeAnalysis(
+      env,
+      row.source_id,
+      SHARED,
+      analysis.payload,
+      analysis.provider,
+      analysis.model,
+      row.duration_sec || 0
+    );
+    if (problems.length) throw new AnalysisError(...malformed(problems));
+    return json(env, { ok: true, watched: true });
+  } catch (error) {
+    await putBack();
+    const reason = error instanceof AnalysisError ? error.publicReason : "something went wrong";
+    const detail = error instanceof AnalysisError ? error.detail : null;
+    return json(env, { error: `Could not watch it: ${reason}`, detail }, 400);
+  }
+}
+
 async function acceptPastedAnalysis(request, env, userId, clipId) {
   // A paste is only meaningful against a transcript this user can already see, which also
   // stops anyone pasting an analysis for a reel that has not been downloaded yet.
@@ -2751,6 +2861,9 @@ export default {
         }
         if (segments[3] === "prompt" && request.method === "GET") {
           return await buildPrompt(env, userId, segments[2]);
+        }
+        if (segments[3] === "watch" && request.method === "POST") {
+          return await watchOnDemand(request, env, userId, segments[2]);
         }
         if (segments[3] === "summarise" && request.method === "POST") {
           return await summariseOnDemand(request, env, userId, segments[2]);

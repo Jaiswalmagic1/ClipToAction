@@ -90,6 +90,19 @@ CREATE TABLE IF NOT EXISTS sources (
   -- the first saver with a key pay for a video somebody else approved. The approver pays.
   long_ok_at    INTEGER,
   long_ok_by    TEXT,
+  -- D78. How this reel is being read. NULL is the default and is every reel saved before
+  -- this existed: the PC downloads it and whisper writes the sound down (D4, D28).
+  -- 'watch' means somebody chose to have the model look at the video instead, and while it
+  -- is set the PC is not offered this source at all -- which is what makes "no download"
+  -- true rather than merely faster. Cleared back to NULL if the watch fails, so a reel is
+  -- never left unreachable by both routes.
+  read_by       TEXT,
+  -- When that choice was made. A watch happens inside ONE request, so if the Worker dies
+  -- part-way -- the platform's own ceiling on a long call, a deploy mid-flight -- nothing
+  -- is left to clear `read_by`, and the reel would sit out of the PC's queue for ever with
+  -- no summary and nothing on any screen (D56 again, Golden Rule 29). This is the clock
+  -- that lets the queue take it back.
+  read_by_at    INTEGER,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

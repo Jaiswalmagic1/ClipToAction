@@ -305,6 +305,32 @@ Endpoints and model IDs were checked against each provider's own documentation o
 Raw HTTP is used for every provider, including Anthropic: one adapter shape across five
 providers is simpler here than mixing an SDK into a Cloudflare Worker for one of them.
 
+### Watching a video instead of hearing it (D78)
+
+A second, separate call, and a different API surface. Read on 2026-09-09 from
+`ai.google.dev/gemini-api/docs/video-understanding` and `ai.google.dev/api/interactions-api`
+(Golden Rule 1, D13).
+
+| | |
+|---|---|
+| Endpoint | `generativelanguage.googleapis.com/v1beta/interactions` — the Interactions API, not `generateContent`. The migration page says `generateContent` "remains fully supported", so the text path above is untouched |
+| Model | `gemini-3.8-flash` — the model the video page's own sample uses. Deliberately not the text path's `gemini-3.5-flash-lite`: nothing on Google's pages says that one takes video |
+| Request | `{model, input: [{type:"text", text}, {type:"video", uri}], generation_config: {max_output_tokens}}` — confirmed, including that a YouTube address needs no `mime_type` |
+| Response | the text is in `steps[].content[].text` of the `model_output` steps — confirmed against the reference's own example |
+| Limits | "For the free tier, you can't upload more than 8 hours of YouTube video per day", "public videos (not private or unlisted)", ~100 tokens per second of video at the default (low) media resolution, up to 3 hours at that resolution |
+| Preview | Google's own words: the YouTube URL feature "is in preview and is available at no charge" and "pricing and rate limits are likely to change". Both are shown to the user beside the button, not only recorded here |
+
+**Not doc-confirmed, and therefore not sent:** `temperature`. The Interactions reference
+lists `max_output_tokens` under `generation_config` and does not list `temperature` there.
+The text path sends `temperature: 0.2`; this one sends none rather than guess at where it
+goes. If a later reading of that page confirms it, add it — do not add it from memory.
+
+**Media resolution is not sent either, on purpose.** The default is already the cheap one
+("approximately 100 tokens per second of video at default (low) media resolution"), and the
+`resolution` field's placement — on the video content object rather than in
+`generation_config` — is stated in the reference but not shown in any of the page's own
+REST samples. Sending nothing gets the value we want with nothing guessed.
+
 ## Not built yet
 
 Topic merging, "you already know this", weekly digest and shared notebooks have tables in

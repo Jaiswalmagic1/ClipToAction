@@ -4,7 +4,7 @@ Running list of what is settled and what is still open. Updated every session.
 **Why each decision was made — options considered, factors weighed — is in
 [DECISION_LOG.md](DECISION_LOG.md).** That file is binding; this one is its index.
 
-Last updated: 2026-09-07
+Last updated: 2026-09-09
 
 ---
 
@@ -97,6 +97,7 @@ The reel is a seed, not the destination.
 | D75 | Round twenty-three | Not "was it saved?" but "name every place this thing exists now". Pressing Add note erased the hour he had just pasted in — a clip's page is rebuilt from nothing and seven buttons on it redraw. Nothing in the repo typed anything and then pressed anything else. |
 | D76 | Round twenty-four, regression | The fix for losing what he typed lost his filing instead — an abandoned draft rewrote how a clip was filed, on every device, for ever. Adds a binding rule: no claim goes in the log until a mutation of it has gone red. |
 | D77 | Round twenty-five, regression | Forty mutations run mechanically. Five of the last commit's behaviours survived, so the rule it added was broken by the commit that added it. Signing out deleted the other person's unfinished notes; four catches said 'Saved' to the wrong person. |
+| D78 | Watching a reel | A reel may be WATCHED instead of only heard — his words, "yes, watch the reels". One press, one reel, YouTube only for now, and no download at all. Amends D4 and D28; supersedes neither. It exists for the money columns his tables cannot fill, because the reel showed the price and never said it. Google's 8-hours-a-day free cap and its "prices will change" warning are on the button, not in a log. |
 
 ---
 
@@ -108,6 +109,8 @@ The reel is a seed, not the destination.
 | Privacy policy | Required before any external user. Jaiswal wants provider-side visibility into what users search — that makes him a data fiduciary under the DPDP Act. |
 | Data retention | Nothing can be deleted AT ALL — there is no DELETE on a clip, no account route and no export; `deleted_at` exists in the schema and is only ever set back to NULL. Not merely 'no expiry is set' (D60). Golden Rule 11 requires one at the time of storage. |
 | Instagram ToS | D4 knowingly breaches it. What the exposure actually is for a published product has not been researched. |
+| Watching the rest | D78 built the YouTube path, where the video is never downloaded at all. Instagram, Facebook, LinkedIn and X would need the file itself sent through the Worker (D11 keeps keys there). Worth building, not yet decided. |
+| Watching what is already summarised | The 202 reels already read are the ones with empty money columns. Watching them again is a MERGE into a row everybody who saved the reel can see, not a write — D39 and D76 territory. Not decided. |
 | Play Store | PWA works and is free. A real listing is a one-time $25 — not decided, not needed yet. |
 | Transcription at scale | 1,000 users ≈ 3,000 downloads and ~50 hours of audio a day. Dedupe (D10) helps; the remainder has no plan. |
 | Weekly digest delivery | Agreed as a feature. Email, Telegram, or push is undecided. |
@@ -141,7 +144,7 @@ share a notebook (not started).
 | `D:\ClipToAction` as a git repo | Yes |
 | Decision log + index | This file and `DECISION_LOG.md` |
 | PM Discipline hook + CI check | Set up 2026-08-12 — run `git config core.hooksPath .githooks` once per clone |
-| Test suite | **685 tests**, `cd backend && npm test`, plus **85** in `worker-pc` (`discover` runs both files; `test_machine.py` alone runs 50), `python -m unittest discover -p "test_*.py"`. They cover canonicalisation and dedupe, paste parsing, analysis validation, the auth surface end to end, topics (one analysis serves every saver, topic rows never cross notebooks, a hand-set topic is never moved), whether the app can tell the PC worker is running, the connector (both handshake versions, saved keys never in plain text, one notebook never visible from another, learnings written back, and since D38–D40 the chapters, creators and tracker rows that used to be reachable from nowhere), India time (D31), long videos (D33), several AI keys (D35), the new tables and the ask-before-backfill rule (D38, D39), the fortnightly look back (D41), the warning before a very long video (D42), **the app itself**, run out of `index.html` in Node against a real-shaped sync response (D43), and — added by the review rounds — what happens when the AI returns the wrong shape (D52), two accounts on one phone (D53), a link two parsers read differently (D55), and the machine in his house losing power mid-job (D56, D58). The `worker-pc` tests guard the transcription settings (D28), the creator backfill's pacing (D40) and that a long video is asked about before it is downloaded (D42) |
+| Test suite | **710 tests**, `cd backend && npm test`, plus **85** in `worker-pc` (`discover` runs both files; `test_machine.py` alone runs 50), `python -m unittest discover -p "test_*.py"`. They cover canonicalisation and dedupe, paste parsing, analysis validation, the auth surface end to end, topics (one analysis serves every saver, topic rows never cross notebooks, a hand-set topic is never moved), whether the app can tell the PC worker is running, the connector (both handshake versions, saved keys never in plain text, one notebook never visible from another, learnings written back, and since D38–D40 the chapters, creators and tracker rows that used to be reachable from nowhere), India time (D31), long videos (D33), several AI keys (D35), the new tables and the ask-before-backfill rule (D38, D39), the fortnightly look back (D41), the warning before a very long video (D42), **the app itself**, run out of `index.html` in Node against a real-shaped sync response (D43), and — added by the review rounds — what happens when the AI returns the wrong shape (D52), two accounts on one phone (D53), a link two parsers read differently (D55), and the machine in his house losing power mid-job (D56, D58). The `worker-pc` tests guard the transcription settings (D28), the creator backfill's pacing (D40) and that a long video is asked about before it is downloaded (D42) |
 | CI | `.github/workflows/ci.yml` — tests, syntax on all 3 runtimes, secret scan, tracked-`.env` check |
 | Branch protection on `main` | **Not enabled** — needs to be switched on in GitHub settings, see `CLAUDE.md` |
 | `COMPLIANCE.md` | Exists, mostly unfilled — see Open |
